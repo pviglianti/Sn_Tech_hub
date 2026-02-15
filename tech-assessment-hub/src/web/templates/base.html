@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="classic">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Tech Assessment Hub{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ static_version }}">
+    <link rel="stylesheet" href="/static/css/themes.css?v={{ static_version }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">
+            <a href="/">Tech Assessment Hub</a>
+        </div>
+        <ul class="nav-links">
+            <li><a href="/" class="{% if request.url.path == '/' %}active{% endif %}">Dashboard</a></li>
+            <li><a href="/instances" class="{% if '/instances' in request.url.path %}active{% endif %}">Instances</a></li>
+            <li><a href="/data-browser" class="{% if '/data-browser' in request.url.path %}active{% endif %}">Pre Flight Data Browser</a></li>
+            <li><a href="/analytics" class="{% if '/analytics' in request.url.path %}active{% endif %}">Comparison</a></li>
+            <li><a href="/mcp-console" class="{% if '/mcp-console' in request.url.path %}active{% endif %}">MCP</a></li>
+            <li><a href="/integration-properties" class="{% if '/integration-properties' in request.url.path %}active{% endif %}">Properties</a></li>
+            <li><a href="/assessments" class="{% if '/assessments' in request.url.path %}active{% endif %}">Assessments</a></li>
+            <li><a href="/results" class="{% if '/results' in request.url.path %}active{% endif %}">Results</a></li>
+            <li><a href="/job-log" class="{% if '/job-log' in request.url.path %}active{% endif %}">Job Log</a></li>
+            <li><a href="/csdm/ingestion" class="{% if '/csdm' in request.url.path %}active{% endif %}">CSDM Data</a></li>
+            <li><a href="/browse" class="{% if '/browse' in request.url.path %}active{% endif %}">Table Browser</a></li>
+            <li class="theme-menu-item">
+                <details class="theme-menu" data-theme-menu>
+                    <summary class="theme-menu-trigger" title="Select app theme. The selected theme is saved in this browser.">
+                        <span>Theme:</span>
+                        <strong data-theme-current>Classic</strong>
+                        <span class="theme-menu-caret" aria-hidden="true">▾</span>
+                    </summary>
+                    <div class="theme-menu-panel">
+                        <button
+                            type="button"
+                            class="theme-menu-option"
+                            data-theme-option="classic"
+                            title="Apply Classic theme."
+                        >
+                            <span class="theme-menu-option-name">Classic</span>
+                            <span class="theme-menu-dot-group" aria-hidden="true">
+                                <span class="theme-swatch classic-base"></span>
+                                <span class="theme-swatch classic-accent"></span>
+                                <span class="theme-swatch classic-layer"></span>
+                            </span>
+                        </button>
+                        <button
+                            type="button"
+                            class="theme-menu-option"
+                            data-theme-option="obsidian-command"
+                            title="Apply Obsidian Command theme."
+                        >
+                            <span class="theme-menu-option-name">Obsidian Command</span>
+                            <span class="theme-menu-dot-group" aria-hidden="true">
+                                <span class="theme-swatch obsidian-base"></span>
+                                <span class="theme-swatch obsidian-accent"></span>
+                                <span class="theme-swatch obsidian-layer"></span>
+                            </span>
+                        </button>
+                        <button
+                            type="button"
+                            class="theme-menu-option"
+                            data-theme-option="carbon-glass"
+                            title="Apply Carbon Glass theme."
+                        >
+                            <span class="theme-menu-option-name">Carbon Glass</span>
+                            <span class="theme-menu-dot-group" aria-hidden="true">
+                                <span class="theme-swatch carbon-base"></span>
+                                <span class="theme-swatch carbon-accent"></span>
+                                <span class="theme-swatch carbon-layer"></span>
+                            </span>
+                        </button>
+                        <button
+                            type="button"
+                            class="theme-menu-option"
+                            data-theme-option="nocturne-ember"
+                            title="Apply Nocturne Ember theme."
+                        >
+                            <span class="theme-menu-option-name">Nocturne Ember</span>
+                            <span class="theme-menu-dot-group" aria-hidden="true">
+                                <span class="theme-swatch ember-base"></span>
+                                <span class="theme-swatch ember-accent"></span>
+                                <span class="theme-swatch ember-layer"></span>
+                            </span>
+                        </button>
+                    </div>
+                </details>
+            </li>
+        </ul>
+    </nav>
+
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <p>Tech Assessment Hub v0.1.0</p>
+    </footer>
+
+    <!-- Dictionary Pull Progress Modal -->
+    <div id="dict-pull-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Pulling Initial Instance Data</h3>
+                <button type="button" class="modal-close" onclick="document.getElementById('dict-pull-modal').style.display='none'">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="dict-pull-status-text">Initializing...</p>
+                <div class="progress-bar-container">
+                    <div id="dict-pull-progress-bar" class="progress-bar-fill" style="width:0%"></div>
+                </div>
+                <div class="dict-pull-details">
+                    <span id="dict-pull-table-count">0 / 0 tables</span>
+                    <span id="dict-pull-eta"></span>
+                </div>
+                <p class="dict-pull-warning">You can close this dialog or navigate away. The pull continues in the background.</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js?v={{ static_version }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

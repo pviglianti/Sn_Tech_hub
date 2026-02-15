@@ -1,0 +1,620 @@
+{% extends "base.html" %}
+
+{% block title %}CSDM Data Ingestion{% if selected_instance %} - {{ selected_instance.name }}{% endif %} - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<!-- Page Header -->
+<div class="card">
+    <div class="assessment-header">
+        <div class="assessment-info">
+            <div class="assessment-number">CSDM Data Foundations</div>
+            <h1 class="assessment-title">Data Ingestion Manager</h1>
+            <div class="assessment-meta">
+                <span>
+                    Manage CSDM table ingestion from ServiceNow instances.
+                    Select an instance to view and control table data pulls.
+                </span>
+            </div>
+        </div>
+        <div class="assessment-actions">
+            <a href="/instances" class="btn btn-secondary" title="Return to the Instances list.">Back to Instances</a>
+        </div>
+    </div>
+</div>
+
+<!-- Instance Selector -->
+<div class="card mt-1">
+    <h2 class="mb-1">Select Instance</h2>
+    <div class="inline-controls-row">
+        <div>
+            <label class="label-inline-gap"><strong>Instance:</strong></label>
+            <select id="instance-selector" class="form-control inline-select-auto"
+                    title="Choose the ServiceNow instance to manage CSDM ingestion for.">
+                <option value="">-- Select an Instance --</option>
+                {% for inst in instances %}
+                <option value="{{ inst.id }}" {% if instance_id and inst.id == instance_id %}selected{% endif %}>
+                    {{ inst.name }} ({{ inst.url }})
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
+</div>
+
+{% if not selected_instance %}
+<!-- No Instance Selected -->
+<div class="card mt-1">
+    <p class="text-muted-plain">Select an instance above to manage CSDM table ingestion.</p>
+</div>
+{% else %}
+<!-- Instance Info Bar -->
+<div class="card mt-1">
+    <div class="card summary-inline-card summary-inline-card-muted">
+        <strong>Instance:</strong> {{ selected_instance.name }}
+        <span class="ml-1"><strong>URL:</strong> <a href="{{ selected_instance.url }}" target="_blank">{{ selected_instance.url }}</a></span>
+        <span class="ml-1"><strong>Version:</strong> {{ selected_instance.instance_version or 'N/A' }}</span>
+    </div>
+</div>
+
+<!-- Global Actions -->
+<div class="card mt-1">
+    <h2 class="mb-1">Ingestion Controls</h2>
+    <div class="card summary-inline-card summary-inline-card-muted" id="job-status-bar">
+        <strong>Job Status:</strong>
+        <span id="job-status-text">
+            {% if job_snapshot %}
+                {{ job_snapshot.status | title }} -- {{ job_snapshot.current_table or 'idle' }}
+                ({{ job_snapshot.completed_tables | length }}/{{ job_snapshot.tables | length }} done)
+            {% else %}
+                Idle
+            {% endif %}
+        </span>
+    </div>
+    <div class="inline-controls-row mt-1">
+        <div>
+            <label class="label-inline-gap"><strong>Mode:</strong></label>
+            <select id="ingest-mode" class="form-control inline-select-auto"
+                    title="Delta pulls only new/changed records since last ingestion. Full pulls all records from scratch.">
+                <option value="delta">Delta (since last pull)</option>
+                <option value="full">Full Pull</option>
+            </select>
+        </div>
+        <button type="button" class="btn btn-primary" onclick="startSelected()"
+                title="Start ingestion for all checked tables across all groups.">Start Selected</button>
+        <button type="button" class="btn btn-secondary" onclick="cancelCurrent()"
+                title="Cancel the currently running ingestion job. Tables already completed will keep their data.">Cancel Current</button>
+        <button type="button" class="btn btn-danger" onclick="cancelAll()"
+                title="Cancel all running and queued jobs for this instance. Already-completed tables keep their data.">Cancel All</button>
+        <button type="button" class="btn btn-danger" onclick="clearSelectedRows()"
+                title="Delete all rows from the checked tables. Use before a fresh full pull to start clean."
+                style="margin-left:0.5rem;">Clear Selected Rows</button>
+    </div>
+</div>
+
+<!-- Table Groups -->
+{% for group_key, group in table_groups.items() %}
+<div class="card mt-1" data-group="{{ group_key }}">
+    <details open>
+        <summary style="cursor:pointer; user-select:none;">
+            <h2 style="display:inline;">{{ group.label }}</h2>
+            <span class="text-muted-plain" style="margin-left:0.5rem;">({{ group.tables | length }} tables)</span>
+        </summary>
+
+        <div class="inline-controls-row mt-1">
+            <button type="button" class="btn btn-secondary" onclick="selectAllInGroup('{{ group_key }}')"
+                    title="Select all tables in the {{ group.label }} group.">Select All</button>
+            <button type="button" class="btn btn-secondary" onclick="deselectAllInGroup('{{ group_key }}')"
+                    title="Deselect all tables in the {{ group.label }} group.">Deselect All</button>
+            <button type="button" class="btn btn-primary" onclick="startGroup('{{ group_key }}')"
+                    title="Start ingestion for all checked tables in the {{ group.label }} group only.">Start Group</button>
+        </div>
+
+        <table class="related-table mt-1">
+            <thead>
+                <tr>
+                    <th style="width:40px;">
+                        <input type="checkbox" class="group-select-all" data-group="{{ group_key }}"
+                               onchange="toggleGroupCheckboxes('{{ group_key }}', this.checked)"
+                               title="Toggle all tables in this group.">
+                    </th>
+                    <th>SN Table Name</th>
+                    <th>Label</th>
+                    <th>Status</th>
+                    <th title="Total records in ServiceNow (from pre-flight count).">SN Total</th>
+                    <th title="Rows in local mirror table.">Local Rows</th>
+                    <th title="Rows inserted in last run.">Ins</th>
+                    <th title="Rows updated in last run.">Upd</th>
+                    <th>Last Run</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for tbl in group.tables %}
+                {% set tstate = table_states.get(tbl.name, {}) %}
+                <tr data-table="{{ tbl.name }}" data-group="{{ group_key }}">
+                    <td>
+                        <input type="checkbox" class="table-checkbox" data-group="{{ group_key }}"
+                               value="{{ tbl.name }}" title="Select {{ tbl.name }} for ingestion.">
+                    </td>
+                    <td><a href="/browse/{{ tbl.name }}?instance_id={{ instance_id }}" class="ref-link" title="Browse {{ tbl.label }} in Table Browser"><code>{{ tbl.name }}</code></a></td>
+                    <td>{{ tbl.label }}</td>
+                    <td data-field="status">
+                        {% set st = tstate.get('status', 'never') %}
+                        {% if st in ('success', 'completed') %}
+                        <span class="status-badge status-completed" title="Last ingestion completed successfully.">&#x2713; success</span>
+                        {% elif st == 'in_progress' %}
+                        <span class="status-badge status-running" title="Ingestion is currently running for this table.">&#x25cf; running</span>
+                        {% elif st == 'queued' %}
+                        <span class="status-badge status-queued" style="background:var(--warning-bg,#fff3cd);color:var(--warning-text,#856404);" title="Table is queued for ingestion.">&#x25cf; queued</span>
+                        {% elif st == 'failed' %}
+                        <span class="status-badge status-failed" title="Last ingestion failed. {{ tstate.get('last_error', '') }}">&#x2717; failed</span>
+                        {% elif st == 'cancelled' %}
+                        <span class="status-badge status-cancelled" style="opacity:0.6;" title="Last ingestion was cancelled.">&#x25cb; cancelled</span>
+                        {% else %}
+                        <span class="status-badge status-idle" title="This table has never been ingested.">&#x25cb; never</span>
+                        {% endif %}
+                    </td>
+                    <td data-field="remote_count">{{ tstate.get('remote_count', 0) or '-' }}</td>
+                    <td data-field="total_rows">{{ tstate.get('total_rows', 0) }}</td>
+                    <td data-field="last_inserted">{{ tstate.get('last_batch_inserted', 0) }}</td>
+                    <td data-field="last_updated">{{ tstate.get('last_batch_updated', 0) }}</td>
+                    <td data-field="last_run_at">
+                        {% if tstate.get('last_run_at') %}
+                            {% if tstate['last_run_at'] is string %}
+                                {{ tstate['last_run_at'][:16] | replace('T', ' ') }}
+                            {% else %}
+                                {{ tstate['last_run_at'].strftime('%Y-%m-%d %H:%M') }}
+                            {% endif %}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </td>
+                    <td>
+                        <button type="button" class="btn btn-secondary" style="padding:2px 8px; font-size:0.85em;"
+                                onclick="refreshSchema('{{ tbl.name }}')"
+                                title="Re-fetch the ServiceNow dictionary for this table and apply any schema changes locally.">Refresh Schema</button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </details>
+</div>
+{% endfor %}
+
+<!-- Custom Table Registration -->
+<div class="card mt-1">
+    <h2 class="mb-1">Add Custom Table</h2>
+    <p class="text-muted-plain mb-1">
+        Register a ServiceNow table not in the standard CSDM catalog.
+        Enter the sys_db_object name (e.g., <code>u_custom_table</code>).
+    </p>
+    <div class="inline-controls-row">
+        <div>
+            <label class="label-inline-gap"><strong>Table Name:</strong></label>
+            <input type="text" id="custom-table-name" class="form-control"
+                   placeholder="e.g., u_custom_table"
+                   title="Enter the ServiceNow sys_db_object name for the custom table to add.">
+        </div>
+        <button type="button" class="btn btn-primary" onclick="addCustomTable()"
+                title="Validate the table exists on the ServiceNow instance and register it for ingestion.">Validate &amp; Add</button>
+    </div>
+    <div id="custom-table-result" class="mt-1" style="display:none;"></div>
+</div>
+
+<!-- Job Log -->
+<div class="card mt-1">
+    <h2 class="mb-1">Recent Job Log</h2>
+    <table class="related-table" id="job-log-table">
+        <thead>
+            <tr>
+                <th>Table</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Rows Inserted</th>
+                <th>Rows Updated</th>
+                <th>Duration</th>
+                <th>Error</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for log in recent_logs %}
+            <tr>
+                <td><code>{{ log.sn_table_name }}</code></td>
+                <td>{{ log.job_type }}</td>
+                <td>
+                    <span class="status-badge status-{{ log.status }}">{{ log.status }}</span>
+                </td>
+                <td>{{ log.rows_inserted }}</td>
+                <td>{{ log.rows_updated }}</td>
+                <td>
+                    {% if log.started_at and log.completed_at %}
+                        {{ ((log.completed_at - log.started_at).total_seconds() | round(1)) }}s
+                    {% else %}
+                        -
+                    {% endif %}
+                </td>
+                <td class="ellipsis-cell" title="{{ log.error_message or '' }}">
+                    {{ log.error_message[:60] + '...' if log.error_message and log.error_message|length > 60 else (log.error_message or '-') }}
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not recent_logs %}
+            <tr>
+                <td colspan="7" class="text-muted-plain" style="text-align:center;">No job log entries yet.</td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+(function() {
+    const instanceId = {{ instance_id | tojson }};
+    let pollingInterval = null;
+    let isPolling = false;
+
+    // ---------------------------------------------------------------
+    // Instance selector change
+    // ---------------------------------------------------------------
+    const selector = document.getElementById('instance-selector');
+    if (selector) {
+        selector.addEventListener('change', function() {
+            const val = this.value;
+            if (val) {
+                window.location.href = '/csdm/ingestion?instance_id=' + encodeURIComponent(val);
+            } else {
+                window.location.href = '/csdm/ingestion';
+            }
+        });
+    }
+
+    // ---------------------------------------------------------------
+    // Checkbox helpers
+    // ---------------------------------------------------------------
+    window.selectAllInGroup = function(groupKey) {
+        document.querySelectorAll('.table-checkbox[data-group="' + groupKey + '"]')
+            .forEach(function(cb) { cb.checked = true; });
+        const header = document.querySelector('.group-select-all[data-group="' + groupKey + '"]');
+        if (header) header.checked = true;
+    };
+
+    window.deselectAllInGroup = function(groupKey) {
+        document.querySelectorAll('.table-checkbox[data-group="' + groupKey + '"]')
+            .forEach(function(cb) { cb.checked = false; });
+        const header = document.querySelector('.group-select-all[data-group="' + groupKey + '"]');
+        if (header) header.checked = false;
+    };
+
+    window.toggleGroupCheckboxes = function(groupKey, checked) {
+        document.querySelectorAll('.table-checkbox[data-group="' + groupKey + '"]')
+            .forEach(function(cb) { cb.checked = checked; });
+    };
+
+    function getSelectedTables(groupKey) {
+        var selector = '.table-checkbox:checked';
+        if (groupKey) {
+            selector = '.table-checkbox[data-group="' + groupKey + '"]:checked';
+        }
+        var tables = [];
+        document.querySelectorAll(selector).forEach(function(cb) {
+            tables.push(cb.value);
+        });
+        return tables;
+    }
+
+    // ---------------------------------------------------------------
+    // API helpers
+    // ---------------------------------------------------------------
+    async function apiPost(url, body) {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(function() { return {detail: res.statusText}; });
+            throw new Error(err.detail || 'Request failed');
+        }
+        return res.json();
+    }
+
+    // ---------------------------------------------------------------
+    // Start ingestion
+    // ---------------------------------------------------------------
+    window.startSelected = function() {
+        var tables = getSelectedTables();
+        if (tables.length === 0) {
+            alert('Please select at least one table to ingest.');
+            return;
+        }
+        var mode = document.getElementById('ingest-mode').value;
+        apiPost('/csdm/api/ingest', {
+            instance_id: instanceId,
+            tables: tables,
+            mode: mode,
+        }).then(function(data) {
+            startPolling();
+        }).catch(function(err) {
+            alert('Failed to start ingestion: ' + err.message);
+        });
+    };
+
+    window.startGroup = function(groupKey) {
+        var tables = getSelectedTables(groupKey);
+        if (tables.length === 0) {
+            alert('Please select at least one table in this group.');
+            return;
+        }
+        var mode = document.getElementById('ingest-mode').value;
+        apiPost('/csdm/api/ingest', {
+            instance_id: instanceId,
+            tables: tables,
+            mode: mode,
+        }).then(function(data) {
+            startPolling();
+        }).catch(function(err) {
+            alert('Failed to start ingestion: ' + err.message);
+        });
+    };
+
+    // ---------------------------------------------------------------
+    // Cancel
+    // ---------------------------------------------------------------
+    window.cancelCurrent = function() {
+        if (!confirm('Cancel the currently running ingestion job?')) return;
+        apiPost('/csdm/api/cancel/' + instanceId, {})
+            .then(function() { refreshStatus(); })
+            .catch(function(err) { alert('Cancel failed: ' + err.message); });
+    };
+
+    window.cancelAll = function() {
+        if (!confirm('Cancel ALL running and queued jobs for this instance?')) return;
+        apiPost('/csdm/api/cancel-all/' + instanceId, {})
+            .then(function() { refreshStatus(); })
+            .catch(function(err) { alert('Cancel all failed: ' + err.message); });
+    };
+
+    window.clearSelectedRows = function() {
+        var tables = getSelectedTables();
+        if (tables.length === 0) {
+            alert('Please select at least one table to clear.');
+            return;
+        }
+        if (!confirm('Delete ALL rows from ' + tables.length + ' selected table(s)?\n\n' + tables.join(', ') + '\n\nThis cannot be undone.')) return;
+        apiPost('/csdm/api/clear-rows/' + instanceId, {
+            instance_id: instanceId,
+            tables: tables,
+            mode: 'full',
+        }).then(function(data) {
+            var total = 0;
+            for (var t in data.cleared) total += data.cleared[t];
+            alert('Cleared ' + total + ' rows from ' + tables.length + ' table(s).');
+            refreshStatus();
+        }).catch(function(err) {
+            alert('Clear failed: ' + err.message);
+        });
+    };
+
+    // ---------------------------------------------------------------
+    // Refresh schema
+    // ---------------------------------------------------------------
+    window.refreshSchema = function(tableName) {
+        apiPost('/csdm/api/schema/refresh', {
+            instance_id: instanceId,
+            sn_table_name: tableName,
+        }).then(function(data) {
+            alert('Schema refreshed for ' + tableName + '. Fields: ' + (data.field_count || 'N/A'));
+        }).catch(function(err) {
+            alert('Schema refresh failed: ' + err.message);
+        });
+    };
+
+    // ---------------------------------------------------------------
+    // Custom table
+    // ---------------------------------------------------------------
+    window.addCustomTable = function() {
+        var name = document.getElementById('custom-table-name').value.trim();
+        if (!name) {
+            alert('Please enter a table name.');
+            return;
+        }
+        var resultDiv = document.getElementById('custom-table-result');
+        resultDiv.style.display = 'block';
+        resultDiv.innerHTML = '<span class="text-muted-plain">Validating...</span>';
+
+        apiPost('/csdm/api/custom-tables', {
+            instance_id: instanceId,
+            sn_table_name: name,
+        }).then(function(data) {
+            if (data.status === 'success') {
+                resultDiv.innerHTML = '<span style="color:green;">Table <code>' + data.table_name +
+                    '</code> registered successfully (' + (data.field_count || 0) + ' fields). Reload to see it in the table list.</span>';
+            } else {
+                resultDiv.innerHTML = '<span style="color:orange;">' + (data.message || 'Pending validation.') + '</span>';
+            }
+        }).catch(function(err) {
+            resultDiv.innerHTML = '<span style="color:red;">Failed: ' + err.message + '</span>';
+        });
+    };
+
+    // ---------------------------------------------------------------
+    // Status polling
+    // ---------------------------------------------------------------
+    var statusInFlight = false;
+
+    async function refreshStatus() {
+        if (!instanceId || statusInFlight) return;
+        statusInFlight = true;
+        try {
+            var res = await fetch('/csdm/api/status/' + instanceId);
+            if (!res.ok) return;
+            var data = await res.json();
+
+            // Update job status bar
+            var statusText = document.getElementById('job-status-text');
+            if (statusText) {
+                if (data.current_job) {
+                    var job = data.current_job;
+                    statusText.textContent = (job.status || 'unknown').charAt(0).toUpperCase() +
+                        (job.status || '').slice(1) + ' -- ' +
+                        (job.current_table || 'idle') +
+                        ' (' + (job.completed_tables ? job.completed_tables.length : 0) +
+                        '/' + (job.tables ? job.tables.length : 0) + ' done)';
+                } else {
+                    statusText.textContent = 'Idle';
+                }
+            }
+
+            // Update per-table status cells
+            var tables = data.tables || {};
+            for (var tblName in tables) {
+                var row = document.querySelector('tr[data-table="' + tblName + '"]');
+                if (!row) continue;
+                var tstate = tables[tblName];
+
+                // Status badge
+                var statusCell = row.querySelector('[data-field="status"]');
+                if (statusCell) {
+                    var st = tstate.status || 'never';
+                    var badge = '';
+                    if (st === 'success' || st === 'completed') {
+                        badge = '<span class="status-badge status-completed" title="Last ingestion completed successfully.">&#x2713; success</span>';
+                    } else if (st === 'in_progress') {
+                        badge = '<span class="status-badge status-running" title="Ingestion is currently running.">&#x25cf; running</span>';
+                    } else if (st === 'queued') {
+                        badge = '<span class="status-badge status-queued" style="background:var(--warning-bg,#fff3cd);color:var(--warning-text,#856404);" title="Table is queued.">&#x25cf; queued</span>';
+                    } else if (st === 'failed') {
+                        badge = '<span class="status-badge status-failed" title="Failed. ' + (tstate.last_error || '') + '">&#x2717; failed</span>';
+                    } else if (st === 'cancelled') {
+                        badge = '<span class="status-badge status-cancelled" style="opacity:0.6;" title="Cancelled.">&#x25cb; cancelled</span>';
+                    } else {
+                        badge = '<span class="status-badge status-idle" title="Never ingested.">&#x25cb; never</span>';
+                    }
+                    statusCell.innerHTML = badge;
+                }
+
+                // Remote count
+                var remoteCell = row.querySelector('[data-field="remote_count"]');
+                if (remoteCell) remoteCell.textContent = tstate.remote_count || '-';
+
+                // Local row count
+                var rowsCell = row.querySelector('[data-field="total_rows"]');
+                if (rowsCell) rowsCell.textContent = tstate.total_rows || 0;
+
+                // Inserts / updates
+                var insCell = row.querySelector('[data-field="last_inserted"]');
+                if (insCell) insCell.textContent = tstate.last_batch_inserted || 0;
+                var updCell = row.querySelector('[data-field="last_updated"]');
+                if (updCell) updCell.textContent = tstate.last_batch_updated || 0;
+
+                // Last run
+                var lastCell = row.querySelector('[data-field="last_run_at"]');
+                if (lastCell) {
+                    if (tstate.last_run_at) {
+                        var d = tstate.last_run_at;
+                        if (typeof d === 'string') {
+                            lastCell.textContent = d.slice(0, 16).replace('T', ' ');
+                        } else {
+                            lastCell.textContent = d;
+                        }
+                    } else {
+                        lastCell.textContent = '-';
+                    }
+                }
+            }
+
+            // Update job log table
+            var logData = data.recent_logs || [];
+            var logBody = document.querySelector('#job-log-table tbody');
+            if (logBody && logData.length > 0) {
+                var html = '';
+                for (var i = 0; i < logData.length; i++) {
+                    var log = logData[i];
+                    var dur = log.duration_seconds !== null && log.duration_seconds !== undefined
+                        ? log.duration_seconds + 's' : '-';
+                    var errMsg = log.error_message || '-';
+                    var errTitle = log.error_message || '';
+                    if (errMsg.length > 60) errMsg = errMsg.slice(0, 60) + '...';
+                    html += '<tr>' +
+                        '<td><code>' + log.sn_table_name + '</code></td>' +
+                        '<td>' + log.job_type + '</td>' +
+                        '<td><span class="status-badge status-' + log.status + '">' + log.status + '</span></td>' +
+                        '<td>' + log.rows_inserted + '</td>' +
+                        '<td>' + log.rows_updated + '</td>' +
+                        '<td>' + dur + '</td>' +
+                        '<td class="ellipsis-cell" title="' + errTitle.replace(/"/g, '&quot;') + '">' + errMsg + '</td>' +
+                        '</tr>';
+                }
+                logBody.innerHTML = html;
+            }
+
+            // Decide whether to keep polling
+            var hasActive = false;
+            if (data.current_job && data.current_job.is_alive) {
+                hasActive = true;
+            }
+            for (var tn in tables) {
+                var s = tables[tn].status;
+                if (s === 'in_progress' || s === 'queued') {
+                    hasActive = true;
+                    break;
+                }
+            }
+            if (!hasActive) {
+                stopPolling();
+            }
+
+        } catch (err) {
+            // Ignore polling errors
+        } finally {
+            statusInFlight = false;
+        }
+    }
+
+    function startPolling() {
+        if (isPolling) return;
+        isPolling = true;
+        refreshStatus();
+        pollingInterval = setInterval(refreshStatus, 3000);
+    }
+
+    function stopPolling() {
+        if (pollingInterval) {
+            clearInterval(pollingInterval);
+            pollingInterval = null;
+        }
+        isPolling = false;
+    }
+
+    // Auto-start polling if there's an active job on page load
+    if (instanceId) {
+        refreshStatus();
+        // Check initial state: if there are queued or running tables, poll
+        {% if job_snapshot and job_snapshot.status in ('running',) %}
+        startPolling();
+        {% endif %}
+        // Also do a one-time check via API
+        fetch('/csdm/api/status/' + instanceId).then(function(res) {
+            return res.json();
+        }).then(function(data) {
+            if (data.current_job && data.current_job.is_alive) {
+                startPolling();
+            } else {
+                var tables = data.tables || {};
+                for (var tn in tables) {
+                    if (tables[tn].status === 'in_progress' || tables[tn].status === 'queued') {
+                        startPolling();
+                        break;
+                    }
+                }
+            }
+        }).catch(function() {});
+    }
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+
+{% block title %}Instances - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>ServiceNow Instances</h1>
+    <a href="/instances/add" class="btn btn-primary">+ Add Instance</a>
+</div>
+
+{% if instances %}
+<div class="card">
+    <div class="table-scroll">
+        <table class="data-table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Company</th>
+                <th>URL</th>
+                <th>Username</th>
+                <th>Status</th>
+                <th>Version</th>
+                <th>Last Connected</th>
+                <th>Metrics Refreshed</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for instance in instances %}
+            <tr>
+                <td><strong>{{ instance.name }}</strong></td>
+                <td>{{ instance.company or '-' }}</td>
+                <td><a href="{{ instance.url }}" target="_blank">{{ instance.url }}</a></td>
+                <td>{{ instance.username }}</td>
+                <td>
+                    {% set badge_status = instance.connection_status.value %}
+                    {% set badge_text = instance.connection_status.value %}
+                    {% include "components/status_badge.html" %}
+                </td>
+                <td>{{ instance.instance_version or '-' }}</td>
+                <td>{{ instance.last_connected.strftime('%Y-%m-%d %H:%M') if instance.last_connected else 'Never' }}</td>
+                <td>{{ instance.metrics_last_refreshed_at.strftime('%Y-%m-%d %H:%M') if instance.metrics_last_refreshed_at else 'Never' }}</td>
+                <td class="actions">
+                    <button class="btn btn-sm btn-secondary" onclick="testConnection({{ instance.id }})">Test</button>
+                    <button class="btn btn-sm btn-secondary" onclick="getInventory({{ instance.id }})">Inventory</button>
+                    <button class="btn btn-sm btn-secondary" onclick="refreshMetrics({{ instance.id }})">Refresh</button>
+                    <button class="btn btn-sm btn-secondary" onclick="refreshDataPulls({{ instance.id }})" title="Run a full refresh of all cached reference data for this instance.">Refresh Data</button>
+                    <a href="/data-browser?instance_id={{ instance.id }}" class="btn btn-sm btn-primary" title="Open the Pre Flight Data Browser for this instance.">Pre Flight Data Browser</a>
+                    <a href="/instances/{{ instance.id }}/assessment-app-file-options" class="btn btn-sm btn-secondary" title="Manage which app file types appear in new assessment slush bucket options.">Assessment App File Options</a>
+                    <a href="/instances/{{ instance.id }}/data" class="btn btn-sm btn-secondary" title="Open the data pull status and controls for this instance.">Pre Flight Data Manager</a>
+                    <a href="/job-log?module=preflight&instance_id={{ instance.id }}" class="btn btn-sm btn-secondary" title="Open unified job log filtered to preflight entries for this instance.">Pre Flight Job Log</a>
+                    <a href="/instances/{{ instance.id }}/edit" class="btn btn-sm btn-secondary">Edit</a>
+                    <form action="/instances/{{ instance.id }}/delete" method="post" class="inline-form">
+                        <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete this instance?')">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="card empty-state">
+    <h2>No Instances Configured</h2>
+    <p>Add a ServiceNow instance to get started with your technical assessment.</p>
+    <a href="/instances/add" class="btn btn-primary">+ Add Instance</a>
+</div>
+{% endif %}
+
+<!-- Inventory Modal -->
+<div id="inventoryModal" class="modal is-hidden">
+    <div class="modal-content">
+        <span class="close" onclick="closeInventoryModal()">&times;</span>
+        <h2>Instance Inventory</h2>
+        <div id="inventoryResults"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function testConnection(instanceId) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = 'Testing...';
+
+    try {
+        const response = await fetch(`/instances/${instanceId}/test`, { method: 'POST' });
+        const result = await response.json();
+
+        if (result.success) {
+            alert('Connection successful!\nVersion: ' + result.version);
+            // Start monitoring dictionary pull
+            if (window.startDictPullMonitor) {
+                window.startDictPullMonitor(instanceId);
+                // Don't reload - let the modal show and complete
+                btn.disabled = false;
+                btn.textContent = 'Test';
+            } else {
+                // No monitor function, reload to update status
+                location.reload();
+            }
+        } else {
+            alert('Connection failed:\n' + result.message);
+            location.reload();
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+        btn.disabled = false;
+        btn.textContent = 'Test';
+    }
+}
+
+async function getInventory(instanceId) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = 'Loading...';
+
+    try {
+        const response = await fetch(`/api/instances/${instanceId}/inventory`);
+        const result = await response.json();
+
+        const modal = document.getElementById('inventoryModal');
+        const resultsDiv = document.getElementById('inventoryResults');
+
+        if (result.success) {
+            let html = '<table class="data-table"><thead><tr><th>Artifact Type</th><th>Count</th></tr></thead><tbody>';
+            for (const [key, value] of Object.entries(result.inventory)) {
+                html += `<tr><td>${key.replace(/_/g, ' ')}</td><td>${value === -1 ? 'N/A' : value}</td></tr>`;
+            }
+            html += '</tbody></table>';
+            resultsDiv.innerHTML = html;
+        } else {
+            resultsDiv.innerHTML = `<p class="error">Error: ${result.error}</p>`;
+        }
+
+        modal.style.display = 'block';
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Inventory';
+}
+
+async function refreshMetrics(instanceId) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = 'Refreshing...';
+
+    try {
+        const response = await fetch(`/instances/${instanceId}/metrics/refresh`, { method: 'POST' });
+        const result = await response.json();
+
+        if (result.success) {
+            alert('Metrics refreshed');
+            location.reload();
+        } else {
+            alert('Refresh failed:\n' + result.error);
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Refresh';
+}
+
+async function refreshDataPulls(instanceId) {
+    const btn = event.target;
+    if (!confirm('Refresh all cached reference data for this instance?')) {
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Refreshing Data...';
+
+    try {
+        const response = await fetch(`/api/instances/${instanceId}/data-refresh`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: 'full' })
+        });
+        const result = await response.json();
+        if (result.success) {
+            alert('Data refresh started. Use Pre Flight Data Browser to monitor status.');
+        } else {
+            alert('Data refresh failed.');
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Refresh Data';
+}
+
+function closeInventoryModal() {
+    document.getElementById('inventoryModal').style.display = 'none';
+}
+
+// Close modal when clicking outside
+window.onclick = function(event) {
+    const modal = document.getElementById('inventoryModal');
+    if (event.target === modal) {
+        modal.style.display = 'none';
+    }
+}
+
+// Check for active dictionary pulls on page load
+document.addEventListener('DOMContentLoaded', async function() {
+    if (!window.startDictPullMonitor) return;
+
+    // Check all instances for active dictionary pulls
+    const instanceIds = [{% for instance in instances %}{{ instance.id }}{% if not loop.last %}, {% endif %}{% endfor %}];
+    for (const instanceId of instanceIds) {
+        try {
+            const response = await fetch(`/api/instances/${instanceId}/dictionary-pull-status`);
+            const status = await response.json();
+
+            // If a pull is running, start monitoring it
+            if (status.status === 'running') {
+                window.startDictPullMonitor(instanceId);
+                break; // Only monitor one at a time
+            }
+        } catch (error) {
+            console.error(`Error checking dictionary pull status for instance ${instanceId}:`, error);
+        }
+    }
+});
+</script>
+{% endblock %}

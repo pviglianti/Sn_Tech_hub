@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+
+{% block title %}Instance Comparison - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Instance Comparison</h1>
+    <div class="button-group">
+        <button class="btn btn-secondary" id="refreshMetricsBtn">Refresh Selected</button>
+    </div>
+</div>
+
+<div class="card">
+    <div class="filter-bar analytics-filters">
+        <div class="filter-group">
+            <label for="instanceSelect">Instances</label>
+            <select id="instanceSelect" multiple>
+                {% for instance in instances %}
+                <option value="{{ instance.id }}">{{ instance.company or 'No Company' }} - {{ instance.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="filter-group">
+            <label for="taskRangeSelect">Task Range</label>
+            <select id="taskRangeSelect">
+                <option value="today">Today</option>
+                <option value="yesterday">Yesterday</option>
+                <option value="this_week">This Week</option>
+                <option value="last_week">Last Week</option>
+                <option value="this_month">This Month</option>
+                <option value="last_month">Last Month</option>
+                <option value="ytd">YTD</option>
+                <option value="this_year">This Year</option>
+                <option value="last_year">Last Year</option>
+                <option value="last_30_days">Last 30 Days</option>
+                <option value="last_60_days">Last 60 Days</option>
+                <option value="last_90_days">Last 90 Days</option>
+                <option value="last_180_days">Last 180 Days</option>
+                <option value="last_365_days">Last 365 Days</option>
+                <option value="last_3_months">Last 3 Months</option>
+                <option value="last_6_months">Last 6 Months</option>
+                <option value="last_2_years">Last 2 Years</option>
+                <option value="last_5_years">Last 5 Years</option>
+                <option value="all_time">All Time</option>
+                <option value="custom">Custom</option>
+            </select>
+        </div>
+        <div class="filter-group is-hidden" id="customRangeGroup">
+            <label for="customRangeValue">Custom Range</label>
+            <div class="custom-range-controls">
+                <input type="number" id="customRangeValue" min="1" value="30">
+                <select id="customRangeUnit">
+                    <option value="days">Days</option>
+                    <option value="weeks">Weeks</option>
+                    <option value="months">Months</option>
+                    <option value="years">Years</option>
+                </select>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="tab-nav analytics-tabs">
+        <button class="tab-btn active" data-tab="config">Config Chart</button>
+        <button class="tab-btn" data-tab="tasks">Task Chart</button>
+    </div>
+    <div class="tab-content active" id="configChartPanel">
+        <div class="config-series-panel">
+            <div class="config-series-header">
+                <h3>Config Series</h3>
+                <div class="button-group">
+                    <button class="btn btn-sm btn-secondary" id="configSelectAll">Select All</button>
+                    <button class="btn btn-sm btn-secondary" id="configSelectNone">Select None</button>
+                </div>
+            </div>
+            <div id="configSeriesList" class="config-series-list"></div>
+        </div>
+        <canvas id="configChart"></canvas>
+    </div>
+    <div class="tab-content" id="tasksChartPanel">
+        <div class="config-series-panel">
+            <div class="config-series-header">
+                <h3>Task Series</h3>
+                <div class="button-group">
+                    <button class="btn btn-sm btn-secondary" id="taskSelectAll">Select All</button>
+                    <button class="btn btn-sm btn-secondary" id="taskSelectNone">Select None</button>
+                </div>
+            </div>
+            <div id="taskSeriesList" class="config-series-list"></div>
+        </div>
+        <canvas id="tasksChart"></canvas>
+    </div>
+</div>
+
+<div class="split-grid">
+    <div class="card">
+        <h2>Config Counts</h2>
+        <div id="configTable"></div>
+    </div>
+    <div class="card">
+        <h2>Task Counts</h2>
+        <div id="taskTable"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+    window.ANALYTICS_INSTANCES = {{ instances_json | safe }};
+</script>
+<script src="/static/js/analytics.js?v={{ static_version }}"></script>
+{% endblock %}

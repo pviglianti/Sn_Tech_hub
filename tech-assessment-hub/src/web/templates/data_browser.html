@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% block title %}Pre Flight Data Browser - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Pre Flight Data Browser</h1>
+</div>
+
+{% if instances %}
+<div class="card">
+    <div class="data-browser-controls">
+        <div class="data-browser-instance">
+            <label for="instanceSelect">Instance</label>
+            <select id="instanceSelect" class="form-control">
+                <option value="">Select instance</option>
+                {% for inst in instances %}
+                <option value="{{ inst.id }}"
+                        data-url="{{ inst.url }}"
+                        data-company="{{ inst.company or '' }}"
+                        data-version="{{ inst.instance_version or '' }}"
+                        {% if selected_instance_id == inst.id %}selected{% endif %}>
+                    {{ inst.name }}{% if inst.company %} — {{ inst.company }}{% endif %}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="data-browser-meta" id="instanceMeta"></div>
+        <div class="data-browser-actions">
+            <button class="btn btn-secondary" id="pullAllFullBtn" title="Run a full pull for ALL data types for this instance.">Pull All (Full)</button>
+            <button class="btn btn-secondary" id="pullAllDeltaBtn" title="Run a delta pull for ALL data types for this instance (since last pull).">Pull All (Delta)</button>
+            <button class="btn btn-danger" id="clearAllInstanceBtn" title="Delete ALL cached data for this instance.">Clear All Data</button>
+            <button class="btn btn-danger" id="clearAllAndPullBtn" title="Delete ALL cached data for this instance, then run a full pull for the selected data type.">Clear All + Pull Selected</button>
+            <button class="btn btn-secondary" id="cancelAllPullsBtn" title="Request cancellation of all running or queued pulls for this instance.">Cancel All Pulls</button>
+            <a class="btn btn-secondary" id="preflightJobLogLink" href="/job-log?module=preflight" title="Open unified job log filtered to preflight pulls for the selected instance.">Pre Flight Job Log</a>
+        </div>
+    </div>
+</div>
+
+<div class="tab-container mt-1" id="dataTabs">
+    <div class="tab-nav">
+        {% for dt in data_types %}
+        <button class="tab-btn" data-data-type="{{ dt }}">
+            {{ data_type_labels.get(dt, dt) }}
+            <span class="badge" data-badge="{{ dt }}">0</span>
+        </button>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="card mt-1">
+    <div class="data-browser-toolbar">
+        <div class="data-browser-summary">
+            <strong id="currentDataTypeLabel">Select a data type</strong>
+            <span class="muted" id="currentDataTypeStatus">No instance selected.</span>
+        </div>
+        <div class="data-browser-actions">
+            <button class="btn btn-primary" id="pullFullBtn" title="Pull all records for the selected data type for the selected instance (full refresh).">Pull Full</button>
+            <button class="btn btn-secondary" id="pullDeltaBtn" title="Pull only records updated since the last successful pull for the selected data type (delta).">Pull Delta</button>
+            <button class="btn btn-secondary" id="cancelTypeBtn" title="Request cancellation of the running pull for the selected data type.">Cancel Selected Pull</button>
+            <button class="btn btn-secondary" id="clearTypeBtn" title="Delete cached records for the selected data type for this instance.">Clear Selected</button>
+        </div>
+    </div>
+
+    <div class="data-browser-progress is-hidden" id="dataProgress">
+        <div class="progress-bar"></div>
+    </div>
+
+    {# DataTable.js mounts here — includes ConditionBuilder, ColumnPicker, table, pagination #}
+    <div id="dataTableContainer"></div>
+</div>
+
+<div id="rawModal" class="modal is-hidden">
+    <div class="modal-content">
+        <span class="close" id="rawModalClose">&times;</span>
+        <h2>Raw Record</h2>
+        <pre id="rawModalContent" class="code-block"></pre>
+    </div>
+</div>
+
+{% set modal_id = 'recordPreviewModal' %}
+{% set close_button_id = 'recordPreviewClose' %}
+{% set open_tab_id = 'recordPreviewOpenTab' %}
+{% set frame_id = 'recordPreviewFrame' %}
+{% set frame_title = 'Pre Flight Data Browser Record Preview' %}
+{% include "components/record_preview_modal.html" %}
+{% else %}
+<div class="card empty-state">
+    <h2>No Instances Configured</h2>
+    <p>Add a ServiceNow instance to browse pre-flight reference data.</p>
+    <a href="/instances/add" class="btn btn-primary">+ Add Instance</a>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+window.DATA_BROWSER = {
+    instanceId: {{ selected_instance_id or 'null' }},
+    dataTypes: {{ data_types_json | safe }},
+    dataTypeLabels: {{ data_type_labels_json | safe }},
+    defaultDataType: {{ default_data_type_json | safe }}
+};
+</script>
+<script src="/static/js/ConditionBuilder.js?v={{ static_version }}"></script>
+<script src="/static/js/ColumnPicker.js?v={{ static_version }}"></script>
+<script src="/static/js/DataTable.js?v={{ static_version }}"></script>
+<script src="/static/js/data_browser.js?v={{ static_version }}"></script>
+{% endblock %}

@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}{{ data_type_label }} Record {{ record_id }} - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="assessment-header">
+        <div class="assessment-info">
+            <div class="assessment-number">Pre Flight Data Browser Record</div>
+            <h1 class="assessment-title">{{ data_type_label }} #{{ record_id }}</h1>
+            <div class="assessment-meta">
+                <span><strong>Instance:</strong> {{ instance.name }}</span>
+                <span><strong>Type:</strong> {{ data_type }}</span>
+            </div>
+        </div>
+        <div class="assessment-actions">
+            {% if instance_record_url %}
+            <a href="{{ instance_record_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">Open In ServiceNow</a>
+            {% endif %}
+            <a href="/data-browser?instance_id={{ instance.id }}" class="btn btn-secondary">Back To Pre Flight Data Browser</a>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-1">
+    <h2>Field Values</h2>
+    <div class="table-scroll">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Field</th>
+                    <th>Value</th>
+                    <th>Reference</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in field_rows %}
+                <tr>
+                    <td><code>{{ row.name }}</code></td>
+                    <td class="break-anywhere">{{ row.value if row.value not in [None, ''] else '-' }}</td>
+                    <td>
+                        {% if row.reference %}
+                        <a href="{{ row.reference.url }}">
+                            Open {{ row.reference.data_type }} #{{ row.reference.record_id }}
+                        </a>
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card mt-1">
+    <h2>Raw Payload</h2>
+    {% if raw_json %}
+    <pre class="code-block">{{ raw_json }}</pre>
+    {% else %}
+    <p class="muted">No raw payload available.</p>
+    {% endif %}
+</div>
+{% endblock %}

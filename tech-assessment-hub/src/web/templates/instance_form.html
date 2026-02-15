@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}{{ action }} Instance - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>{{ action }} ServiceNow Instance</h1>
+</div>
+
+<div class="card form-card">
+    <form action="{{ '/instances/' ~ instance.id if instance else '/instances/add' }}" method="post">
+        {% set field_id = 'name' %}
+        {% set field_label = 'Instance Name' %}
+        {% set field_required = true %}
+        {% set field_placeholder = 'e.g., DEV, PROD, Sandbox' %}
+        {% set field_value = instance.name if instance else '' %}
+        {% set field_help_text = 'A friendly name to identify this instance' %}
+        {% set field_extra_attrs = '' %}
+        {% include "components/form_group_input.html" %}
+
+        {% set field_id = 'company' %}
+        {% set field_label = 'Company' %}
+        {% set field_required = false %}
+        {% set field_placeholder = 'e.g., Acme Corp' %}
+        {% set field_value = instance.company if instance else '' %}
+        {% set field_help_text = 'Used for comparison and grouping' %}
+        {% set field_extra_attrs = '' %}
+        {% include "components/form_group_input.html" %}
+
+        {% set field_id = 'url' %}
+        {% set field_label = 'Instance URL' %}
+        {% set field_required = true %}
+        {% set field_placeholder = 'dev12345.service-now.com' %}
+        {% set field_value = instance.url if instance else '' %}
+        {% set field_help_text = 'Just the instance name (e.g., dev12345.service-now.com) - any extra path will be removed' %}
+        {% set field_extra_attrs = '' %}
+        {% include "components/form_group_input.html" %}
+
+        {% set field_id = 'username' %}
+        {% set field_label = 'Username' %}
+        {% set field_required = true %}
+        {% set field_placeholder = 'admin' %}
+        {% set field_value = instance.username if instance else '' %}
+        {% set field_help_text = 'ServiceNow user with admin or appropriate read access' %}
+        {% set field_extra_attrs = '' %}
+        {% include "components/form_group_input.html" %}
+
+        {% set field_id = 'password' %}
+        {% set field_label = 'Password' %}
+        {% set field_type = 'password' %}
+        {% set field_required = (not instance) %}
+        {% set field_placeholder = 'Enter new password' if instance else 'Enter password' %}
+        {% set field_value = none %}
+        {% set field_help_text = 'Leave blank to keep current password' if instance else 'Password will be encrypted and stored securely' %}
+        {% set field_extra_attrs = '' %}
+        {% include "components/form_group_input.html" %}
+        {% set field_type = 'text' %}
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save Instance</button>
+            <a href="/instances" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

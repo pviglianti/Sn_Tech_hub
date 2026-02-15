@@ -1,0 +1,127 @@
+TECH ASSESSMENT HUB - DATA PIPELINE (CURRENT + PLANNED)
+Date: 2026-02-08
+
+======================================================================
+CURRENT PIPELINE (IMPLEMENTED)
+======================================================================
+
+              +-----------------------+
+              |   Browser / Web UI    |
+              +-----------------------+
+                    | HTTP routes
+                    | (/instances, /analytics, /assessments, /results, /data-browser)
+                    v
++--------------------------------------------------------------------------+
+|                 FastAPI App (tech-assessment-hub/src/server.py)         |
++--------------------------------------------------------------------------+
+   |                         |                              |
+   |                         |                              |
+   |                         |                              |
+   v                         v                              v
+[Instance add/test]    [Data pull APIs/UI]           [Assessment run-scans]
+   |                         |                              |
+   |                         |                              |
+   |                         v                              v
+   |                 _start_data_pull_job()         _start_assessment_scan_job()
+   |                         |                              |
+   |                         v                              v
+   |                _run_data_pulls_background()    _run_scans_background()
+   |                         |                              |
+   |                         v                              +--> preflight data sync
+   |               run_data_pulls_for_instance()                 (update_sets,
+   |                         |                                    customer_update_xml,
+   |                         v                                    metadata_customization,
+   |                   execute_data_pull()                        version_history current)
+   |                         |
+   |                         +--> ServiceNow REST (batched pulls):
+   |                              - sys_update_set
+   |                              - sys_update_xml
+   |                              - sys_update_version
+   |                              - sys_metadata_customization
+   |                              - sys_app_file_type
+   |                              - sys_plugins / v_plugin
+   |                              - sys_scope / sys_package / sys_app
+   |                              - sys_db_object
+   |                         |
+   |                         v
+   |                    SQLite cache tables:
+   |                    UpdateSet
+   |                    CustomerUpdateXML
+   |                    VersionHistory
+   |                    MetadataCustomization
+   |                    InstanceAppFileType
+   |                    InstancePlugin / PluginView
+   |                    Scope / Package / Application / TableDefinition
+   |                    InstanceDataPull
+   |
+   +--> ServiceNowClient.test_connection()
+   +--> ServiceNowClient.get_instance_metrics()
+         |
+         +--> live counts + inventory from ServiceNow tables
+         |    (config, tasks, update sets, update xml, custom scopes/tables/fields, DOB/age)
+         |
+         v
+      SQLite Instance analytics fields:
+      inventory_json
+      task_counts_json
+      update_set_counts_json
+      sys_update_xml_counts_json
+      sys_metadata_customization_count
+      instance_dob / instance_age_years
+      custom_scoped_app_count_x/u
+      custom_table_count_x/u
+      custom_field_count_x/u
+
+Assessment classification data path:
+ServiceNow sys_metadata + sys_update_xml
+    --> execute_scan()
+    --> enrich/classify using local cache (VersionHistory + MetadataCustomization + CustomerUpdateXML + UpdateSet)
+    --> ScanResult rows
+    --> Results UI/API
+
+Analytics data path:
+SQLite cached metrics --> /api/analytics/summary + /api/analytics/config-summary
+Live ServiceNow task counts/monthly series --> /api/analytics/tasks-summary + /api/analytics/tasks-series
+
+MCP entry point (already live):
+AI client --> POST /mcp --> MCP protocol handler --> tool registry --> tool handlers --> SQLite and/or ServiceNow
+
+
+======================================================================
+PLANNED PIPELINE (ROADMAP)
+======================================================================
+
+AI-first control path (primary direction):
+
+AI Client (Claude Desktop / IDE / other MCP client)
+    --> MCP bridge (optional sidecar)
+    --> POST /mcp
+    --> tools/list + tools/call
+    --> tool execution in app
+    --> SQLite state + ServiceNow evidence
+
+Next planned MCP workflow tools:
+- create_assessment
+- run_scan
+- get_scan_results
+
+Planned analysis pipeline (after scan flow is stabilized):
+
+ScanResult + UpdateSet + VersionHistory + CustomerUpdateXML + MetadataCustomization
+    --> update set cohorts
+    --> code reference analysis
+    --> naming-pattern analysis
+    --> feature clustering suggestions
+    --> feature CRUD + summaries
+    --> assessment recommendations
+
+Deferred planned customization tools:
+- sn_customization_counts
+- sn_list_customizations
+- sn_get_artifact
+
+Longer-term planned flow:
+ServiceNow evidence + grouped features + rubric scoring
+    --> OOTB gap analysis
+    --> recommendation output
+    --> (later) guarded deactivate/revert operations with confirmation gates

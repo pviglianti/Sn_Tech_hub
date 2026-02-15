@@ -1,0 +1,10 @@
+<div id="{{ modal_id }}" class="modal is-hidden">
+    <div class="modal-content record-preview-modal-content">
+        <span class="close" id="{{ close_button_id }}">&times;</span>
+        <div class="record-preview-header">
+            <h2>{{ modal_title|default('Record Preview') }}</h2>
+            <a id="{{ open_tab_id }}" class="btn btn-sm btn-secondary" href="#" target="_blank" rel="noopener noreferrer">Open In New Tab</a>
+        </div>
+        <iframe id="{{ frame_id }}" class="record-preview-frame" title="{{ frame_title|default('Record Preview') }}" loading="lazy"></iframe>
+    </div>
+</div>

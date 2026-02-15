@@ -1,0 +1,1394 @@
+{% extends "base.html" %}
+
+{% block title %}{{ assessment.number }} - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<!-- Assessment Header -->
+<div class="card">
+    <div class="assessment-header">
+        <div class="assessment-info">
+            <div class="assessment-number">{{ assessment.number }}</div>
+            <h1 class="assessment-title">{{ assessment.name }}</h1>
+            <div class="assessment-meta">
+                <span>
+                    <strong>Instance:</strong>
+                    {{ assessment.instance.name if assessment.instance else 'N/A' }}
+                </span>
+                <span>
+                    <strong>Type:</strong>
+                    {{ assessment.assessment_type.value | replace('_', ' ') | title }}
+                </span>
+                <span>
+                    <strong>Created:</strong>
+                    {{ assessment.created_at.strftime('%Y-%m-%d %H:%M') }}
+                </span>
+            </div>
+        </div>
+        <div class="assessment-actions">
+            {% if assessment.state.value == 'pending' %}
+            <form method="post" action="/assessments/{{ assessment.id }}/start" class="inline-form">
+                <button type="submit" class="btn btn-success">Start Assessment</button>
+            </form>
+            {% elif assessment.state.value == 'in_progress' %}
+            <form method="post" action="/assessments/{{ assessment.id }}/refresh-scans" class="assessment-scan-job-form inline-form" data-job-action="refresh">
+                <button type="submit" class="btn btn-secondary" title="Clears all scan results and reruns every scan for this assessment.">Refresh Scans</button>
+            </form>
+            <form method="post" action="/assessments/{{ assessment.id }}/refresh-scans-delta" class="assessment-scan-job-form inline-form" data-job-action="delta">
+                <button type="submit" class="btn btn-secondary" title="Appends only records updated since the last completion for each scan.">Refresh Delta</button>
+            </form>
+            <form method="post" action="/assessments/{{ assessment.id }}/rebuild-scans" class="assessment-scan-job-form inline-form" data-job-action="rebuild">
+                <button type="submit" class="btn btn-secondary" title="Deletes all scans and results, regenerates encoded queries from current rules, then runs.">Rebuild Scans</button>
+            </form>
+            <form method="post" action="/assessments/{{ assessment.id }}/complete" class="inline-form">
+                <button type="submit" class="btn btn-primary">Mark Complete</button>
+            </form>
+            <form method="post" action="/assessments/{{ assessment.id }}/stop-scans" class="inline-form">
+                <button type="submit" class="btn btn-secondary" title="Requests cancellation of running scans and cancels pending scans. Does NOT cancel the assessment.">Stop Active Scans</button>
+            </form>
+            <form method="post" action="/assessments/{{ assessment.id }}/cancel" class="inline-form">
+                <button type="submit" class="btn btn-secondary" title="Marks the assessment cancelled (does not delete data). Use Stop Active Scans if you only want to stop execution." onclick="return confirm('Cancel this assessment? This will mark it as cancelled (it does not delete data).');">Cancel Assessment</button>
+            </form>
+            {% elif assessment.state.value == 'completed' %}
+            <span class="status-badge status-completed status-badge-lg">
+                Completed
+            </span>
+            {% elif assessment.state.value == 'cancelled' %}
+            <span class="status-badge status-failed status-badge-lg">
+                Cancelled
+            </span>
+            <form method="post" action="/assessments/{{ assessment.id }}/reopen" class="inline-form">
+                <button type="submit" class="btn btn-secondary" title="Reopens this assessment so you can continue work (does not rerun scans automatically).">Reopen</button>
+            </form>
+            {% endif %}
+            <a href="/assessments/{{ assessment.id }}/edit" class="btn btn-secondary">Edit</a>
+        </div>
+    </div>
+
+    <!-- Status Badge -->
+    <div class="mb-1">
+        <span class="status-badge state-{{ assessment.state.value }}">
+            {{ assessment.state.value | replace('_', ' ') | title }}
+        </span>
+    </div>
+
+    {% if assessment.description %}
+    <p class="text-muted-plain mb-1">{{ assessment.description }}</p>
+    {% endif %}
+
+    <!-- Info Grid -->
+    <div class="info-grid">
+        <div class="info-item">
+            <div class="info-label">Target</div>
+            <div class="info-value">
+                {% if assessment.assessment_type.value == 'global_app' and assessment.target_app %}
+                    {{ assessment.target_app.label }}
+                {% elif assessment.assessment_type.value == 'table' and assessment.target_tables_json %}
+                    {{ assessment.target_tables_json }}
+                {% elif assessment.assessment_type.value == 'plugin' and assessment.target_plugins_json %}
+                    {{ assessment.target_plugins_json }}
+                {% elif assessment.assessment_type.value == 'platform_global' %}
+                    Platform Global
+                {% else %}
+                    Not specified
+                {% endif %}
+            </div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Scope Filter</div>
+            <div class="info-value">{{ assessment.scope_filter | title }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Total Scans</div>
+            <div class="info-value" id="header-total-scans">{{ assessment.scans | length }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Total Results</div>
+            <div class="info-value" id="header-total-results">{{ assessment.total_findings }}</div>
+        </div>
+        {% if assessment.started_at %}
+        <div class="info-item">
+            <div class="info-label">Started</div>
+            <div class="info-value">{{ assessment.started_at.strftime('%Y-%m-%d %H:%M') }}</div>
+        </div>
+        {% endif %}
+        {% if assessment.completed_at %}
+        <div class="info-item">
+            <div class="info-label">Completed</div>
+            <div class="info-value">{{ assessment.completed_at.strftime('%Y-%m-%d %H:%M') }}</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <h2>Preflight Sync Plan</h2>
+    <p class="preflight-subtitle">
+        Before scans run, cached Pre Flight Data Browser datasets are synced for this instance.
+        Required gating set: Metadata Customization, Version History (current), Update XML, and Update Sets.
+        Freshness window: {{ preflight_summary.stale_minutes }} minutes.
+    </p>
+    {% set status_labels = {'completed': 'Complete', 'pending': 'Pending', 'failed': 'Failed', 'cancelled': 'Cancelled'} %}
+    {% set full_group_status = preflight_summary.full_status or ('pending' if (preflight_summary.full | length) else 'completed') %}
+    {% set delta_group_status = preflight_summary.delta_status or ('pending' if (preflight_summary.delta | length) else 'completed') %}
+    {% set fresh_group_status = preflight_summary.fresh_status or 'completed' %}
+    {% set skip_group_status = preflight_summary.skip_status or ('pending' if (preflight_summary.skip | length) else 'completed') %}
+    <div id="assessmentRunStatus" class="preflight-runtime-status is-hidden">
+        <div class="table-loading-pill">
+            <span id="assessmentRunSpinner" class="table-spinner"></span>
+            <span id="assessmentRunText">Waiting for scan workflow status...</span>
+        </div>
+        <div class="preflight-runtime-progress">
+            <div id="assessmentRunProgressBar" class="preflight-runtime-progress-bar"></div>
+        </div>
+    </div>
+    <div class="preflight-grid">
+        <div class="preflight-group" data-preflight-group="full">
+            <h3 class="preflight-group-title">
+                <span class="preflight-status-icon status-{{ full_group_status }}" data-preflight-group-icon aria-hidden="true"></span>
+                Full Pull ({{ preflight_summary.full | length }})
+                <span class="preflight-status-text status-{{ full_group_status }}" data-preflight-group-text>- {{ status_labels.get(full_group_status, full_group_status) }}</span>
+            </h3>
+            {% if preflight_summary.full %}
+            <ul class="preflight-list">
+                {% for item in preflight_summary.full %}
+                {% if item is mapping %}
+                    {% set item_label = item.label %}
+                    {% set item_status = item.status or full_group_status %}
+                    {% set item_data_type = item.data_type %}
+                    {% set item_local = item.local_count or 0 %}
+                    {% set item_expected = item.expected_total %}
+                {% else %}
+                    {% set item_label = item %}
+                    {% set item_status = full_group_status %}
+                    {% set item_data_type = '' %}
+                    {% set item_local = 0 %}
+                    {% set item_expected = None %}
+                {% endif %}
+                <li class="preflight-item status-{{ item_status }}" {% if item_data_type %}data-preflight-type="{{ item_data_type }}"{% endif %}>
+                    <span class="preflight-status-icon status-{{ item_status }}" data-preflight-item-icon aria-hidden="true"></span>
+                    <span class="preflight-item-label">{{ item_label }}</span>
+                    <span class="preflight-item-count" data-preflight-item-count data-local="{{ item_local }}" data-expected="{{ item_expected or '' }}"></span>
+                    <span class="preflight-status-text status-{{ item_status }}" data-preflight-item-text>- {{ status_labels.get(item_status, item_status) }}</span>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <div class="preflight-empty">None</div>
+            {% endif %}
+        </div>
+        <div class="preflight-group" data-preflight-group="delta">
+            <h3 class="preflight-group-title">
+                <span class="preflight-status-icon status-{{ delta_group_status }}" data-preflight-group-icon aria-hidden="true"></span>
+                Delta Pull ({{ preflight_summary.delta | length }})
+                <span class="preflight-status-text status-{{ delta_group_status }}" data-preflight-group-text>- {{ status_labels.get(delta_group_status, delta_group_status) }}</span>
+            </h3>
+            {% if preflight_summary.delta %}
+            <ul class="preflight-list">
+                {% for item in preflight_summary.delta %}
+                {% if item is mapping %}
+                    {% set item_label = item.label %}
+                    {% set item_status = item.status or delta_group_status %}
+                    {% set item_data_type = item.data_type %}
+                    {% set item_local = item.local_count or 0 %}
+                    {% set item_expected = item.expected_total %}
+                {% else %}
+                    {% set item_label = item %}
+                    {% set item_status = delta_group_status %}
+                    {% set item_data_type = '' %}
+                    {% set item_local = 0 %}
+                    {% set item_expected = None %}
+                {% endif %}
+                <li class="preflight-item status-{{ item_status }}" {% if item_data_type %}data-preflight-type="{{ item_data_type }}"{% endif %}>
+                    <span class="preflight-status-icon status-{{ item_status }}" data-preflight-item-icon aria-hidden="true"></span>
+                    <span class="preflight-item-label">{{ item_label }}</span>
+                    <span class="preflight-item-count" data-preflight-item-count data-local="{{ item_local }}" data-expected="{{ item_expected or '' }}"></span>
+                    <span class="preflight-status-text status-{{ item_status }}" data-preflight-item-text>- {{ status_labels.get(item_status, item_status) }}</span>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <div class="preflight-empty">None</div>
+            {% endif %}
+        </div>
+        <div class="preflight-group" data-preflight-group="fresh">
+            <h3 class="preflight-group-title">
+                <span class="preflight-status-icon status-{{ fresh_group_status }}" data-preflight-group-icon aria-hidden="true"></span>
+                Fresh / Skip ({{ preflight_summary.fresh | length }})
+                <span class="preflight-status-text status-{{ fresh_group_status }}" data-preflight-group-text>- {{ status_labels.get(fresh_group_status, fresh_group_status) }}</span>
+            </h3>
+            {% if preflight_summary.fresh %}
+            <ul class="preflight-list">
+                {% for item in preflight_summary.fresh %}
+                {% if item is mapping %}
+                    {% set item_label = item.label %}
+                    {% set item_status = item.status or 'completed' %}
+                    {% set item_data_type = item.data_type %}
+                    {% set item_local = item.local_count or 0 %}
+                    {% set item_expected = item.expected_total %}
+                {% else %}
+                    {% set item_label = item %}
+                    {% set item_status = 'completed' %}
+                    {% set item_data_type = '' %}
+                    {% set item_local = 0 %}
+                    {% set item_expected = None %}
+                {% endif %}
+                <li class="preflight-item status-{{ item_status }}" {% if item_data_type %}data-preflight-type="{{ item_data_type }}"{% endif %}>
+                    <span class="preflight-status-icon status-{{ item_status }}" data-preflight-item-icon aria-hidden="true"></span>
+                    <span class="preflight-item-label">{{ item_label }}</span>
+                    <span class="preflight-item-count" data-preflight-item-count data-local="{{ item_local }}" data-expected="{{ item_expected or '' }}"></span>
+                    <span class="preflight-status-text status-{{ item_status }}" data-preflight-item-text>- {{ status_labels.get(item_status, item_status) }}</span>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <div class="preflight-empty">None</div>
+            {% endif %}
+        </div>
+        <div class="preflight-group" data-preflight-group="skip">
+            <h3 class="preflight-group-title">
+                <span class="preflight-status-icon status-{{ skip_group_status }}" data-preflight-group-icon aria-hidden="true"></span>
+                Already Running ({{ preflight_summary.skip | length }})
+                <span class="preflight-status-text status-{{ skip_group_status }}" data-preflight-group-text>- {{ status_labels.get(skip_group_status, skip_group_status) }}</span>
+            </h3>
+            {% if preflight_summary.skip %}
+            <ul class="preflight-list">
+                {% for item in preflight_summary.skip %}
+                {% if item is mapping %}
+                    {% set item_label = item.label %}
+                    {% set item_status = item.status or skip_group_status %}
+                    {% set item_data_type = item.data_type %}
+                    {% set item_local = item.local_count or 0 %}
+                    {% set item_expected = item.expected_total %}
+                {% else %}
+                    {% set item_label = item %}
+                    {% set item_status = skip_group_status %}
+                    {% set item_data_type = '' %}
+                    {% set item_local = 0 %}
+                    {% set item_expected = None %}
+                {% endif %}
+                <li class="preflight-item status-{{ item_status }}" {% if item_data_type %}data-preflight-type="{{ item_data_type }}"{% endif %}>
+                    <span class="preflight-status-icon status-{{ item_status }}" data-preflight-item-icon aria-hidden="true"></span>
+                    <span class="preflight-item-label">{{ item_label }}</span>
+                    <span class="preflight-item-count" data-preflight-item-count data-local="{{ item_local }}" data-expected="{{ item_expected or '' }}"></span>
+                    <span class="preflight-status-text status-{{ item_status }}" data-preflight-item-text>- {{ status_labels.get(item_status, item_status) }}</span>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <div class="preflight-empty">None</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Post Flight Sync -->
+<div class="card is-hidden" id="postflightCard">
+    <h2>Post Flight Sync</h2>
+    <p class="preflight-subtitle">
+        After scans complete, full artifact details are pulled for each file type found in results.
+    </p>
+    <div class="preflight-grid">
+        <div class="preflight-group" data-postflight-group="artifacts">
+            <h3 class="preflight-group-title">
+                <span class="preflight-status-icon status-pending" data-postflight-group-icon aria-hidden="true"></span>
+                Artifact Details (<span id="postflightCount">0</span>)
+                <span class="preflight-status-text status-pending" data-postflight-group-text>- Pending</span>
+            </h3>
+            <ul class="preflight-list" id="postflightList">
+            </ul>
+        </div>
+    </div>
+</div>
+
+<!-- Tabbed Related Lists -->
+<div class="related-lists">
+    <div class="tab-container">
+        <div class="tab-nav">
+            <button class="tab-btn active" onclick="openTab(event, 'scans')">
+                Scans <span class="badge">{{ assessment.scans | length }}</span>
+            </button>
+            <button class="tab-btn" onclick="openTab(event, 'customizations')" id="customizationsTabBtn">
+                Customizations <span class="badge" id="customizationsTabBadge">{{ assessment.records_customized }}</span>
+            </button>
+            <button class="tab-btn" onclick="openTab(event, 'features')">
+                Features <span class="badge">{{ assessment.features | length }}</span>
+            </button>
+            <button class="tab-btn" onclick="openTab(event, 'artifacts')" id="artifactsTabBtn">
+                Artifacts <span class="badge" id="artifactsTabBadge">0</span>
+            </button>
+            <button class="tab-btn" onclick="openTab(event, 'results')">
+                Results <span class="badge" id="assessmentResultsTabBadge">{{ assessment.total_findings }}</span>
+            </button>
+        </div>
+
+        <!-- Scans Tab -->
+        <div id="scans" class="tab-content active">
+            <div class="card summary-inline-card">
+                <strong>Scan Progress:</strong>
+                <span class="ml-1">Pending: <span id="scan-count-pending">0</span></span>
+                <span class="ml-1">Running: <span id="scan-count-running">0</span></span>
+                <span class="ml-1">Completed: <span id="scan-count-completed">0</span></span>
+                <span class="ml-1">Failed: <span id="scan-count-failed">0</span></span>
+                <span class="ml-1">Cancelled: <span id="scan-count-cancelled">0</span></span>
+                <span class="ml-1">Total: <span id="scan-count-total">0</span></span>
+            </div>
+            <div id="scan-table-container">
+            {% if assessment.scans %}
+            <table class="related-table" id="scan-table">
+                <thead>
+                    <tr>
+                        <th>Scan Type</th>
+                        <th>Name</th>
+                        <th>Status</th>
+                        <th>Total Metadata</th>
+                        <th>Total Customized</th>
+                        <th>Customer Customized</th>
+                        <th>OOTB Modified</th>
+                        <th>Started</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="scan-table-body">
+                    {% for scan in assessment.scans %}
+                    <tr data-scan-id="{{ scan.id }}">
+                        <td>{{ scan.scan_type.value | replace('_', ' ') | title }}</td>
+                        <td>{{ scan.name }}</td>
+                        <td>
+                            <span class="status-badge status-{{ scan.status.value }}" data-scan-field="status" title="{{ scan.error_message or '' }}">
+                                {{ scan.status.value }}
+                            </span>
+                        </td>
+                        <td data-scan-field="records_found">{{ scan.records_found }}</td>
+                        <td data-scan-field="records_customized">{{ scan.records_customized }}</td>
+                        <td data-scan-field="records_customer_customized">{{ scan.records_customer_customized }}</td>
+                        <td data-scan-field="records_ootb_modified">{{ scan.records_ootb_modified }}</td>
+                        <td data-scan-field="started_at">{{ scan.started_at.strftime('%Y-%m-%d %H:%M') if scan.started_at else '-' }}</td>
+                        <td>
+                            <a href="/scans/{{ scan.id }}" class="btn btn-sm">View</a>
+                            <form method="post" action="/scans/{{ scan.id }}/retry" class="inline-form">
+                                <button type="submit" class="btn btn-sm btn-secondary" title="Clears this scan's results and reruns it from scratch.">Retry</button>
+                            </form>
+                            <form method="post" action="/scans/{{ scan.id }}/cancel" class="inline-form">
+                                <button type="submit" class="btn btn-sm btn-secondary" title="Request cancellation of this scan if it is running.">Cancel</button>
+                            </form>
+                            <form method="post" action="/scans/{{ scan.id }}/refresh-delta" class="inline-form">
+                                <button type="submit" class="btn btn-sm btn-secondary" title="Fetches only records updated since the last completion and appends them.">Delta</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state p-2" id="scan-empty-state">
+                <p class="text-muted-plain">No scans have been run yet.</p>
+                {% if assessment.state.value == 'in_progress' %}
+                <form method="post" action="/assessments/{{ assessment.id }}/run-scans" class="assessment-scan-job-form mt-1" data-job-action="run">
+                    <button type="submit" class="btn btn-primary" title="Creates scans if missing and runs them.">Run Scans</button>
+                </form>
+                {% elif assessment.state.value == 'pending' %}
+                <p class="text-muted-sm mt-05">
+                    Start the assessment to run scans.
+                </p>
+                {% endif %}
+            </div>
+            {% endif %}
+            </div>
+        </div>
+
+        <!-- Customizations Tab -->
+        <div id="customizations" class="tab-content">
+            <div class="card result-filter-card">
+                <div class="result-filter-grid">
+                    <div class="filter-group">
+                        <label for="customizationsTypeFilter">Customization Type</label>
+                        <select id="customizationsTypeFilter" class="form-control">
+                            <option value="" selected>All Customized</option>
+                            <option value="modified_ootb">Modified OOTB</option>
+                            <option value="net_new_customer">Net New Customer</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="customizationsClassFilter">App File Class</label>
+                        <select id="customizationsClassFilter" class="form-control">
+                            <option value="">All Classes</option>
+                        </select>
+                    </div>
+                    <div class="filter-group filter-actions-inline">
+                        <label>Actions</label>
+                        <div class="inline-actions">
+                            <button id="customizationsApply" class="btn btn-sm btn-primary" type="button">Apply</button>
+                            <button id="customizationsReset" class="btn btn-sm btn-secondary" type="button">Reset</button>
+                        </div>
+                        <div id="customizationsMeta" class="filter-meta muted">Loading customizations...</div>
+                    </div>
+                </div>
+            </div>
+            <div class="table-scroll" style="position: relative;">
+                <div class="table-loading-overlay is-hidden" id="customizationsLoading">
+                    <span class="table-spinner"></span>
+                </div>
+                <table class="related-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Class</th>
+                            <th>Origin</th>
+                            <th>Scope</th>
+                            <th>Review</th>
+                            <th>Disposition</th>
+                            <th>Updated</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="customizationsBody"></tbody>
+                </table>
+                <div class="is-hidden" id="customizationsEmpty">
+                    <p class="text-muted-plain">No customizations found.</p>
+                </div>
+            </div>
+        </div>
+
+	        <!-- Results Tab -->
+	        <div id="results" class="tab-content">
+	            <div class="card result-filter-card">
+	                <div class="filter-meta muted result-filter-totals" id="assessmentResultsTotals">
+	                    Total results: <span id="assessmentResultsTotalAll">{{ assessment.total_findings }}</span>
+	                    • <span id="assessmentResultsScopeLabel">Customizations</span>: <span id="assessmentResultsScopeTotal">-</span>
+	                    • Active: <span id="assessmentResultsActiveTotal">-</span>
+	                </div>
+	                <div class="result-filter-grid">
+                    <div class="filter-group">
+                        <label for="assessmentResultsClassification">Classification</label>
+                        <select id="assessmentResultsClassification" class="form-control">
+                            <option value="all" selected>All Results</option>
+                            <option value="customized">Customized</option>
+                            <option value="uncustomized">Uncustomized</option>
+                            <option value="modified_ootb">Modified OOTB</option>
+                            <option value="net_new_customer">Net New Customer</option>
+                            <option value="ootb_untouched">OOTB Untouched</option>
+                            <option value="unknown">Unknown</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="assessmentResultsClassFilter">App File Class</label>
+                        <select id="assessmentResultsClassFilter" class="form-control">
+                            <option value="">All Classes</option>
+                        </select>
+                    </div>
+	                    <div class="filter-group filter-actions-inline">
+	                        <label>Actions</label>
+	                        <div class="inline-actions">
+	                            <button id="assessmentResultsApply" class="btn btn-sm btn-primary" type="button" title="Apply the current filters to refresh the results table.">Apply</button>
+	                            <button id="assessmentResultsReset" class="btn btn-sm btn-secondary" type="button" title="Reset filters to the default (All Results).">Reset</button>
+	                        </div>
+	                        <div id="assessmentResultsMeta" class="filter-meta muted">Loading results...</div>
+	                    </div>
+	                </div>
+	            </div>
+
+            <div class="table-scroll">
+                <div id="assessmentResultsLoading" class="table-loading-overlay is-hidden">
+                    <div class="table-loading-pill">
+                        <span class="table-spinner"></span>
+                        Loading assessment results...
+                    </div>
+                </div>
+                <table class="related-table" id="assessmentResultsTable">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>App File Class</th>
+                            <th>Scan</th>
+                            <th>Customized</th>
+                            <th>Classification</th>
+                            <th>Review</th>
+                            <th>Disposition</th>
+                            <th>Updated</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="assessmentResultsBody"></tbody>
+                </table>
+            </div>
+            <div id="assessmentResultsEmpty" class="empty-state is-hidden p-2">
+                <p class="text-muted-plain">No results match the current filters.</p>
+            </div>
+        </div>
+
+        <!-- Features Tab -->
+        <div id="features" class="tab-content">
+            {% if assessment.features %}
+            <table class="related-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Description</th>
+                        <th>Items</th>
+                        <th>Disposition</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for feature in assessment.features %}
+                    <tr>
+                        <td>
+                            <a href="/features/{{ feature.id }}">{{ feature.name }}</a>
+                        </td>
+                        <td>{{ feature.description or '-' }}</td>
+                        <td>{{ feature.scan_result_links | length }}</td>
+                        <td>
+                            {% if feature.disposition %}
+                            {{ feature.disposition.value | replace('_', ' ') | title }}
+                            {% else %}
+                            -
+                            {% endif %}
+                        </td>
+                        <td>
+                            <a href="/features/{{ feature.id }}" class="btn btn-sm">View</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state p-2">
+                <p class="text-muted-plain">No features defined yet.</p>
+                {% if assessment.total_findings > 0 %}
+                <p class="text-muted-sm mt-05">
+                    Group related results into features for better organization.
+                </p>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Artifacts Tab -->
+        <div id="artifacts" class="tab-content">
+            <div class="card result-filter-card">
+                <div class="result-filter-grid">
+                    <div class="filter-group">
+                        <label for="artifactClassFilter">Artifact Class</label>
+                        <select id="artifactClassFilter" class="form-control">
+                            <option value="">All Classes</option>
+                        </select>
+                    </div>
+                    <div class="filter-group filter-actions-inline">
+                        <label>Actions</label>
+                        <div class="inline-actions">
+                            <button id="artifactApply" class="btn btn-sm btn-primary" type="button">Apply</button>
+                            <button id="artifactReset" class="btn btn-sm btn-secondary" type="button">Reset</button>
+                        </div>
+                        <div id="artifactMeta" class="filter-meta muted">Loading artifacts...</div>
+                    </div>
+                </div>
+            </div>
+            <div class="table-scroll">
+                <div id="artifactLoading" class="table-loading-overlay is-hidden">
+                    <div class="table-loading-pill">
+                        <span class="table-spinner"></span>
+                        Loading artifacts...
+                    </div>
+                </div>
+                <table class="related-table" id="artifactTable">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Class</th>
+                            <th>Active</th>
+                            <th>Scope</th>
+                            <th>Updated</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="artifactBody"></tbody>
+                </table>
+            </div>
+            <div id="artifactEmpty" class="empty-state is-hidden p-2">
+                <p class="text-muted-plain">No artifacts found. Artifacts are pulled after scans complete.</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+function openTab(evt, tabName) {
+    // Hide all tab contents
+    document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.remove('active');
+    });
+
+    // Remove active class from all tab buttons
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+
+    // Show the selected tab content
+    document.getElementById(tabName).classList.add('active');
+
+    // Add active class to the clicked button
+    evt.currentTarget.classList.add('active');
+}
+</script>
+<script>
+const assessmentId = {{ assessment.id }};
+const assessmentInstanceId = {{ assessment.instance_id }};
+
+function formatAssessmentDate(value) {
+    if (!value) return '-';
+    return value.replace('T', ' ').slice(0, 16);
+}
+
+	function setAssessmentResultsLoading(isLoading) {
+	    const overlay = document.getElementById('assessmentResultsLoading');
+	    if (!overlay) return;
+	    overlay.style.display = isLoading ? 'flex' : 'none';
+	}
+
+	function setAssessmentResultsCounts({ scopeLabel, scopeTotal, activeTotal }) {
+	    const labelEl = document.getElementById('assessmentResultsScopeLabel');
+	    const scopeEl = document.getElementById('assessmentResultsScopeTotal');
+	    const activeEl = document.getElementById('assessmentResultsActiveTotal');
+	    const tabBadge = document.getElementById('assessmentResultsTabBadge');
+
+	    if (labelEl) labelEl.textContent = scopeLabel || 'Customizations';
+	    if (scopeEl) scopeEl.textContent = typeof scopeTotal === 'number' ? String(scopeTotal) : '-';
+	    if (activeEl) activeEl.textContent = typeof activeTotal === 'number' ? String(activeTotal) : '-';
+	    if (tabBadge) tabBadge.textContent = typeof activeTotal === 'number' ? String(activeTotal) : (tabBadge.textContent || '0');
+	}
+
+	function renderAssessmentResultsRows(rows) {
+	    const tbody = document.getElementById('assessmentResultsBody');
+	    const empty = document.getElementById('assessmentResultsEmpty');
+	    if (!tbody || !empty) return;
+
+    if (!rows.length) {
+        tbody.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+    }
+
+    empty.style.display = 'none';
+    tbody.innerHTML = rows.map((row) => {
+        const classification = row.customization_classification ? row.customization_classification.replaceAll('_', ' ') : '-';
+        const originClass = row.origin_type ? `origin-${row.origin_type}` : '';
+        return `
+            <tr>
+                <td><a href="/results/${row.id}">${row.name || row.sys_id}</a></td>
+                <td><code>${row.table_name || '-'}</code></td>
+                <td>${row.scan?.name || '-'}</td>
+                <td>${row.is_customized ? 'Yes' : 'No'}</td>
+                <td>${row.origin_type ? `<span class="origin-badge ${originClass}">${classification}</span>` : '-'}</td>
+                <td>${row.review_status ? row.review_status.replaceAll('_', ' ') : '-'}</td>
+                <td>${row.disposition ? row.disposition.replaceAll('_', ' ') : '-'}</td>
+                <td>${formatAssessmentDate(row.sys_updated_on)}</td>
+                <td><a class="btn btn-sm" href="/results/${row.id}">View</a></td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function showAssessmentRunStatusPending(actionLabel) {
+    const container = document.getElementById('assessmentRunStatus');
+    const spinner = document.getElementById('assessmentRunSpinner');
+    const text = document.getElementById('assessmentRunText');
+    const bar = document.getElementById('assessmentRunProgressBar');
+    if (!container || !spinner || !text || !bar) return;
+    container.style.display = 'block';
+    container.dataset.status = 'running';
+    spinner.style.display = '';
+    text.textContent = `${actionLabel}: submitting request...`;
+    bar.style.width = '6%';
+}
+
+function updateAssessmentRunStatus(runStatus) {
+    const container = document.getElementById('assessmentRunStatus');
+    const spinner = document.getElementById('assessmentRunSpinner');
+    const text = document.getElementById('assessmentRunText');
+    const bar = document.getElementById('assessmentRunProgressBar');
+    if (!container || !spinner || !text || !bar) return;
+
+    if (!runStatus) {
+        container.style.display = 'none';
+        return;
+    }
+
+    const status = runStatus.status || 'running';
+    const modeLabel = runStatus.mode_label || 'Scan workflow';
+    const stageLabel = runStatus.stage_label || 'Running';
+    const message = runStatus.message || '';
+    const progressPercent = Number(runStatus.progress_percent || 0);
+
+    container.style.display = 'block';
+    container.dataset.status = status;
+    bar.style.width = `${Math.max(0, Math.min(100, progressPercent))}%`;
+    text.textContent = `${modeLabel}: ${stageLabel}${message ? ` — ${message}` : ''}`;
+
+    if (status === 'running') {
+        spinner.style.display = '';
+    } else {
+        spinner.style.display = 'none';
+    }
+}
+
+function fmtCount(n) {
+    return Number(n || 0).toLocaleString();
+}
+
+function renderPreflightCounts(countEl, local, expected) {
+    if (!countEl) return;
+    local = Number(local || 0);
+    expected = Number(expected || 0);
+    if (expected > 0) {
+        countEl.textContent = `(${fmtCount(local)} / ${fmtCount(expected)})`;
+    } else if (local > 0) {
+        countEl.textContent = `(${fmtCount(local)})`;
+    } else {
+        countEl.textContent = '';
+    }
+}
+
+// Render initial counts from data attributes on page load
+document.querySelectorAll('[data-preflight-item-count]').forEach((el) => {
+    renderPreflightCounts(el, el.dataset.local, el.dataset.expected);
+});
+
+function applyPreflightStatus(dataSync) {
+    if (!dataSync || !Array.isArray(dataSync.details)) return;
+
+    const statusLabel = {
+        completed: 'Complete',
+        pending: 'Pending',
+        failed: 'Failed',
+        cancelled: 'Cancelled',
+        running: 'Running',
+    };
+
+    const normalizeStatus = (raw) => {
+        const v = String(raw || '').toLowerCase();
+        if (v === 'completed') return 'completed';
+        if (v === 'failed') return 'failed';
+        if (v === 'cancelled') return 'cancelled';
+        if (v === 'running') return 'running';
+        return 'pending';
+    };
+
+    const statusByType = {};
+    const detailByType = {};
+    dataSync.details.forEach((row) => {
+        if (!row || !row.data_type) return;
+        const dt = String(row.data_type);
+        statusByType[dt] = normalizeStatus(row.status);
+        detailByType[dt] = row;
+    });
+
+    const setStatusClasses = (node, status) => {
+        if (!node) return;
+        node.classList.remove('status-completed', 'status-pending', 'status-failed', 'status-cancelled', 'status-running');
+        node.classList.add(`status-${status}`);
+    };
+
+    document.querySelectorAll('.preflight-item[data-preflight-type]').forEach((item) => {
+        const dataType = item.getAttribute('data-preflight-type');
+        if (!dataType) return;
+        const status = statusByType[dataType] || 'pending';
+        const detail = detailByType[dataType] || {};
+
+        setStatusClasses(item, status);
+        setStatusClasses(item.querySelector('[data-preflight-item-icon]'), status);
+
+        // Update counts from polling data
+        const countEl = item.querySelector('[data-preflight-item-count]');
+        if (countEl) {
+            const local = detail.local_count || 0;
+            const expected = detail.expected_total || detail.last_remote_count || 0;
+            renderPreflightCounts(countEl, local, expected);
+        }
+
+        const text = item.querySelector('[data-preflight-item-text]');
+        if (text) {
+            setStatusClasses(text, status);
+            text.textContent = `- ${statusLabel[status] || status}`;
+        }
+    });
+
+    document.querySelectorAll('.preflight-group[data-preflight-group]').forEach((group) => {
+        const statuses = Array.from(group.querySelectorAll('.preflight-item[data-preflight-type]')).map((item) => {
+            const dt = item.getAttribute('data-preflight-type');
+            return dt ? (statusByType[dt] || 'pending') : 'pending';
+        });
+
+        let groupStatus = 'completed';
+        if (statuses.includes('failed')) {
+            groupStatus = 'failed';
+        } else if (statuses.includes('cancelled')) {
+            groupStatus = 'cancelled';
+        } else if (statuses.includes('running')) {
+            groupStatus = 'running';
+        } else if (statuses.includes('pending')) {
+            groupStatus = 'pending';
+        }
+
+        setStatusClasses(group.querySelector('[data-preflight-group-icon]'), groupStatus);
+        const text = group.querySelector('[data-preflight-group-text]');
+        if (text) {
+            setStatusClasses(text, groupStatus);
+            text.textContent = `- ${statusLabel[groupStatus] || groupStatus}`;
+        }
+    });
+}
+
+async function loadAssessmentClassOptions() {
+    const meta = document.getElementById('assessmentResultsMeta');
+    const classification = document.getElementById('assessmentResultsClassification');
+    const classFilter = document.getElementById('assessmentResultsClassFilter');
+    if (!classification || !classFilter) return;
+
+    const classificationValue = classification.value;
+    const optionsParams = new URLSearchParams({
+        instance_id: String(assessmentInstanceId),
+        assessment_ids: String(assessmentId),
+    });
+    if (classificationValue === 'customized') {
+        optionsParams.set('customized_only', 'true');
+        optionsParams.set('customization_type', 'all');
+    } else if (classificationValue === 'uncustomized') {
+        optionsParams.set('customized_only', 'false');
+        optionsParams.set('customization_type', 'uncustomized');
+    } else if (classificationValue === 'modified_ootb') {
+        optionsParams.set('customized_only', 'true');
+        optionsParams.set('customization_type', 'modified_ootb');
+    } else if (classificationValue === 'net_new_customer') {
+        optionsParams.set('customized_only', 'true');
+        optionsParams.set('customization_type', 'net_new_customer');
+    } else if (classificationValue === 'ootb_untouched') {
+        optionsParams.set('customized_only', 'false');
+        optionsParams.set('customization_type', 'ootb_untouched');
+    } else if (classificationValue === 'unknown') {
+        optionsParams.set('customized_only', 'false');
+        optionsParams.set('customization_type', 'unknown');
+    }
+    const params = optionsParams;
+
+    const currentValue = classFilter.value;
+    const response = await fetch(`/api/results/options?${params.toString()}`, { cache: 'no-store' });
+    if (!response.ok) {
+        if (meta) meta.textContent = 'Failed to load filter options.';
+        return;
+    }
+    const payload = await response.json();
+    const options = payload.app_file_classes || [];
+    classFilter.innerHTML = '<option value="">All Classes</option>';
+    options.forEach((value) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        classFilter.appendChild(option);
+    });
+    if (currentValue && options.includes(currentValue)) {
+        classFilter.value = currentValue;
+    }
+    return Number(payload.scoped_count ?? 0);
+}
+
+async function refreshAssessmentResults() {
+    const meta = document.getElementById('assessmentResultsMeta');
+    const classification = document.getElementById('assessmentResultsClassification');
+    const classFilter = document.getElementById('assessmentResultsClassFilter');
+    if (!classification || !classFilter) return;
+
+    setAssessmentResultsLoading(true);
+    if (meta) meta.textContent = 'Loading...';
+    try {
+        const scopedCount = await loadAssessmentClassOptions();
+        const classificationValue = classification.value;
+        const params = new URLSearchParams({ limit: '500' });
+        if (classificationValue === 'customized') {
+            params.set('customized_only', 'true');
+            params.set('customization_type', 'all');
+        } else if (classificationValue === 'uncustomized') {
+            params.set('customized_only', 'false');
+            params.set('customization_type', 'uncustomized');
+        } else if (classificationValue === 'modified_ootb') {
+            params.set('customized_only', 'true');
+            params.set('customization_type', 'modified_ootb');
+        } else if (classificationValue === 'net_new_customer') {
+            params.set('customized_only', 'true');
+            params.set('customization_type', 'net_new_customer');
+        } else if (classificationValue === 'ootb_untouched') {
+            params.set('customized_only', 'false');
+            params.set('customization_type', 'ootb_untouched');
+        } else if (classificationValue === 'unknown') {
+            params.set('customized_only', 'false');
+            params.set('customization_type', 'unknown');
+        }
+        if (classFilter.value) {
+            params.set('app_file_classes', classFilter.value);
+        }
+
+        const response = await fetch(`/api/assessments/${assessmentId}/results?${params.toString()}`, { cache: 'no-store' });
+        if (!response.ok) {
+            throw new Error('Request failed');
+        }
+        const payload = await response.json();
+        const total = Number(payload.total || 0);
+        const scopeLabel = (classificationValue === 'all') ? 'Results' : classification.options[classification.selectedIndex].text;
+        const scopeTotal = Number.isFinite(scopedCount) ? Number(scopedCount) : total;
+        setAssessmentResultsCounts({
+            scopeLabel,
+            scopeTotal,
+            activeTotal: total,
+        });
+        renderAssessmentResultsRows(payload.results || []);
+        if (meta) {
+            const shown = Number(payload.count || 0);
+            if (classFilter.value) {
+                meta.textContent = `Showing ${shown} of ${total} results (filtered from ${scopeTotal})`;
+            } else {
+                meta.textContent = `Showing ${shown} of ${total} results`;
+            }
+        }
+    } catch (error) {
+        renderAssessmentResultsRows([]);
+        setAssessmentResultsCounts({ scopeLabel: 'Customizations', scopeTotal: null, activeTotal: null });
+        if (meta) {
+            meta.textContent = 'Failed to load results.';
+        }
+    } finally {
+        setAssessmentResultsLoading(false);
+    }
+}
+
+function _formatScanType(scanType) {
+    return (scanType || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function _ensureScanTable() {
+    let table = document.getElementById('scan-table');
+    if (table) return table;
+    const container = document.getElementById('scan-table-container');
+    if (!container) return null;
+    const emptyState = document.getElementById('scan-empty-state');
+    if (emptyState) emptyState.remove();
+    table = document.createElement('table');
+    table.className = 'related-table';
+    table.id = 'scan-table';
+    table.innerHTML = `<thead><tr>
+        <th>Scan Type</th><th>Name</th><th>Status</th>
+        <th>Total Metadata</th><th>Total Customized</th>
+        <th>Customer Customized</th><th>OOTB Modified</th>
+        <th>Started</th><th>Actions</th>
+    </tr></thead><tbody id="scan-table-body"></tbody>`;
+    container.appendChild(table);
+    return table;
+}
+
+function _createScanRow(scan) {
+    const tr = document.createElement('tr');
+    tr.setAttribute('data-scan-id', scan.id);
+    const started = scan.started_at ? scan.started_at.slice(0, 16).replace('T', ' ') : '-';
+    tr.innerHTML = `
+        <td>${_formatScanType(scan.scan_type)}</td>
+        <td>${scan.name || ''}</td>
+        <td><span class="status-badge status-${scan.status}" data-scan-field="status" title="${scan.error_message || ''}">${scan.status}</span></td>
+        <td data-scan-field="records_found">${scan.records_found ?? 0}</td>
+        <td data-scan-field="records_customized">${scan.records_customized ?? 0}</td>
+        <td data-scan-field="records_customer_customized">${scan.records_customer_customized ?? 0}</td>
+        <td data-scan-field="records_ootb_modified">${scan.records_ootb_modified ?? 0}</td>
+        <td data-scan-field="started_at">${started}</td>
+        <td>
+            <a href="/scans/${scan.id}" class="btn btn-sm">View</a>
+            <form method="post" action="/scans/${scan.id}/retry" class="inline-form">
+                <button type="submit" class="btn btn-sm btn-secondary" title="Clears this scan's results and reruns it from scratch.">Retry</button>
+            </form>
+            <form method="post" action="/scans/${scan.id}/cancel" class="inline-form">
+                <button type="submit" class="btn btn-sm btn-secondary" title="Request cancellation of this scan if it is running.">Cancel</button>
+            </form>
+            <form method="post" action="/scans/${scan.id}/refresh-delta" class="inline-form">
+                <button type="submit" class="btn btn-sm btn-secondary" title="Fetches only records updated since the last completion and appends them.">Delta</button>
+            </form>
+        </td>`;
+    return tr;
+}
+
+function _updateScanRow(row, scan) {
+    const statusEl = row.querySelector('[data-scan-field="status"]');
+    if (statusEl) {
+        statusEl.textContent = scan.status;
+        statusEl.className = `status-badge status-${scan.status}`;
+        statusEl.title = scan.error_message || '';
+    }
+    const foundEl = row.querySelector('[data-scan-field="records_found"]');
+    if (foundEl) foundEl.textContent = scan.records_found ?? 0;
+    const customEl = row.querySelector('[data-scan-field="records_customized"]');
+    if (customEl) customEl.textContent = scan.records_customized ?? 0;
+    const customerEl = row.querySelector('[data-scan-field="records_customer_customized"]');
+    if (customerEl) customerEl.textContent = scan.records_customer_customized ?? 0;
+    const ootbEl = row.querySelector('[data-scan-field="records_ootb_modified"]');
+    if (ootbEl) ootbEl.textContent = scan.records_ootb_modified ?? 0;
+    const startedEl = row.querySelector('[data-scan-field="started_at"]');
+    if (startedEl) startedEl.textContent = scan.started_at ? scan.started_at.slice(0, 16).replace('T', ' ') : '-';
+}
+
+let _lastScansActive = false;
+
+async function refreshScanStatus() {
+    try {
+        const res = await fetch(`/api/assessments/${assessmentId}/scan-status`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const counts = data.counts || {};
+        document.getElementById('scan-count-pending').textContent = counts.pending ?? 0;
+        document.getElementById('scan-count-running').textContent = counts.running ?? 0;
+        document.getElementById('scan-count-completed').textContent = counts.completed ?? 0;
+        document.getElementById('scan-count-failed').textContent = counts.failed ?? 0;
+        document.getElementById('scan-count-cancelled').textContent = counts.cancelled ?? 0;
+        document.getElementById('scan-count-total').textContent = counts.total ?? 0;
+
+        const scans = data.scans || [];
+        const hasActive = scans.some(s => s.status === 'running' || s.status === 'pending');
+
+        scans.forEach((scan) => {
+            let row = document.querySelector(`tr[data-scan-id='${scan.id}']`);
+            if (!row) {
+                _ensureScanTable();
+                const tbody = document.getElementById('scan-table-body');
+                if (tbody) {
+                    row = _createScanRow(scan);
+                    tbody.appendChild(row);
+                }
+            } else {
+                _updateScanRow(row, scan);
+            }
+        });
+
+        // Update header cards
+        const headerScans = document.getElementById('header-total-scans');
+        if (headerScans) headerScans.textContent = scans.length;
+        // Total results = sum of records_found across all scans
+        const totalResults = scans.reduce((sum, s) => sum + (s.records_found ?? 0), 0);
+        const headerResults = document.getElementById('header-total-results');
+        if (headerResults) headerResults.textContent = totalResults;
+
+        // Auto-refresh results when scans finish (transition from active → idle)
+        if (_lastScansActive && !hasActive && scans.length > 0) {
+            refreshAssessmentResults();
+            loadAssessmentClassOptions();
+        }
+        // Also refresh results periodically while scans are running (every other poll = ~8s)
+        if (hasActive && _scanPollCount % 2 === 0) {
+            refreshAssessmentResults();
+        }
+        _lastScansActive = hasActive;
+
+        updateAssessmentRunStatus(data.run_status || null);
+        applyPreflightStatus(data.data_sync || null);
+        applyPostflightStatus(data.postflight_details || null);
+    } catch (err) {
+        // ignore polling errors
+    }
+}
+
+let _scanPollCount = 0;
+refreshScanStatus();
+setInterval(() => { _scanPollCount++; refreshScanStatus(); }, 4000);
+
+document.getElementById('assessmentResultsClassification')?.addEventListener('change', refreshAssessmentResults);
+document.getElementById('assessmentResultsClassFilter')?.addEventListener('change', refreshAssessmentResults);
+document.getElementById('assessmentResultsApply')?.addEventListener('click', refreshAssessmentResults);
+document.querySelectorAll('form.assessment-scan-job-form').forEach((form) => {
+    form.addEventListener('submit', () => {
+        const action = (form.dataset.jobAction || 'run').toLowerCase();
+        const actionLabelMap = {
+            rebuild: 'Rebuild Scans',
+            refresh: 'Refresh Scans',
+            delta: 'Refresh Delta',
+            run: 'Run Scans',
+        };
+        const actionLabel = actionLabelMap[action] || 'Scan workflow';
+        showAssessmentRunStatusPending(actionLabel);
+        const submitBtn = form.querySelector('button[type=\"submit\"]');
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            const originalLabel = submitBtn.textContent || actionLabel;
+            submitBtn.dataset.originalLabel = originalLabel;
+            submitBtn.textContent = 'Starting...';
+        }
+    });
+});
+document.getElementById('assessmentResultsReset')?.addEventListener('click', () => {
+    const classification = document.getElementById('assessmentResultsClassification');
+    const classFilter = document.getElementById('assessmentResultsClassFilter');
+    if (classification) classification.value = 'all';
+    if (classFilter) classFilter.value = '';
+    refreshAssessmentResults();
+});
+
+refreshAssessmentResults();
+
+// ── Post Flight Status ──────────────────────────────────────────────
+
+function applyPostflightStatus(postflightDetails) {
+    const card = document.getElementById('postflightCard');
+    const list = document.getElementById('postflightList');
+    const countEl = document.getElementById('postflightCount');
+    if (!card || !list) return;
+
+    if (!postflightDetails || !postflightDetails.length) return;
+
+    card.classList.remove('is-hidden');
+    if (countEl) countEl.textContent = String(postflightDetails.length);
+
+    const statusLabel = {
+        completed: 'Complete',
+        pending: 'Pending',
+        failed: 'Failed',
+        running: 'Running',
+    };
+
+    const setStatusClasses = (node, status) => {
+        if (!node) return;
+        node.classList.remove('status-completed', 'status-pending', 'status-failed', 'status-running');
+        node.classList.add(`status-${status}`);
+    };
+
+    // Build or update list items
+    postflightDetails.forEach((item) => {
+        const key = item.sys_class_name;
+        const status = item.status || 'pending';
+        let li = list.querySelector(`[data-postflight-class="${key}"]`);
+        if (!li) {
+            li = document.createElement('li');
+            li.className = `preflight-item status-${status}`;
+            li.setAttribute('data-postflight-class', key);
+            li.innerHTML = `
+                <span class="preflight-status-icon status-${status}" data-pf-icon aria-hidden="true"></span>
+                <span class="preflight-item-label">${item.label || key}</span>
+                <span class="preflight-item-count" data-pf-count></span>
+                <span class="preflight-status-text status-${status}" data-pf-text>- ${statusLabel[status] || status}</span>
+            `;
+            list.appendChild(li);
+        }
+
+        setStatusClasses(li, status);
+        setStatusClasses(li.querySelector('[data-pf-icon]'), status);
+
+        const countSpan = li.querySelector('[data-pf-count]');
+        if (countSpan) {
+            const pulled = Number(item.pulled || 0);
+            const total = Number(item.total || 0);
+            countSpan.textContent = total > 0 ? `(${pulled} / ${total})` : pulled > 0 ? `(${pulled})` : '';
+        }
+
+        const text = li.querySelector('[data-pf-text]');
+        if (text) {
+            setStatusClasses(text, status);
+            text.textContent = `- ${statusLabel[status] || status}`;
+        }
+    });
+
+    // Update group status
+    const statuses = postflightDetails.map(d => d.status || 'pending');
+    let groupStatus = 'completed';
+    if (statuses.includes('failed')) groupStatus = 'failed';
+    else if (statuses.includes('running')) groupStatus = 'running';
+    else if (statuses.includes('pending')) groupStatus = 'pending';
+
+    setStatusClasses(document.querySelector('[data-postflight-group-icon]'), groupStatus);
+    const groupText = document.querySelector('[data-postflight-group-text]');
+    if (groupText) {
+        setStatusClasses(groupText, groupStatus);
+        groupText.textContent = `- ${statusLabel[groupStatus] || groupStatus}`;
+    }
+}
+
+// ── Customizations Tab ──────────────────────────────────────────────
+
+function setCustomizationsLoading(isLoading) {
+    var overlay = document.getElementById('customizationsLoading');
+    if (overlay) overlay.style.display = isLoading ? 'flex' : 'none';
+}
+
+function renderCustomizationRows(rows) {
+    var tbody = document.getElementById('customizationsBody');
+    var empty = document.getElementById('customizationsEmpty');
+    if (!tbody || !empty) return;
+    if (!rows.length) {
+        tbody.innerHTML = '';
+        empty.classList.remove('is-hidden');
+        return;
+    }
+    empty.classList.add('is-hidden');
+    tbody.innerHTML = rows.map(function (row) {
+        var updated = typeof formatAssessmentDate === 'function' ? formatAssessmentDate(row.sys_updated_on) : (row.sys_updated_on || '-');
+        var originLabel = row.origin_type === 'modified_ootb' ? 'Modified OOTB'
+            : row.origin_type === 'net_new_customer' ? 'Net New Customer' : (row.origin_type || '-');
+        return '<tr>'
+            + '<td><a href="/results/' + row.scan_result_id + '">' + (row.name || row.sys_id || '-') + '</a></td>'
+            + '<td>' + (row.sys_class_name || row.table_name || '-') + '</td>'
+            + '<td><span class="origin-badge origin-' + (row.origin_type || 'unknown') + '">' + originLabel + '</span></td>'
+            + '<td>' + (row.sys_scope || '-') + '</td>'
+            + '<td>' + (row.review_status || '-') + '</td>'
+            + '<td>' + (row.disposition || '-') + '</td>'
+            + '<td>' + updated + '</td>'
+            + '<td><a class="btn btn-sm" href="/results/' + row.scan_result_id + '">View</a></td>'
+            + '</tr>';
+    }).join('');
+}
+
+var _customizationsLoaded = false;
+function refreshCustomizations() {
+    var meta = document.getElementById('customizationsMeta');
+    var typeFilter = document.getElementById('customizationsTypeFilter');
+    var classFilter = document.getElementById('customizationsClassFilter');
+    var badge = document.getElementById('customizationsTabBadge');
+
+    setCustomizationsLoading(true);
+    if (meta) meta.textContent = 'Loading...';
+
+    var params = new URLSearchParams({ limit: '500' });
+    if (typeFilter && typeFilter.value) params.set('origin_type', typeFilter.value);
+    if (classFilter && classFilter.value) params.set('table_name', classFilter.value);
+
+    fetch('/api/assessments/' + assessmentId + '/customizations?' + params.toString(), { cache: 'no-store' })
+        .then(function (r) { if (!r.ok) throw new Error('fail'); return r.json(); })
+        .then(function (payload) {
+            var classes = payload.classes || [];
+            var currentClass = classFilter ? classFilter.value : '';
+            if (classFilter) {
+                classFilter.innerHTML = '<option value="">All Classes</option>';
+                classes.forEach(function (cls) {
+                    var opt = document.createElement('option');
+                    opt.value = cls.table_name;
+                    opt.textContent = (cls.label || cls.table_name) + ' (' + cls.count + ')';
+                    classFilter.appendChild(opt);
+                });
+                if (currentClass) classFilter.value = currentClass;
+            }
+            renderCustomizationRows(payload.customizations || []);
+            if (badge) badge.textContent = String(payload.total || 0);
+            if (meta) meta.textContent = 'Showing ' + (payload.customizations || []).length + ' of ' + (payload.total || 0) + ' customizations';
+        })
+        .catch(function () {
+            renderCustomizationRows([]);
+            if (meta) meta.textContent = 'Failed to load customizations.';
+        })
+        .finally(function () {
+            setCustomizationsLoading(false);
+        });
+}
+
+document.getElementById('customizationsApply').addEventListener('click', function () { refreshCustomizations(); });
+document.getElementById('customizationsTypeFilter').addEventListener('change', function () { refreshCustomizations(); });
+document.getElementById('customizationsReset').addEventListener('click', function () {
+    var typeFilter = document.getElementById('customizationsTypeFilter');
+    var classFilter = document.getElementById('customizationsClassFilter');
+    if (typeFilter) typeFilter.value = '';
+    if (classFilter) classFilter.value = '';
+    refreshCustomizations();
+});
+
+// ── Artifacts Tab ───────────────────────────────────────────────────
+
+function setArtifactLoading(isLoading) {
+    const overlay = document.getElementById('artifactLoading');
+    if (overlay) overlay.style.display = isLoading ? 'flex' : 'none';
+}
+
+function renderArtifactRows(rows) {
+    const tbody = document.getElementById('artifactBody');
+    const empty = document.getElementById('artifactEmpty');
+    if (!tbody || !empty) return;
+
+    if (!rows.length) {
+        tbody.innerHTML = '';
+        empty.classList.remove('is-hidden');
+        return;
+    }
+
+    empty.classList.add('is-hidden');
+    tbody.innerHTML = rows.map((row) => {
+        const updated = row.sys_updated_on ? String(row.sys_updated_on).replace('T', ' ').slice(0, 16) : '-';
+        return `
+            <tr>
+                <td><a href="/artifacts/${row.sys_class_name}/${row.sys_id}?instance_id=${assessmentInstanceId}">${row.name || row.sys_id}</a></td>
+                <td>${row.class_label || row.sys_class_name || '-'}</td>
+                <td>${row.active === true || row.active === 'true' ? 'Yes' : row.active === false || row.active === 'false' ? 'No' : '-'}</td>
+                <td>${row.sys_scope || '-'}</td>
+                <td>${updated}</td>
+                <td><a class="btn btn-sm" href="/artifacts/${row.sys_class_name}/${row.sys_id}?instance_id=${assessmentInstanceId}">View</a></td>
+            </tr>
+        `;
+    }).join('');
+}
+
+async function refreshArtifacts() {
+    const meta = document.getElementById('artifactMeta');
+    const classFilter = document.getElementById('artifactClassFilter');
+    if (!classFilter) return;
+
+    setArtifactLoading(true);
+    if (meta) meta.textContent = 'Loading...';
+
+    try {
+        const params = new URLSearchParams({ limit: '500' });
+        if (classFilter.value) params.set('sys_class_name', classFilter.value);
+
+        const response = await fetch(`/api/assessments/${assessmentId}/artifacts?${params.toString()}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error('Request failed');
+        const payload = await response.json();
+
+        // Populate class filter from response
+        const classes = payload.classes || [];
+        const currentVal = classFilter.value;
+        classFilter.innerHTML = '<option value="">All Classes</option>';
+        classes.forEach((cls) => {
+            const opt = document.createElement('option');
+            opt.value = cls.sys_class_name;
+            opt.textContent = `${cls.label} (${cls.count})`;
+            classFilter.appendChild(opt);
+        });
+        if (currentVal) classFilter.value = currentVal;
+
+        const artifacts = payload.artifacts || [];
+        renderArtifactRows(artifacts);
+
+        const badge = document.getElementById('artifactsTabBadge');
+        if (badge) badge.textContent = String(payload.total || 0);
+
+        if (meta) meta.textContent = `Showing ${artifacts.length} of ${payload.total || 0} artifacts`;
+    } catch (err) {
+        renderArtifactRows([]);
+        if (meta) meta.textContent = 'Failed to load artifacts.';
+    } finally {
+        setArtifactLoading(false);
+    }
+}
+
+document.getElementById('artifactApply')?.addEventListener('click', refreshArtifacts);
+document.getElementById('artifactClassFilter')?.addEventListener('change', refreshArtifacts);
+document.getElementById('artifactReset')?.addEventListener('click', () => {
+    const classFilter = document.getElementById('artifactClassFilter');
+    if (classFilter) classFilter.value = '';
+    refreshArtifacts();
+});
+
+// Load artifacts + customizations on first tab open (lazy)
+let _artifactsLoaded = false;
+const _origOpenTab = window.openTab;
+window.openTab = function(evt, tabName) {
+    _origOpenTab(evt, tabName);
+    if (tabName === 'customizations' && !_customizationsLoaded) {
+        _customizationsLoaded = true;
+        refreshCustomizations();
+    }
+    if (tabName === 'artifacts' && !_artifactsLoaded) {
+        _artifactsLoaded = true;
+        refreshArtifacts();
+    }
+};
+</script>
+{% endblock %}

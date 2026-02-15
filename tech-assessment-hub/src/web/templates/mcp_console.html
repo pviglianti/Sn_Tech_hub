@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block title %}MCP Console - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>MCP Console</h1>
+</div>
+
+<div class="card">
+    <p class="text-muted-plain mb-0">
+        This console sends JSON-RPC requests to the local <code>/mcp</code> endpoint.
+        It does not call Claude directly.
+    </p>
+</div>
+
+<div class="split-grid">
+    <div class="card">
+        <h2>Request</h2>
+        <div class="form-group">
+            <label for="mcpTemplate">Template</label>
+            <select id="mcpTemplate">
+                <option value="initialize">initialize</option>
+                <option value="tools_list">tools/list</option>
+                <option value="sn_test_connection">tools/call: sn_test_connection</option>
+                <option value="sn_inventory_summary">tools/call: sn_inventory_summary</option>
+                <option value="sqlite_query">tools/call: sqlite_query</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="mcpRequest">JSON-RPC Payload</label>
+            <textarea id="mcpRequest" rows="16"></textarea>
+            <small>Update the payload before sending (instance_id, scope, etc.).</small>
+        </div>
+        <div class="button-group">
+            <button class="btn btn-primary" id="sendMcp" title="Send the JSON-RPC payload to /mcp">Send</button>
+            <button class="btn btn-secondary" id="clearMcp" title="Clear request and response editors">Clear</button>
+        </div>
+    </div>
+    <div class="card">
+        <h2>Response</h2>
+        <pre id="mcpResponse" class="code-block">Ready.</pre>
+    </div>
+</div>
+
+<div class="card mt-1">
+    <h2>Unified Capabilities</h2>
+    <p class="text-muted-plain mt-0">
+        User-facing tool catalog and runtime health (engine internals hidden).
+    </p>
+    <div class="button-group">
+        <button class="btn btn-secondary" id="capabilitiesRefresh" title="Refresh unified capabilities and runtime health">Refresh</button>
+    </div>
+    <pre id="capabilitiesSummary" class="code-block mt-1">Capabilities not loaded.</pre>
+</div>
+
+<div class="card mt-1">
+    <h2>Admin Diagnostics</h2>
+    <p class="text-muted-plain mt-0">
+        Optional: provide admin token to view engine routing, bridge internals, and run bridge actions.
+    </p>
+    {% set token_input_id = 'mcpAdminToken' %}
+    {% set token_help_text = 'Header used for admin-only MCP endpoints. Localhost access is allowed when no token is configured.' %}
+    {% include "components/admin_token_field.html" %}
+    <div class="button-group">
+        <button class="btn btn-secondary" id="adminDiagnosticsRefresh" title="Load admin diagnostics payload with runtime source details">Load Diagnostics</button>
+    </div>
+    <pre id="adminDiagnostics" class="code-block mt-1">Admin diagnostics not loaded.</pre>
+</div>
+
+<div class="card mt-1">
+    <h2>Admin Bridge Controls</h2>
+    <p class="text-muted-plain mt-0">
+        Manage external TypeScript MCP sidecar process and proxy management actions.
+    </p>
+    <div class="button-group">
+        <button class="btn btn-secondary" id="bridgeRefresh" title="Refresh sidecar runtime status">Refresh Status</button>
+        <button class="btn btn-primary" id="bridgeStart" title="Start sidecar process from saved bridge config">Start</button>
+        <button class="btn btn-secondary" id="bridgeStop" title="Stop the running sidecar process">Stop</button>
+        <button class="btn btn-secondary" id="bridgeRestart" title="Restart sidecar process using saved bridge config">Restart</button>
+        <button class="btn btn-secondary" id="bridgeReload" title="Proxy POST /mcp/reload to management_base_url">Reload MCP</button>
+        <button class="btn btn-secondary" id="bridgeReconnectAll" title="Proxy POST /mcp/reconnect-all to management_base_url">Reconnect All</button>
+    </div>
+    <div class="form-group">
+        <label for="bridgeServerName">Reconnect Single Server</label>
+        <div class="button-group">
+            <input id="bridgeServerName" type="text" placeholder="server-name" class="input-max-260" />
+            <button class="btn btn-secondary" id="bridgeReconnectOne" title="Reconnect one server using /mcp/{name}/reconnect">Reconnect Server</button>
+        </div>
+    </div>
+    <div class="form-group">
+        <label for="bridgeConfig">Bridge Config (JSON)</label>
+        <textarea id="bridgeConfig" rows="10"></textarea>
+        <small>Config keys: enabled, command, args, cwd, env, management_base_url, event_url, health_url</small>
+    </div>
+    <div class="button-group">
+        <button class="btn btn-primary" id="bridgeSaveConfig" title="Save bridge config to app_config table">Save Config</button>
+    </div>
+    <pre id="bridgeStatus" class="code-block mt-1">Bridge status not loaded.</pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    window.MCP_INSTANCES = {{ instances_json | safe }};
+</script>
+<script src="/static/js/mcp_console.js?v={{ static_version }}"></script>
+{% endblock %}

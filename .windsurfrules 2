@@ -1,0 +1,5 @@
+Read `AGENTS.md` and `ACTIVE_PROJECT.md` first.
+Use the active project path from `ACTIVE_PROJECT.md`.
+Rehydrate with Tier 1 only by default.
+Use Tier 2 only when needed.
+Do not bulk-read folders.

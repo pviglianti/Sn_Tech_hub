@@ -1,0 +1,49 @@
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# Raw source data exports (multi-GB XML, CSV, JSON)
+servicenow_global_tech_assessment_mcp/01_source_data/
+
+# App runtime data (databases, logs, PIDs)
+tech-assessment-hub/data/*.db
+tech-assessment-hub/data/*.db-shm
+tech-assessment-hub/data/*.db-wal
+tech-assessment-hub/data/*.db.bak*
+tech-assessment-hub/data/*.db.corrupt*
+tech-assessment-hub/data/*.db-shm.corrupt*
+tech-assessment-hub/data/*.db-wal.corrupt*
+tech-assessment-hub/data/recovery_snapshots/
+tech-assessment-hub/data/server.pid
+tech-assessment-hub/data/server.url
+tech-assessment-hub/data/server.log
+tech-assessment-hub/data/mcp_runtime_audit.jsonl
+
+# Old git history backup
+.git_backup/
+
+# IDE
+.vscode/
+.idea/

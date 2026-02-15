@@ -1,0 +1,7 @@
+{% set _badge_prefix = badge_prefix|default('status') %}
+{% set _badge_extra_class = badge_extra_class|default('') %}
+{% set _badge_title = badge_title|default('') %}
+{% set _badge_attrs = badge_attrs|default('') %}
+<span class="status-badge {{ _badge_prefix }}-{{ badge_status }}{% if _badge_extra_class %} {{ _badge_extra_class }}{% endif %}"{% if _badge_title %} title="{{ _badge_title }}"{% endif %}{% if _badge_attrs %} {{ _badge_attrs|safe }}{% endif %}>
+    {{ badge_text }}
+</span>

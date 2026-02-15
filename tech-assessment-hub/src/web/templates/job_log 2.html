@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Job Log - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Unified Job Log</h1>
+    <div class="button-group">
+        <a class="btn btn-secondary" href="/job-log">Reset Filters</a>
+    </div>
+</div>
+
+<div class="card summary-inline-card summary-inline-card-muted">
+    <strong>Tip:</strong> Filters passed from links are preloaded in the condition builder below.
+</div>
+
+<div class="card mt-1">
+    <div id="jobLogTableContainer"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/ConditionBuilder.js?v={{ static_version }}"></script>
+<script src="/static/js/ColumnPicker.js?v={{ static_version }}"></script>
+<script src="/static/js/DataTable.js?v={{ static_version }}"></script>
+<script>
+(function () {
+    var container = document.getElementById('jobLogTableContainer');
+    if (!container || !window.DataTable) return;
+
+    var dt = new DataTable(container, {
+        dataUrl: '/api/job-log/records',
+        schemaUrl: '/api/job-log/field-schema',
+        instanceId: 0,
+        tableName: 'job_log',
+        pageSize: {{ initial_page_size }},
+        storageKey: 'dt_job_log_unified',
+        includeTableAndInstanceParams: false,
+        initialConditions: {{ initial_conditions|tojson }},
+        onReferenceClick: function () {},
+        onRecordClick: function () {},
+    });
+
+    dt.init().catch(function (err) {
+        console.error('Job log DataTable init error:', err);
+        container.innerHTML = '<div class="empty-state"><h2>Error</h2><p>' + err.message + '</p></div>';
+    });
+})();
+</script>
+{% endblock %}

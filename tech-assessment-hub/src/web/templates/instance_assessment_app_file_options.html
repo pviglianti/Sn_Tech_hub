@@ -1,0 +1,744 @@
+{% extends "base.html" %}
+
+{% block title %}Assessment App File Options - {{ instance.name }}{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="assessment-header">
+        <div class="assessment-info">
+            <div class="assessment-number">Assessment App File Options</div>
+            <h1 class="assessment-title">{{ instance.name }}</h1>
+            <div class="assessment-meta">
+                <span><strong>URL:</strong> <a href="{{ instance.url }}" target="_blank">{{ instance.url }}</a></span>
+                <span><strong>Available in Slush Bucket:</strong> <span id="availableCount">{{ available_count }}</span> / <span id="totalCount">{{ app_file_types|length }}</span></span>
+                <span><strong>Default Selected:</strong> <span id="defaultCount">{{ default_count }}</span> / <span id="availableCountInline">{{ available_count }}</span></span>
+            </div>
+            <p class="mt-05 text-muted-plain">
+                Changes here only affect options for new assessments. Existing/in-progress assessments keep their saved selections.
+            </p>
+        </div>
+        <div class="assessment-actions">
+            <a href="/instances/{{ instance.id }}/data" class="btn btn-secondary">Pre Flight Data Manager</a>
+            <a href="/job-log?module=preflight&instance_id={{ instance.id }}" class="btn btn-secondary" title="View unified job log entries filtered to preflight pulls for this instance.">Pre Flight Job Log</a>
+            <a href="/instances" class="btn btn-secondary">Back to Instances</a>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    {% if auto_sync_status == "completed" %}
+    <div class="alert alert-success alert-spaced">
+        App file types were auto-loaded for this instance. You can now manage slush bucket availability here.
+    </div>
+    {% elif auto_sync_status == "failed" %}
+    <div class="alert alert-danger alert-spaced">
+        Could not auto-load app file types for this instance. {{ auto_sync_message or "Check instance credentials and table access, then try again from Pre Flight Data Manager." }}
+    </div>
+    {% elif auto_sync_status == "empty" %}
+    <div class="alert alert-warning alert-spaced">
+        Auto-load completed but no app file types were returned from <code>sys_app_file_type</code> for this instance.
+    </div>
+    {% endif %}
+
+    {% if app_file_types %}
+    <div class="assessment-options-toolbar assessment-options-toolbar-default">
+        <div class="assessment-toolbar-group">
+            <input
+                id="appFileTypeSearchInput"
+                type="text"
+                class="form-control min-w-320"
+                placeholder="Search app file types..."
+            />
+            <button id="appFileTypeSearchClearBtn" type="button" class="btn btn-sm btn-secondary">Clear</button>
+        </div>
+        <div class="muted muted-lg">
+            Showing <span id="visibleCount">{{ app_file_types|length }}</span> / <span id="totalCountToolbar">{{ app_file_types|length }}</span>
+        </div>
+    </div>
+    <div class="assessment-options-toolbar assessment-options-toolbar-tight">
+        <div class="assessment-toolbar-group">
+            <label for="availableStateFilter" class="muted muted-lg">Available:</label>
+            <select id="availableStateFilter" class="form-control min-w-150">
+                <option value="all">All</option>
+                <option value="true">True</option>
+                <option value="false">False</option>
+            </select>
+            <label for="defaultStateFilter" class="muted muted-lg">Default:</label>
+            <select id="defaultStateFilter" class="form-control min-w-150">
+                <option value="all">All</option>
+                <option value="true">True</option>
+                <option value="false">False</option>
+            </select>
+            <label for="groupBySelect" class="muted muted-lg">Group By:</label>
+            <select id="groupBySelect" class="form-control min-w-190">
+                <option value="none">None</option>
+                <option value="display_name">Display Name</option>
+                <option value="technical_name">Technical Name</option>
+                <option value="type">Type</option>
+                <option value="source_table">Source Table</option>
+                <option value="parent_table">Parent Table</option>
+                <option value="available">Available</option>
+                <option value="default_selected">Default Selected</option>
+            </select>
+        </div>
+        <div class="muted muted-lg">
+            Selected <span id="selectedCount">0</span> / <span id="visibleCountInline">{{ app_file_types|length }}</span> visible
+        </div>
+    </div>
+    <div class="assessment-options-toolbar assessment-options-toolbar-compact">
+        <div class="assessment-toolbar-group">
+            <button id="selectVisibleRowsBtn" type="button" class="btn btn-sm btn-secondary">Select Visible</button>
+            <button id="clearSelectedRowsBtn" type="button" class="btn btn-sm btn-secondary">Clear Selection</button>
+            <button id="setSelectedAvailableTrueBtn" type="button" class="btn btn-sm btn-secondary">Set Selected Available = True</button>
+            <button id="setSelectedAvailableFalseBtn" type="button" class="btn btn-sm btn-secondary">Set Selected Available = False</button>
+            <button id="setSelectedDefaultTrueBtn" type="button" class="btn btn-sm btn-secondary">Set Selected Default = True</button>
+            <button id="setSelectedDefaultFalseBtn" type="button" class="btn btn-sm btn-secondary">Set Selected Default = False</button>
+            <button id="restoreSelectedDefaultsBtn" type="button" class="btn btn-sm btn-secondary">Restore Selected Default Baseline</button>
+        </div>
+        <div class="assessment-toolbar-group">
+            <span class="muted muted-lg">Visible rows:</span>
+            <button id="setVisibleAvailableTrueBtn" type="button" class="btn btn-sm btn-secondary">Set Available = True</button>
+            <button id="setVisibleAvailableFalseBtn" type="button" class="btn btn-sm btn-secondary">Set Available = False</button>
+            <button id="setVisibleDefaultTrueBtn" type="button" class="btn btn-sm btn-secondary">Set Default = True</button>
+            <button id="setVisibleDefaultFalseBtn" type="button" class="btn btn-sm btn-secondary">Set Default = False</button>
+            <button id="restoreVisibleDefaultsBtn" type="button" class="btn btn-sm btn-secondary">Restore Visible Default Baseline</button>
+        </div>
+    </div>
+
+    <div class="table-scroll">
+        <table class="data-table" id="assessmentAppFileOptionsTable">
+            <thead>
+                <tr>
+                    <th><input id="selectVisibleRowsToggle" type="checkbox" title="Toggle selection for all visible rows" /></th>
+                    <th class="sortable-header" data-sort-index="1" data-sort-type="boolean">Available</th>
+                    <th class="sortable-header" data-sort-index="2" data-sort-type="boolean">Default Selected</th>
+                    <th class="sortable-header" data-sort-index="3" data-sort-type="string">Display Name</th>
+                    <th class="sortable-header" data-sort-index="4" data-sort-type="string">Technical Name</th>
+                    <th class="sortable-header" data-sort-index="5" data-sort-type="string">App File Type Name</th>
+                    <th class="sortable-header" data-sort-index="6" data-sort-type="string">Type</th>
+                    <th class="sortable-header" data-sort-index="7" data-sort-type="string">Source Table</th>
+                    <th class="sortable-header" data-sort-index="8" data-sort-type="string">Source Table Sys ID</th>
+                    <th class="sortable-header" data-sort-index="9" data-sort-type="string">Source Field</th>
+                    <th class="sortable-header" data-sort-index="10" data-sort-type="string">Parent Table</th>
+                    <th class="sortable-header" data-sort-index="11" data-sort-type="string">Parent Table Sys ID</th>
+                    <th class="sortable-header" data-sort-index="12" data-sort-type="string">Parent Field</th>
+                    <th class="sortable-header" data-sort-index="13" data-sort-type="string">Use Parent Scope</th>
+                    <th class="sortable-header" data-sort-index="14" data-sort-type="string">Children Provider Class</th>
+                    <th class="sortable-header" data-sort-index="15" data-sort-type="number">Priority</th>
+                    <th class="sortable-header" data-sort-index="16" data-sort-type="string">sys_id</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in app_file_types %}
+                <tr data-app-file-type-id="{{ row.id }}">
+                    <td>
+                        <input
+                            type="checkbox"
+                            class="assessment-app-file-row-select"
+                            data-app-file-type-id="{{ row.id }}"
+                            title="Select row for bulk updates"
+                        />
+                    </td>
+                    <td>
+                        <input
+                            type="checkbox"
+                            class="assessment-app-file-option-toggle"
+                            data-app-file-type-id="{{ row.id }}"
+                            {% if row.is_available_for_assessment %}checked{% endif %}
+                            onchange="toggleAssessmentAppFileOption(this)"
+                            title="Toggle availability for assessment slush bucket"
+                        />
+                    </td>
+                    <td>
+                        <input
+                            type="checkbox"
+                            class="assessment-app-file-default-toggle"
+                            data-app-file-type-id="{{ row.id }}"
+                            {% if row.is_default_for_assessment and row.is_available_for_assessment %}checked{% endif %}
+                            {% if not row.is_available_for_assessment %}disabled{% endif %}
+                            onchange="toggleAssessmentAppFileDefault(this)"
+                            title="Toggle default selection for new assessments"
+                        />
+                    </td>
+                    <td>{{ display_labels_by_id.get(row.id, row.label or '-') or '-' }}</td>
+                    <td><code>{{ row.sys_class_name or '-' }}</code></td>
+                    <td><code>{{ row.name or '-' }}</code></td>
+                    <td>{{ row.type or '-' }}</td>
+                    <td><code>{{ row.source_table_name or '-' }}</code></td>
+                    <td><code>{{ row.source_table or '-' }}</code></td>
+                    <td><code>{{ row.source_field or '-' }}</code></td>
+                    <td><code>{{ row.parent_table_name or '-' }}</code></td>
+                    <td><code>{{ row.parent_table or '-' }}</code></td>
+                    <td><code>{{ row.parent_field or '-' }}</code></td>
+                    <td>
+                        {% if row.use_parent_scope is none %}
+                            -
+                        {% elif row.use_parent_scope %}
+                            true
+                        {% else %}
+                            false
+                        {% endif %}
+                    </td>
+                    <td><code>{{ row.children_provider_class or '-' }}</code></td>
+                    <td>{{ row.priority if row.priority is not none else '-' }}</td>
+                    <td><code>{{ row.sn_sys_id }}</code></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <h2>No App File Types Available</h2>
+        <p>This instance currently has no rows in <code>sys_app_file_type</code> available to manage for assessment slush bucket options.</p>
+        <a href="/instances/{{ instance.id }}/data" class="btn btn-primary">Go to Pre Flight Data Manager</a>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const tableState = {
+    sortIndex: null,
+    sortDirection: 'asc',
+    groupBy: 'none',
+};
+let bulkUpdateInFlight = false;
+let allDataRows = [];
+
+const COLUMN_INDEX = {
+    row_select: 0,
+    available: 1,
+    default_selected: 2,
+    display_name: 3,
+    technical_name: 4,
+    app_file_type_name: 5,
+    type: 6,
+    source_table: 7,
+    source_table_sys_id: 8,
+    source_field: 9,
+    parent_table: 10,
+    parent_table_sys_id: 11,
+    parent_field: 12,
+    use_parent_scope: 13,
+    children_provider_class: 14,
+    priority: 15,
+    sys_id: 16,
+};
+
+const GROUP_BY_COLUMN = {
+    display_name: COLUMN_INDEX.display_name,
+    technical_name: COLUMN_INDEX.technical_name,
+    type: COLUMN_INDEX.type,
+    source_table: COLUMN_INDEX.source_table,
+    parent_table: COLUMN_INDEX.parent_table,
+};
+
+function getTable() {
+    return document.getElementById('assessmentAppFileOptionsTable');
+}
+
+function getTableBody() {
+    const table = getTable();
+    if (!table) return null;
+    return table.querySelector('tbody');
+}
+
+function getVisibleRows() {
+    const tbody = getTableBody();
+    if (!tbody) return [];
+    return Array.from(tbody.querySelectorAll('tr'))
+        .filter((row) => !row.classList.contains('group-row'));
+}
+
+function getSelectedRows() {
+    return allDataRows.filter((row) => {
+        const selector = row.querySelector('.assessment-app-file-row-select');
+        return Boolean(selector && selector.checked);
+    });
+}
+
+function getAppFileTypeIdsFromRows(rows) {
+    return rows
+        .map((row) => String(row.dataset.appFileTypeId || '').trim())
+        .filter((value) => value.length > 0);
+}
+
+function parseSortableCellValue(row, index, type) {
+    const cell = row.children[index];
+    if (!cell) return '';
+
+    if (type === 'boolean') {
+        const checkbox = cell.querySelector('input[type="checkbox"]');
+        if (checkbox) return checkbox.checked ? 1 : 0;
+        return 0;
+    }
+
+    const raw = (cell.textContent || '').trim();
+    if (type === 'number') {
+        const parsed = Number(raw);
+        return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+    }
+
+    return raw.toLowerCase();
+}
+
+function compareSortableValues(a, b) {
+    if (typeof a === 'number' && typeof b === 'number') return a - b;
+    if (a < b) return -1;
+    if (a > b) return 1;
+    return 0;
+}
+
+function getRowCheckboxState(row, selector) {
+    const checkbox = row.querySelector(selector);
+    return checkbox ? Boolean(checkbox.checked) : false;
+}
+
+function matchesBooleanFilter(value, filterValue) {
+    if (filterValue === 'all') return true;
+    return (filterValue === 'true') === Boolean(value);
+}
+
+function rowMatchesFilters(row) {
+    const searchValue = (document.getElementById('appFileTypeSearchInput')?.value || '').trim().toLowerCase();
+    if (searchValue) {
+        const rowText = (row.textContent || '').toLowerCase();
+        if (!rowText.includes(searchValue)) {
+            return false;
+        }
+    }
+
+    const availableFilter = (document.getElementById('availableStateFilter')?.value || 'all').toLowerCase();
+    const defaultFilter = (document.getElementById('defaultStateFilter')?.value || 'all').toLowerCase();
+    const availableValue = getRowCheckboxState(row, '.assessment-app-file-option-toggle');
+    const defaultValue = getRowCheckboxState(row, '.assessment-app-file-default-toggle');
+    return matchesBooleanFilter(availableValue, availableFilter) && matchesBooleanFilter(defaultValue, defaultFilter);
+}
+
+function getGroupLabelForRow(row) {
+    const groupBy = (document.getElementById('groupBySelect')?.value || 'none').toLowerCase();
+    if (groupBy === 'none') return null;
+
+    if (groupBy === 'available') {
+        return `Available: ${getRowCheckboxState(row, '.assessment-app-file-option-toggle') ? 'True' : 'False'}`;
+    }
+    if (groupBy === 'default_selected') {
+        return `Default Selected: ${getRowCheckboxState(row, '.assessment-app-file-default-toggle') ? 'True' : 'False'}`;
+    }
+
+    const columnIndex = GROUP_BY_COLUMN[groupBy];
+    if (columnIndex === undefined) return null;
+    const cell = row.children[columnIndex];
+    const value = (cell?.textContent || '').trim();
+    return `${document.getElementById('groupBySelect')?.selectedOptions?.[0]?.textContent || 'Group'}: ${value || '(empty)'}`;
+}
+
+function buildGroupRow(label) {
+    const tr = document.createElement('tr');
+    tr.className = 'group-row';
+    const td = document.createElement('td');
+    td.colSpan = 17;
+    td.textContent = label;
+    td.className = 'group-row-cell';
+    tr.appendChild(td);
+    return tr;
+}
+
+function updateSortIndicators() {
+    const headers = Array.from(document.querySelectorAll('#assessmentAppFileOptionsTable .sortable-header'));
+    headers.forEach((header) => {
+        const baseLabel = header.dataset.baseLabel || header.textContent.trim();
+        header.dataset.baseLabel = baseLabel;
+        const sortIndex = Number(header.dataset.sortIndex);
+        if (tableState.sortIndex === sortIndex) {
+            header.textContent = `${baseLabel} ${tableState.sortDirection === 'asc' ? '↑' : '↓'}`;
+        } else {
+            header.textContent = baseLabel;
+        }
+    });
+}
+
+function updateVisibleAndSelectedCounts() {
+    const visibleCount = getVisibleRows().length;
+    const visibleEl = document.getElementById('visibleCount');
+    if (visibleEl) visibleEl.textContent = String(visibleCount);
+    const visibleInlineEl = document.getElementById('visibleCountInline');
+    if (visibleInlineEl) visibleInlineEl.textContent = String(visibleCount);
+
+    const selectedVisibleCount = getVisibleRows().filter((row) => {
+        const selector = row.querySelector('.assessment-app-file-row-select');
+        return Boolean(selector && selector.checked);
+    }).length;
+    const selectedEl = document.getElementById('selectedCount');
+    if (selectedEl) selectedEl.textContent = String(selectedVisibleCount);
+}
+
+function syncSelectVisibleRowsToggle() {
+    const toggle = document.getElementById('selectVisibleRowsToggle');
+    if (!toggle) return;
+    const visibleRows = getVisibleRows();
+    if (!visibleRows.length) {
+        toggle.checked = false;
+        toggle.indeterminate = false;
+        return;
+    }
+
+    const selectedCount = visibleRows.filter((row) => {
+        const selector = row.querySelector('.assessment-app-file-row-select');
+        return Boolean(selector && selector.checked);
+    }).length;
+
+    if (selectedCount === 0) {
+        toggle.checked = false;
+        toggle.indeterminate = false;
+    } else if (selectedCount === visibleRows.length) {
+        toggle.checked = true;
+        toggle.indeterminate = false;
+    } else {
+        toggle.checked = false;
+        toggle.indeterminate = true;
+    }
+}
+
+function applyAppFileOptionsTableView() {
+    const tbody = getTableBody();
+    if (!tbody) return;
+
+    const rows = [...allDataRows];
+    if (tableState.sortIndex !== null) {
+        const sortType = getTable()?.querySelector(`.sortable-header[data-sort-index="${tableState.sortIndex}"]`)?.dataset.sortType || 'string';
+        rows.sort((left, right) => {
+            const leftValue = parseSortableCellValue(left, tableState.sortIndex, sortType);
+            const rightValue = parseSortableCellValue(right, tableState.sortIndex, sortType);
+            const base = compareSortableValues(leftValue, rightValue);
+            if (base === 0) {
+                const leftIdx = Number(left.dataset.initialIndex || 0);
+                const rightIdx = Number(right.dataset.initialIndex || 0);
+                return leftIdx - rightIdx;
+            }
+            return tableState.sortDirection === 'asc' ? base : -base;
+        });
+    }
+
+    tbody.innerHTML = '';
+    let lastGroupLabel = null;
+    rows.forEach((row) => {
+        if (!rowMatchesFilters(row)) {
+            return;
+        }
+        const groupLabel = getGroupLabelForRow(row);
+        if (groupLabel && groupLabel !== lastGroupLabel) {
+            tbody.appendChild(buildGroupRow(groupLabel));
+            lastGroupLabel = groupLabel;
+        }
+        tbody.appendChild(row);
+    });
+
+    updateSortIndicators();
+    updateVisibleAndSelectedCounts();
+    syncSelectVisibleRowsToggle();
+}
+
+function recalcAvailableCount() {
+    const toggles = Array.from(document.querySelectorAll('.assessment-app-file-option-toggle'));
+    const enabled = toggles.filter((toggle) => toggle.checked).length;
+    const countEl = document.getElementById('availableCount');
+    if (countEl) countEl.textContent = String(enabled);
+    const countInlineEl = document.getElementById('availableCountInline');
+    if (countInlineEl) countInlineEl.textContent = String(enabled);
+}
+
+function recalcDefaultCount() {
+    const toggles = Array.from(document.querySelectorAll('.assessment-app-file-default-toggle'));
+    const enabled = toggles.filter((toggle) => toggle.checked).length;
+    const countEl = document.getElementById('defaultCount');
+    if (countEl) countEl.textContent = String(enabled);
+}
+
+function applyRowToggleState(row, payload) {
+    if (!row || !payload) return;
+    const availableToggle = row.querySelector('.assessment-app-file-option-toggle');
+    const defaultToggle = row.querySelector('.assessment-app-file-default-toggle');
+    if (availableToggle) {
+        availableToggle.checked = Boolean(payload.is_available_for_assessment);
+    }
+    if (defaultToggle) {
+        defaultToggle.checked = Boolean(payload.is_default_for_assessment) && Boolean(payload.is_available_for_assessment);
+        defaultToggle.disabled = !Boolean(payload.is_available_for_assessment);
+    }
+}
+
+function setActionButtonsDisabled(isDisabled) {
+    [
+        'selectVisibleRowsBtn',
+        'clearSelectedRowsBtn',
+        'setSelectedAvailableTrueBtn',
+        'setSelectedAvailableFalseBtn',
+        'setSelectedDefaultTrueBtn',
+        'setSelectedDefaultFalseBtn',
+        'restoreSelectedDefaultsBtn',
+        'setVisibleAvailableTrueBtn',
+        'setVisibleAvailableFalseBtn',
+        'setVisibleDefaultTrueBtn',
+        'setVisibleDefaultFalseBtn',
+        'restoreVisibleDefaultsBtn',
+    ].forEach((id) => {
+        const button = document.getElementById(id);
+        if (button) button.disabled = isDisabled;
+    });
+}
+
+function setRowsSelected(rows, selected) {
+    rows.forEach((row) => {
+        const selector = row.querySelector('.assessment-app-file-row-select');
+        if (selector) selector.checked = selected;
+    });
+    updateVisibleAndSelectedCounts();
+    syncSelectVisibleRowsToggle();
+}
+
+async function requestBulkUpdate(appFileTypeIds, payload) {
+    const response = await fetch(`/api/instances/{{ instance.id }}/assessment-app-file-options/bulk/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            app_file_type_ids: appFileTypeIds,
+            ...payload,
+        }),
+    });
+    if (!response.ok) {
+        throw new Error(`Request failed (${response.status})`);
+    }
+    return response.json();
+}
+
+async function requestRestoreDefaults(appFileTypeIds) {
+    const response = await fetch(`/api/instances/{{ instance.id }}/assessment-app-file-options/actions/restore-default-selected`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            app_file_type_ids: appFileTypeIds,
+        }),
+    });
+    if (!response.ok) {
+        throw new Error(`Request failed (${response.status})`);
+    }
+    return response.json();
+}
+
+function applyBulkUpdateRows(rowsPayload) {
+    (rowsPayload || []).forEach((item) => {
+        const row = allDataRows.find((candidate) => String(candidate.dataset.appFileTypeId || '') === String(item.app_file_type_id || ''));
+        applyRowToggleState(row, item);
+    });
+}
+
+async function applyBulkActionToRows(rows, payload, emptyMessage) {
+    if (bulkUpdateInFlight) return;
+    const appFileTypeIds = getAppFileTypeIdsFromRows(rows);
+    if (!appFileTypeIds.length) {
+        alert(emptyMessage);
+        return;
+    }
+    bulkUpdateInFlight = true;
+    setActionButtonsDisabled(true);
+    try {
+        const result = await requestBulkUpdate(appFileTypeIds, payload);
+        applyBulkUpdateRows(result.rows || []);
+        recalcAvailableCount();
+        recalcDefaultCount();
+        applyAppFileOptionsTableView();
+    } catch (error) {
+        alert(`Failed to update rows: ${error.message}`);
+    } finally {
+        bulkUpdateInFlight = false;
+        setActionButtonsDisabled(false);
+    }
+}
+
+async function restoreDefaultsForRows(rows, emptyMessage) {
+    if (bulkUpdateInFlight) return;
+    const appFileTypeIds = getAppFileTypeIdsFromRows(rows);
+    if (!appFileTypeIds.length) {
+        alert(emptyMessage);
+        return;
+    }
+    bulkUpdateInFlight = true;
+    setActionButtonsDisabled(true);
+    try {
+        const result = await requestRestoreDefaults(appFileTypeIds);
+        applyBulkUpdateRows(result.rows || []);
+        recalcAvailableCount();
+        recalcDefaultCount();
+        applyAppFileOptionsTableView();
+    } catch (error) {
+        alert(`Failed to restore defaults: ${error.message}`);
+    } finally {
+        bulkUpdateInFlight = false;
+        setActionButtonsDisabled(false);
+    }
+}
+
+async function toggleAssessmentAppFileOption(checkbox) {
+    if (bulkUpdateInFlight) return;
+    const appFileTypeId = checkbox.dataset.appFileTypeId;
+    const checked = checkbox.checked;
+    const previousChecked = !checked;
+    const row = checkbox.closest('tr');
+    const defaultToggle = row ? row.querySelector('.assessment-app-file-default-toggle') : null;
+    const previousDefaultChecked = defaultToggle ? defaultToggle.checked : false;
+
+    checkbox.disabled = true;
+    if (defaultToggle) defaultToggle.disabled = true;
+    try {
+        const response = await fetch(`/api/instances/{{ instance.id }}/assessment-app-file-options/${encodeURIComponent(appFileTypeId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_available_for_assessment: checked }),
+        });
+        if (!response.ok) {
+            throw new Error(`Request failed (${response.status})`);
+        }
+        const payload = await response.json();
+        applyRowToggleState(row, payload);
+        recalcAvailableCount();
+        recalcDefaultCount();
+        applyAppFileOptionsTableView();
+    } catch (error) {
+        checkbox.checked = previousChecked;
+        if (defaultToggle) {
+            defaultToggle.checked = previousDefaultChecked;
+            defaultToggle.disabled = !checkbox.checked;
+        }
+        alert(`Failed to update availability: ${error.message}`);
+    } finally {
+        checkbox.disabled = false;
+        if (defaultToggle) defaultToggle.disabled = !checkbox.checked;
+    }
+}
+
+async function toggleAssessmentAppFileDefault(checkbox) {
+    if (bulkUpdateInFlight) return;
+    const appFileTypeId = checkbox.dataset.appFileTypeId;
+    const checked = checkbox.checked;
+    const previousChecked = !checked;
+    const row = checkbox.closest('tr');
+    const availableToggle = row ? row.querySelector('.assessment-app-file-option-toggle') : null;
+    const previousAvailableChecked = availableToggle ? availableToggle.checked : false;
+
+    checkbox.disabled = true;
+    if (availableToggle) availableToggle.disabled = true;
+    try {
+        const response = await fetch(`/api/instances/{{ instance.id }}/assessment-app-file-options/${encodeURIComponent(appFileTypeId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_default_for_assessment: checked }),
+        });
+        if (!response.ok) {
+            throw new Error(`Request failed (${response.status})`);
+        }
+        const payload = await response.json();
+        applyRowToggleState(row, payload);
+        recalcAvailableCount();
+        recalcDefaultCount();
+        applyAppFileOptionsTableView();
+    } catch (error) {
+        checkbox.checked = previousChecked;
+        if (availableToggle) availableToggle.checked = previousAvailableChecked;
+        alert(`Failed to update default selection: ${error.message}`);
+    } finally {
+        checkbox.disabled = false;
+        if (availableToggle) availableToggle.disabled = false;
+    }
+}
+
+function initAppFileOptionsTableControls() {
+    const tbody = getTableBody();
+    if (!tbody) return;
+    allDataRows = Array.from(tbody.querySelectorAll('tr'))
+        .filter((row) => !row.classList.contains('group-row'));
+    allDataRows.forEach((row, index) => {
+        row.dataset.initialIndex = String(index);
+        const selector = row.querySelector('.assessment-app-file-row-select');
+        selector?.addEventListener('change', () => {
+            updateVisibleAndSelectedCounts();
+            syncSelectVisibleRowsToggle();
+        });
+    });
+
+    Array.from(document.querySelectorAll('#assessmentAppFileOptionsTable .sortable-header')).forEach((header) => {
+        header.addEventListener('click', () => {
+            const index = Number(header.dataset.sortIndex);
+            if (tableState.sortIndex === index) {
+                tableState.sortDirection = tableState.sortDirection === 'asc' ? 'desc' : 'asc';
+            } else {
+                tableState.sortIndex = index;
+                tableState.sortDirection = 'asc';
+            }
+            applyAppFileOptionsTableView();
+        });
+    });
+
+    document.getElementById('appFileTypeSearchInput')?.addEventListener('input', applyAppFileOptionsTableView);
+    document.getElementById('availableStateFilter')?.addEventListener('change', applyAppFileOptionsTableView);
+    document.getElementById('defaultStateFilter')?.addEventListener('change', applyAppFileOptionsTableView);
+    document.getElementById('groupBySelect')?.addEventListener('change', applyAppFileOptionsTableView);
+    document.getElementById('appFileTypeSearchClearBtn')?.addEventListener('click', () => {
+        const searchInput = document.getElementById('appFileTypeSearchInput');
+        if (searchInput) searchInput.value = '';
+        applyAppFileOptionsTableView();
+    });
+
+    document.getElementById('selectVisibleRowsBtn')?.addEventListener('click', () => {
+        setRowsSelected(getVisibleRows(), true);
+    });
+    document.getElementById('clearSelectedRowsBtn')?.addEventListener('click', () => {
+        setRowsSelected(allDataRows, false);
+    });
+    document.getElementById('selectVisibleRowsToggle')?.addEventListener('change', (event) => {
+        const shouldSelect = Boolean(event.target?.checked);
+        setRowsSelected(getVisibleRows(), shouldSelect);
+    });
+
+    document.getElementById('setSelectedAvailableTrueBtn')?.addEventListener('click', () =>
+        applyBulkActionToRows(getSelectedRows(), { is_available_for_assessment: true }, 'No rows selected.')
+    );
+    document.getElementById('setSelectedAvailableFalseBtn')?.addEventListener('click', () =>
+        applyBulkActionToRows(getSelectedRows(), { is_available_for_assessment: false }, 'No rows selected.')
+    );
+    document.getElementById('setSelectedDefaultTrueBtn')?.addEventListener('click', () =>
+        applyBulkActionToRows(getSelectedRows(), { is_default_for_assessment: true }, 'No rows selected.')
+    );
+    document.getElementById('setSelectedDefaultFalseBtn')?.addEventListener('click', () =>
+        applyBulkActionToRows(getSelectedRows(), { is_default_for_assessment: false }, 'No rows selected.')
+    );
+    document.getElementById('restoreSelectedDefaultsBtn')?.addEventListener('click', () =>
+        restoreDefaultsForRows(getSelectedRows(), 'No rows selected.')
+    );
+
+    document.getElementById('setVisibleAvailableTrueBtn')?.addEventListener('click', () =>
+        applyBulkActionToRows(getVisibleRows(), { is_available_for_assessment: true }, 'No visible rows to update.')
+    );
+    document.getElementById('setVisibleAvailableFalseBtn')?.addEventListener('click', () =>
+        applyBulkActionToRows(getVisibleRows(), { is_available_for_assessment: false }, 'No visible rows to update.')
+    );
+    document.getElementById('setVisibleDefaultTrueBtn')?.addEventListener('click', () =>
+        applyBulkActionToRows(getVisibleRows(), { is_default_for_assessment: true }, 'No visible rows to update.')
+    );
+    document.getElementById('setVisibleDefaultFalseBtn')?.addEventListener('click', () =>
+        applyBulkActionToRows(getVisibleRows(), { is_default_for_assessment: false }, 'No visible rows to update.')
+    );
+    document.getElementById('restoreVisibleDefaultsBtn')?.addEventListener('click', () =>
+        restoreDefaultsForRows(getVisibleRows(), 'No visible rows to update.')
+    );
+
+    applyAppFileOptionsTableView();
+}
+
+initAppFileOptionsTableControls();
+recalcAvailableCount();
+recalcDefaultCount();
+</script>
+{% endblock %}

@@ -1,0 +1,301 @@
+{% extends "base.html" %}
+
+{% block title %}{{ action }} Assessment - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>{{ action }} Assessment</h1>
+</div>
+
+<div class="card form-card">
+    <form method="post" action="/assessments/{{ 'add' if action == 'New' else assessment.id }}">
+        <!-- Basic Info Section -->
+        <div class="form-section">
+            <div class="form-section-title">Basic Information</div>
+
+            <div class="form-group">
+                <label for="name">Assessment Name</label>
+                <input type="text" id="name" name="name" required
+                       value="{{ assessment.name if assessment else '' }}"
+                       placeholder="e.g., Incident Management Assessment Q1 2026">
+                <small>A descriptive name for this assessment</small>
+            </div>
+
+            <div class="form-group">
+                <label for="description">Description</label>
+                <textarea id="description" name="description" rows="3"
+                          placeholder="Optional description of assessment scope and goals">{{ assessment.description if assessment else '' }}</textarea>
+            </div>
+
+            <div class="form-group">
+                <label for="instance_id">ServiceNow Instance</label>
+                <select id="instance_id" name="instance_id" required>
+                    <option value="">-- Select Instance --</option>
+                    {% for instance in instances %}
+                    <option value="{{ instance.id }}"
+                            {% if (assessment and assessment.instance_id == instance.id) or (not assessment and selected_instance_id == instance.id) %}selected{% endif %}>
+                        {{ instance.name }} ({{ instance.url }})
+                    </option>
+                    {% endfor %}
+                </select>
+                <small>The ServiceNow instance to assess</small>
+            </div>
+        </div>
+
+        <!-- Assessment Type Section -->
+        <div class="form-section">
+            <div class="form-section-title">Assessment Type</div>
+
+            <div class="form-group">
+                <label for="assessment_type">Type</label>
+                <select id="assessment_type" name="assessment_type" required onchange="toggleTargetFields()">
+                    <option value="global_app" {% if not assessment or assessment.assessment_type.value == 'global_app' %}selected{% endif %}>
+                        Global Application (Incident, Change, etc.)
+                    </option>
+                    <option value="table" {% if assessment and assessment.assessment_type.value == 'table' %}selected{% endif %}>
+                        Specific Tables
+                    </option>
+                    <option value="plugin" {% if assessment and assessment.assessment_type.value == 'plugin' %}selected{% endif %}>
+                        Plugin/Package
+                    </option>
+                    <option value="platform_global" {% if assessment and assessment.assessment_type.value == 'platform_global' %}selected{% endif %}>
+                        Platform Global (Platform-wide configs)
+                    </option>
+                </select>
+                <small>Determines what type of assessment target you can select</small>
+            </div>
+
+            <!-- Global App Selection (conditional) -->
+            <div id="target_app_field" class="form-group conditional-field">
+                <label for="target_app_id">Target Application</label>
+                <select id="target_app_id" name="target_app_id">
+                    <option value="">-- Select Application --</option>
+                    {% for app in global_apps %}
+                    <option value="{{ app.id }}"
+                            {% if assessment and assessment.target_app_id == app.id %}selected{% endif %}>
+                        {{ app.label }}
+                    </option>
+                    {% endfor %}
+                </select>
+                <small>Select the ITSM application to assess</small>
+            </div>
+
+            <!-- Table Selection (conditional) -->
+            <div id="target_tables_field" class="form-group conditional-field">
+                <label for="target_tables">Target Tables</label>
+                <input type="text" id="target_tables" name="target_tables"
+                       value="{{ assessment.target_tables_json if assessment else '' }}"
+                       placeholder="incident, change_request, problem">
+                <small>Comma-separated list of table names to assess</small>
+            </div>
+
+            <!-- Plugin Selection (conditional) -->
+            <div id="target_plugins_field" class="form-group conditional-field">
+                <label for="target_plugins">Target Plugins</label>
+                <input type="text" id="target_plugins" name="target_plugins"
+                       value="{{ assessment.target_plugins_json if assessment else '' }}"
+                       placeholder="com.snc.incident, com.snc.change">
+                <small>Comma-separated list of plugin IDs to assess</small>
+            </div>
+        </div>
+
+        <!-- App File Classes Section -->
+        <div class="form-section">
+            <div class="form-section-title">Application File Types to Scan</div>
+            <p class="text-muted-sm mb-1">
+                Use the list collector to move instance-specific file types into scope for this assessment
+            </p>
+
+            <div class="list-collector">
+                <div class="list-collector-column">
+                    <label for="available_app_file_classes">Available Types</label>
+                    <select id="available_app_file_classes" multiple size="14" title="Available application file types"></select>
+                </div>
+
+                <div class="list-collector-controls">
+                    <button type="button" id="add_selected_class" class="btn btn-secondary btn-sm" title="Add selected file types to scope">&gt;</button>
+                    <button type="button" id="add_all_classes" class="btn btn-secondary btn-sm" title="Add all file types to scope">&gt;&gt;</button>
+                    <button type="button" id="remove_selected_class" class="btn btn-secondary btn-sm" title="Remove selected file types from scope">&lt;</button>
+                    <button type="button" id="remove_all_classes" class="btn btn-secondary btn-sm" title="Remove all file types from scope">&lt;&lt;</button>
+                </div>
+
+                <div class="list-collector-column">
+                    <label for="selected_app_file_classes_ui">Selected Types</label>
+                    <select id="selected_app_file_classes_ui" multiple size="14" title="Selected application file types"></select>
+                </div>
+            </div>
+
+            <select id="selected_app_file_classes_submit" name="app_file_classes" multiple hidden></select>
+            <small class="mt-05 d-block">
+                Default selections follow important baseline classes; you can add/remove before saving
+            </small>
+        </div>
+
+        <!-- Scope Filter -->
+        <div class="form-section">
+            <div class="form-section-title">Scope Filter</div>
+
+            <div class="form-group">
+                <label for="scope_filter">Scope</label>
+                <select id="scope_filter" name="scope_filter">
+                    <option value="global" {% if not assessment or assessment.scope_filter == 'global' %}selected{% endif %}>
+                        Global Scope Only
+                    </option>
+                    <option value="all" {% if assessment and assessment.scope_filter == 'all' %}selected{% endif %}>
+                        All Scopes
+                    </option>
+                </select>
+                <small>Filter artifacts by application scope</small>
+            </div>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">
+                {% if action == 'New' %}Create Assessment{% else %}Save Changes{% endif %}
+            </button>
+            <a href="/assessments" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const initialAppFileClasses = {{ app_file_classes | tojson }};
+const initialSelectedClassNames = {{ selected_class_names | tojson }};
+
+function toggleTargetFields() {
+    const type = document.getElementById('assessment_type').value;
+
+    // Hide all conditional fields
+    document.querySelectorAll('.conditional-field').forEach(el => {
+        el.classList.remove('visible');
+    });
+
+    // Show the appropriate field based on type
+    if (type === 'global_app') {
+        document.getElementById('target_app_field').classList.add('visible');
+    } else if (type === 'table') {
+        document.getElementById('target_tables_field').classList.add('visible');
+    } else if (type === 'plugin') {
+        document.getElementById('target_plugins_field').classList.add('visible');
+    }
+    // platform_global doesn't need additional fields
+}
+
+function buildCollectorOption(item) {
+    const label = item.label || item.sys_class_name;
+    return new Option(label, item.sys_class_name);
+}
+
+function sortCollectorOptions(items) {
+    return [...items].sort((left, right) => {
+        const leftOrder = Number(left.display_order ?? 9999);
+        const rightOrder = Number(right.display_order ?? 9999);
+        if (leftOrder !== rightOrder) {
+            return leftOrder - rightOrder;
+        }
+        return (left.label || left.sys_class_name || '').localeCompare(right.label || right.sys_class_name || '');
+    });
+}
+
+function syncCollectorSubmitSelect() {
+    const selectedUi = document.getElementById('selected_app_file_classes_ui');
+    const submitSelect = document.getElementById('selected_app_file_classes_submit');
+    submitSelect.innerHTML = '';
+    Array.from(selectedUi.options).forEach((option) => {
+        const submitOption = new Option(option.text, option.value, true, true);
+        submitSelect.add(submitOption);
+    });
+}
+
+function renderClassCollector(options, selectedClassNames) {
+    const optionMap = new Map();
+    options.forEach((item) => {
+        if (item && item.sys_class_name) {
+            optionMap.set(item.sys_class_name, item);
+        }
+    });
+    const selectedSet = new Set((selectedClassNames || []).filter((name) => optionMap.has(name)));
+    const availableSelect = document.getElementById('available_app_file_classes');
+    const selectedSelect = document.getElementById('selected_app_file_classes_ui');
+    availableSelect.innerHTML = '';
+    selectedSelect.innerHTML = '';
+
+    sortCollectorOptions(options).forEach((item) => {
+        const option = buildCollectorOption(item);
+        if (selectedSet.has(item.sys_class_name)) {
+            selectedSelect.add(option);
+        } else {
+            availableSelect.add(option);
+        }
+    });
+    syncCollectorSubmitSelect();
+}
+
+function moveCollectorOptions(sourceSelect, targetSelect, selectedOnly) {
+    const options = Array.from(sourceSelect.options);
+    const toMove = selectedOnly ? options.filter((option) => option.selected) : options;
+    toMove.forEach((option) => {
+        sourceSelect.remove(option.index);
+        option.selected = false;
+        targetSelect.add(option);
+    });
+    syncCollectorSubmitSelect();
+}
+
+async function refreshClassCollectorForInstance(instanceId) {
+    if (!instanceId) {
+        renderClassCollector([], []);
+        return;
+    }
+    try {
+        const response = await fetch(`/api/instances/${encodeURIComponent(instanceId)}/app-file-classes`);
+        if (!response.ok) {
+            return;
+        }
+        const payload = await response.json();
+        renderClassCollector(payload.app_file_classes || [], payload.default_selected || []);
+    } catch (error) {
+        console.error('Failed to refresh app file class options', error);
+    }
+}
+
+function initializeClassCollector() {
+    const availableSelect = document.getElementById('available_app_file_classes');
+    const selectedSelect = document.getElementById('selected_app_file_classes_ui');
+    const instanceSelect = document.getElementById('instance_id');
+    const form = document.querySelector('form');
+
+    renderClassCollector(initialAppFileClasses || [], initialSelectedClassNames || []);
+
+    document.getElementById('add_selected_class').addEventListener('click', () => {
+        moveCollectorOptions(availableSelect, selectedSelect, true);
+    });
+    document.getElementById('add_all_classes').addEventListener('click', () => {
+        moveCollectorOptions(availableSelect, selectedSelect, false);
+    });
+    document.getElementById('remove_selected_class').addEventListener('click', () => {
+        moveCollectorOptions(selectedSelect, availableSelect, true);
+    });
+    document.getElementById('remove_all_classes').addEventListener('click', () => {
+        moveCollectorOptions(selectedSelect, availableSelect, false);
+    });
+
+    instanceSelect.addEventListener('change', () => {
+        refreshClassCollectorForInstance(instanceSelect.value);
+    });
+
+    form.addEventListener('submit', () => {
+        syncCollectorSubmitSelect();
+    });
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', () => {
+    toggleTargetFields();
+    initializeClassCollector();
+});
+</script>
+{% endblock %}

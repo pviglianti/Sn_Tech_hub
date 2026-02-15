@@ -1,0 +1,21 @@
+{
+  "_comment": "Copy this file as .mcp.json and update the path below. Two transport options:",
+
+  "_option_1_stdio": "For Claude Desktop / IDE (stdio transport via bridge script)",
+  "_option_1_config": {
+    "tech-assessment-hub": {
+      "command": "python3",
+      "args": ["REPLACE_WITH_APP_ROOT/scripts/mcp_stdio_bridge.py", "--port", "8080"]
+    }
+  },
+
+  "_option_2_http": "For direct HTTP access (e.g., from app or curl)",
+
+  "mcpServers": {
+    "tech-assessment-hub": {
+      "url": "http://localhost:8080/mcp",
+      "transport": "http",
+      "description": "ServiceNow Tech Assessment Hub - MCP Server for AI-driven assessments"
+    }
+  }
+}

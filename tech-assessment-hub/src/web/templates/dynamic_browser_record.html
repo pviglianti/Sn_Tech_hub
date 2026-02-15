@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+
+{% block title %}Record {{ sys_id[:8] }} - {{ table_label }} - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<a href="/browse/{{ sn_table_name }}?instance_id={{ instance_id }}" class="browse-back-link">&larr; Back to {{ table_label }} list</a>
+
+<div class="page-header">
+    <div>
+        <h1>{{ table_label }}</h1>
+        <p style="font-size:0.85rem;color:var(--text-muted);margin-top:0.25rem;">
+            <code style="font-size:0.82rem;">{{ sys_id }}</code>
+            &mdash; {{ instance.name }}
+        </p>
+    </div>
+    <div class="record-header-actions">
+        {% if sn_url %}
+        <a href="{{ sn_url }}" target="_blank" class="btn btn-sm btn-secondary">Open in ServiceNow</a>
+        {% endif %}
+        <a href="/browse/{{ sn_table_name }}?instance_id={{ instance_id }}" class="btn btn-sm btn-secondary">Back to List</a>
+    </div>
+</div>
+
+<div class="card" id="recordDetailCard">
+    <div class="table-scroll" style="min-height:200px;">
+        <div class="table-loading-overlay" id="recordLoading">
+            <div class="table-loading-pill"><span class="table-spinner"></span> Loading record…</div>
+        </div>
+        <table class="record-detail-table" id="recordTable" style="display:none;">
+            <thead>
+                <tr>
+                    <th>Field</th>
+                    <th>Value</th>
+                </tr>
+            </thead>
+            <tbody id="recordTableBody"></tbody>
+        </table>
+    </div>
+    <details class="record-raw-json" id="rawJsonSection" style="display:none;">
+        <summary>Raw JSON</summary>
+        <pre id="rawJsonPre"></pre>
+    </details>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    var tableName = {{ sn_table_name|tojson }};
+    var instanceId = {{ instance_id }};
+    var sysId = {{ sys_id|tojson }};
+    var tbody = document.getElementById('recordTableBody');
+    var table = document.getElementById('recordTable');
+    var loading = document.getElementById('recordLoading');
+    var rawSection = document.getElementById('rawJsonSection');
+    var rawPre = document.getElementById('rawJsonPre');
+
+    fetch('/api/dynamic-browser/record?table=' + encodeURIComponent(tableName) +
+          '&instance_id=' + instanceId +
+          '&sys_id=' + encodeURIComponent(sysId))
+        .then(function (res) {
+            if (!res.ok) throw new Error('Failed to load record: ' + res.status);
+            return res.json();
+        })
+        .then(function (data) {
+            loading.style.display = 'none';
+            table.style.display = '';
+
+            // Build lookup of locally available tables
+            var availTables = {};
+            (data.available_tables || []).forEach(function (t) { availTables[t] = true; });
+
+            (data.field_rows || []).forEach(function (f) {
+                var tr = document.createElement('tr');
+
+                var th = document.createElement('th');
+                th.textContent = f.label || f.field;
+                th.title = f.field + ' (' + (f.kind || 'string') + ')';
+                tr.appendChild(th);
+
+                var td = document.createElement('td');
+                var val = f.value != null ? String(f.value) : '';
+
+                if (f.is_reference && f.reference_table && val) {
+                    if (availTables[f.reference_table]) {
+                        // Blue clickable — table exists locally
+                        var link = document.createElement('a');
+                        link.href = '/browse/' + encodeURIComponent(f.reference_table) +
+                            '/record/' + encodeURIComponent(val) +
+                            '?instance_id=' + instanceId;
+                        link.className = 'ref-link';
+                        link.textContent = val;
+                        link.title = 'Open record in ' + f.reference_table;
+                        td.appendChild(link);
+                    } else {
+                        // Underlined but not clickable — table not in our DB
+                        var span = document.createElement('span');
+                        span.className = 'ref-unavailable';
+                        span.textContent = val;
+                        span.title = f.reference_table + ' (not available locally)';
+                        td.appendChild(span);
+                    }
+                } else {
+                    td.textContent = val;
+                }
+
+                tr.appendChild(td);
+                tbody.appendChild(tr);
+            });
+
+            // Raw JSON
+            if (data.raw_json) {
+                rawSection.style.display = '';
+                try {
+                    var parsed = typeof data.raw_json === 'string' ? JSON.parse(data.raw_json) : data.raw_json;
+                    rawPre.textContent = JSON.stringify(parsed, null, 2);
+                } catch (e) {
+                    rawPre.textContent = String(data.raw_json);
+                }
+            }
+        })
+        .catch(function (err) {
+            loading.style.display = 'none';
+            tbody.innerHTML = '<tr><td colspan="2" style="text-align:center;color:var(--danger-color);padding:2rem;">' +
+                'Error: ' + err.message + '</td></tr>';
+            table.style.display = '';
+        });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block title %}Integration Properties - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Integration Properties</h1>
+</div>
+
+<div class="card">
+    <p class="text-muted-plain mb-0">
+        Scope: <strong>{{ property_scope }}</strong> (global to this running app/database, not per ServiceNow instance).
+    </p>
+</div>
+
+<div class="card mt-1">
+    <h2>Admin Access</h2>
+    {% set token_input_id = 'integrationAdminToken' %}
+    {% set token_help_text = 'Required for remote access. Localhost is allowed when no token is configured.' %}
+    {% include "components/admin_token_field.html" %}
+    <div class="button-group">
+        <button class="btn btn-secondary" id="integrationReload" title="Reload properties from server using current admin token">Reload</button>
+        <button class="btn btn-primary" id="integrationSave" title="Save edited property values to app_config">Save Changes</button>
+        <button class="btn btn-secondary" id="integrationResetDefaults" title="Reset all edited values back to defaults in this form">Reset Form To Defaults</button>
+    </div>
+    <pre id="integrationPropertiesStatus" class="code-block mt-1">Ready.</pre>
+</div>
+
+<div id="integrationSectionsContainer"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    window.INTEGRATION_PROPERTIES = {{ properties_json | safe }};
+    window.INTEGRATION_SECTION_ORDER = {{ section_order_json | safe }};
+</script>
+<script src="/static/js/integration_properties.js?v={{ static_version }}"></script>
+{% endblock %}

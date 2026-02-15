@@ -1,0 +1,233 @@
+# Scan rules for assessment-driven scans.
+# Edit this file to change default scans and query patterns.
+
+version: 1
+
+assessment_types:
+  global_app:
+    required_fields:
+      - target_app_id
+      - app_file_classes_json
+    default_scans:
+      - metadata_index
+      # - update_xml
+      # - metadata_customization
+      # - version_history
+    scope_options: [all, global]
+    drivers: [core_tables, keywords]
+
+  table:
+    required_fields:
+      - target_tables_json
+      - app_file_classes_json
+    default_scans:
+      - metadata_index
+      # - update_xml
+      # - metadata_customization
+      # - version_history
+    scope_options: [all, global]
+    drivers: [target_tables, keywords]
+
+  plugin:
+    required_fields:
+      - target_plugins_json
+      - app_file_classes_json
+    default_scans:
+      - metadata_index
+      # - metadata_customization
+      # - version_history
+    scope_options: [all, global]
+    drivers: [plugins]
+
+  platform_global:
+    required_fields:
+      - app_file_classes_json
+    default_scans:
+      - metadata_index
+      # - metadata_customization
+      # - version_history
+    scope_options: [all, global]
+    drivers: []
+
+scan_kinds:
+  metadata_index:
+    table: sys_metadata
+    description: Base index of config records in scope
+  update_xml:
+    table: sys_update_xml
+    description: Customer update XML records matching app/table
+  metadata_customization:
+    table: sys_metadata_customization
+    description: OOTB customization signals
+  version_history:
+    table: sys_update_version
+    description: Version history for origin classification
+  artifact_detail:
+    table: varies
+    description: Optional per-table detail fetch
+
+app_file_class_queries:
+  sys_script:
+    target_table_field: ref_sys_script.collection
+    pattern: "ref_sys_script.collectionLIKE{table}"
+  sys_script_client:
+    target_table_field: ref_sys_script_client.table
+    pattern: "ref_sys_script_client.tableLIKE{table}"
+  sys_ui_policy:
+    target_table_field: ref_sys_ui_policy.table
+    pattern: "ref_sys_ui_policy.tableLIKE{table}"
+  sys_ui_action:
+    target_table_field: ref_sys_ui_action.table
+    pattern: "ref_sys_ui_action.tableLIKE{table}"
+  sys_ui_policy_action:
+    target_table_field: ref_sys_ui_policy_action.ui_policy.table
+    pattern: "ref_sys_ui_policy_action.ui_policy.tableLIKE{table}"
+  sys_data_policy2:
+    target_table_field: ref_sys_data_policy2.table
+    pattern: "ref_sys_data_policy2.tableLIKE{table}"
+  wf_workflow:
+    target_table_field: ref_wf_workflow.table
+    pattern: "ref_wf_workflow.tableLIKE{table}"
+  sys_report:
+    target_table_field: ref_sys_report.table
+    pattern: "ref_sys_report.tableLIKE{table}"
+  sys_dictionary:
+    target_table_field: ref_sys_dictionary.name
+    pattern: "ref_sys_dictionary.nameSTARTSWITH{table}."
+  sys_choice:
+    target_table_field: ref_sys_choice.name
+    pattern: "ref_sys_choice.nameSTARTSWITH{table}."
+  sys_script_include:
+    target_table_field: null
+    keyword_pattern: "{base}^nameLIKE{keyword}^OR{base}^scriptLIKE{keyword}"
+  sp_widget:
+    target_table_field: null
+    keyword_pattern: "123TEXTQUERY321={keyword}"
+  sp_page:
+    target_table_field: null
+    keyword_pattern: "123TEXTQUERY321={keyword}"
+
+update_xml_filters:
+  by_table:
+    patterns:
+      - "table={table}"
+      - "nameSTARTSWITH{table}."
+      - "target_nameSTARTSWITH{table}."
+  by_keyword:
+    pattern: "123TEXTQUERY321={keyword}"
+
+scope_filters:
+  global:
+    metadata: "sys_scope={scope_id}"
+    update_xml: "update_set.application={scope_id}"
+  all:
+    metadata: ""
+    update_xml: ""
+
+# Filter which metadata results are stored. Empty list means store all.
+result_filters:
+  allowed_origin_types: []
+  dedupe_across_scans: true
+  # allowed_origin_types:
+  #   - modified_ootb
+  #   - net_new_customer
+
+# Optional overrides to enrich global app scans with related tables/keywords.
+# Edit these to match your instance naming and plugin relationships.
+global_app_overrides:
+  incident:
+    tables:
+      - incident_task
+    keywords:
+      - incident
+      - inc
+      - "major incident"
+  change:
+    tables:
+      - change_request
+      - change_task
+    keywords:
+      - change
+      - change_request
+      - change_task
+      - chg
+  problem:
+    tables:
+      - problem
+      - problem_task
+    keywords:
+      - problem
+      - prb
+  request:
+    tables:
+      - sc_request
+      - sc_req_item
+      - sc_task
+      - sc_cat_item
+    keywords:
+      - request
+      - catalog
+      - ritm
+      - req
+  knowledge:
+    tables:
+      - kb_knowledge
+      - kb_category
+    keywords:
+      - knowledge
+      - kb
+  cmdb:
+    tables:
+      - cmdb_ci
+      - cmdb_rel_ci
+    table_prefixes:
+      - cmdb_
+    keywords:
+      - cmdb
+      - ci
+      - configuration
+  asset:
+    tables:
+      - alm_asset
+      - alm_hardware
+      - alm_consumable
+    table_prefixes:
+      - alm_
+    keywords:
+      - asset
+      - alm
+  sla:
+    tables:
+      - contract_sla
+      - task_sla
+    keywords:
+      - sla
+      - "service level"
+  service_portal:
+    tables:
+      - sp_portal
+      - sp_page
+      - sp_widget
+    table_prefixes:
+      - sp_
+    keywords:
+      - portal
+      - widget
+      - sp_
+  hr_case:
+    tables:
+      - sn_hr_core_case
+      - sn_hr_core_task
+    table_prefixes:
+      - sn_hr_
+    keywords:
+      - hr
+      - hr_case
+  csm_case:
+    tables:
+      - sn_customerservice_case
+    table_prefixes:
+      - sn_customerservice_
+    keywords:
+      - csm
+      - customer

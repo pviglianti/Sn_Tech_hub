@@ -1,0 +1,579 @@
+{% extends "base.html" %}
+
+{% block title %}Scan {{ scan.id }} - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="assessment-header">
+        <div class="assessment-info">
+            <div class="assessment-number">Scan #{{ scan.id }}</div>
+            <h1 class="assessment-title">{{ scan.name }}</h1>
+            <div class="assessment-meta">
+                <span><strong>Type:</strong> {{ scan.scan_type.value | replace('_', ' ') | title }}</span>
+                <span><strong>Status:</strong> {{ scan.status.value }}</span>
+                <span><strong>Total:</strong> {{ scan.records_found }}</span>
+                <span><strong>Customized:</strong> {{ scan.records_customized }}</span>
+                <span><strong>Customer:</strong> {{ scan.records_customer_customized }}</span>
+                <span><strong>OOTB Modified:</strong> {{ scan.records_ootb_modified }}</span>
+            </div>
+        </div>
+        <div class="assessment-actions">
+            <a href="/assessments/{{ scan.assessment_id }}" class="btn btn-secondary">Back to Assessment</a>
+            <form method="post" action="/scans/{{ scan.id }}/retry" class="inline-form">
+                <button type="submit" class="btn btn-primary" title="Clears this scan's results and reruns it from scratch.">Retry Scan</button>
+            </form>
+            <form method="post" action="/scans/{{ scan.id }}/cancel" class="inline-form">
+                <button type="submit" class="btn btn-secondary" title="Request cancellation of this scan if it is running.">Cancel Scan</button>
+            </form>
+            <form method="post" action="/scans/{{ scan.id }}/refresh-delta" class="inline-form">
+                <button type="submit" class="btn btn-secondary" title="Fetches only records updated since the last completion and appends them.">Refresh Delta</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="mt-1 text-muted-plain">
+        <div><strong>Target Table:</strong> {{ scan.target_table or '-' }}</div>
+        <div><strong>Encoded Query:</strong> <code>{{ scan.encoded_query or '-' }}</code></div>
+        <div><strong>Started:</strong> {{ scan.started_at.strftime('%Y-%m-%d %H:%M') if scan.started_at else '-' }}</div>
+        <div><strong>Completed:</strong> {{ scan.completed_at.strftime('%Y-%m-%d %H:%M') if scan.completed_at else '-' }}</div>
+        {% if scan.error_message %}
+        <div class="error mt-05">Error: {{ scan.error_message }}</div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="related-lists mt-15">
+    <div class="tab-container">
+        <div class="tab-nav">
+            <button type="button" class="tab-btn active" onclick="openScanTab(event, 'scan-customizations')" id="scanCustomizationsTabBtn">
+                Customizations <span class="badge" id="scanCustomizationsTabBadge">{{ scan.records_customized }}</span>
+            </button>
+            <button type="button" class="tab-btn" onclick="openScanTab(event, 'scan-artifacts')" id="scanArtifactsTabBtn">
+                Artifacts <span class="badge" id="scanArtifactsTabBadge">0</span>
+            </button>
+            <button type="button" class="tab-btn" onclick="openScanTab(event, 'scan-results')">
+                Results <span class="badge" id="scanResultsTabBadge">{{ scan.records_found }}</span>
+            </button>
+        </div>
+
+        <!-- Customizations Tab (default active) -->
+        <div id="scan-customizations" class="tab-content active">
+            <div class="card result-filter-card">
+                <div class="result-filter-grid">
+                    <div class="filter-group">
+                        <label for="scanCustomizationsTypeFilter">Customization Type</label>
+                        <select id="scanCustomizationsTypeFilter" class="form-control">
+                            <option value="" selected>All Customized</option>
+                            <option value="modified_ootb">Modified OOTB</option>
+                            <option value="net_new_customer">Net New Customer</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="scanCustomizationsClassFilter">App File Class</label>
+                        <select id="scanCustomizationsClassFilter" class="form-control">
+                            <option value="">All Classes</option>
+                        </select>
+                    </div>
+                    <div class="filter-group filter-actions-inline">
+                        <label>Actions</label>
+                        <div class="inline-actions">
+                            <button id="scanCustomizationsApply" class="btn btn-sm btn-primary" type="button">Apply</button>
+                            <button id="scanCustomizationsReset" class="btn btn-sm btn-secondary" type="button">Reset</button>
+                        </div>
+                        <div id="scanCustomizationsMeta" class="filter-meta muted">Loading customizations...</div>
+                    </div>
+                </div>
+            </div>
+            <div class="table-scroll" style="position: relative;">
+                <div class="table-loading-overlay is-hidden" id="scanCustomizationsLoading">
+                    <span class="table-spinner"></span>
+                </div>
+                <table class="related-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Class</th>
+                            <th>Origin</th>
+                            <th>Scope</th>
+                            <th>Review</th>
+                            <th>Disposition</th>
+                            <th>Updated</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="scanCustomizationsBody"></tbody>
+                </table>
+                <div class="is-hidden" id="scanCustomizationsEmpty">
+                    <p class="text-muted-plain">No customizations found.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Results Tab -->
+        <div id="scan-results" class="tab-content">
+            <div class="card result-filter-card">
+                <div class="result-filter-grid">
+                    <div class="filter-group">
+                        <label for="scanResultsClassification">Classification</label>
+                        <select id="scanResultsClassification" class="form-control">
+                            <option value="all" selected>All Results</option>
+                            <option value="customized">Customized</option>
+                            <option value="uncustomized">Uncustomized</option>
+                            <option value="modified_ootb">Modified OOTB</option>
+                            <option value="net_new_customer">Net New Customer</option>
+                            <option value="ootb_untouched">OOTB Untouched</option>
+                            <option value="unknown">Unknown</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="scanResultsClassFilter">App File Class</label>
+                        <select id="scanResultsClassFilter" class="form-control">
+                            <option value="">All Classes</option>
+                        </select>
+                    </div>
+                    <div class="filter-group filter-actions-inline">
+                        <label>Actions</label>
+                        <div class="inline-actions">
+                            <button id="scanResultsApply" class="btn btn-sm btn-primary" type="button">Apply</button>
+                            <button id="scanResultsReset" class="btn btn-sm btn-secondary" type="button">Reset</button>
+                        </div>
+                        <div id="scanResultsMeta" class="filter-meta muted">Loading results...</div>
+                    </div>
+                </div>
+            </div>
+            <div class="table-scroll">
+                <div id="scanResultsLoading" class="table-loading-overlay is-hidden">
+                    <div class="table-loading-pill">
+                        <span class="table-spinner"></span>
+                        Loading scan results...
+                    </div>
+                </div>
+                <table class="related-table" id="scanResultsTable">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>App File Class</th>
+                            <th>Customized</th>
+                            <th>Classification</th>
+                            <th>Review</th>
+                            <th>Disposition</th>
+                            <th>Updated</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="scanResultsBody"></tbody>
+                </table>
+            </div>
+            <div id="scanResultsEmpty" class="empty-state is-hidden p-2">
+                <p class="text-muted-plain">No results match the current filters.</p>
+            </div>
+        </div>
+
+        <!-- Artifacts Tab -->
+        <div id="scan-artifacts" class="tab-content">
+            <div class="card result-filter-card">
+                <div class="result-filter-grid">
+                    <div class="filter-group">
+                        <label for="scanArtifactClassFilter">Artifact Class</label>
+                        <select id="scanArtifactClassFilter" class="form-control">
+                            <option value="">All Classes</option>
+                        </select>
+                    </div>
+                    <div class="filter-group filter-actions-inline">
+                        <label>Actions</label>
+                        <div class="inline-actions">
+                            <button id="scanArtifactApply" class="btn btn-sm btn-primary" type="button">Apply</button>
+                            <button id="scanArtifactReset" class="btn btn-sm btn-secondary" type="button">Reset</button>
+                        </div>
+                        <div id="scanArtifactMeta" class="filter-meta muted">Loading artifacts...</div>
+                    </div>
+                </div>
+            </div>
+            <div class="table-scroll">
+                <div id="scanArtifactLoading" class="table-loading-overlay is-hidden">
+                    <div class="table-loading-pill">
+                        <span class="table-spinner"></span>
+                        Loading artifacts...
+                    </div>
+                </div>
+                <table class="related-table" id="scanArtifactTable">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Class</th>
+                            <th>Active</th>
+                            <th>Scope</th>
+                            <th>Updated</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="scanArtifactBody"></tbody>
+                </table>
+            </div>
+            <div id="scanArtifactEmpty" class="empty-state is-hidden p-2">
+                <p class="text-muted-plain">No artifacts found. Artifacts are pulled after scans complete.</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+const scanId = {{ scan.id }};
+
+function formatScanDate(value) {
+    if (!value) return '-';
+    return value.replace('T', ' ').slice(0, 16);
+}
+
+function setScanResultsLoading(isLoading) {
+    const overlay = document.getElementById('scanResultsLoading');
+    if (!overlay) return;
+    overlay.style.display = isLoading ? 'flex' : 'none';
+}
+
+function renderScanRows(rows) {
+    const tbody = document.getElementById('scanResultsBody');
+    const empty = document.getElementById('scanResultsEmpty');
+    if (!tbody || !empty) return;
+
+    if (!rows.length) {
+        tbody.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+    }
+
+    empty.style.display = 'none';
+    tbody.innerHTML = rows.map((row) => {
+        const classification = row.customization_classification ? row.customization_classification.replaceAll('_', ' ') : '-';
+        const originClass = row.origin_type ? `origin-${row.origin_type}` : '';
+        return `
+            <tr>
+                <td><a href="/results/${row.id}">${row.name || row.sys_id}</a></td>
+                <td><code>${row.table_name || '-'}</code></td>
+                <td>${row.is_customized ? 'Yes' : 'No'}</td>
+                <td>${row.origin_type ? `<span class="origin-badge ${originClass}">${classification}</span>` : '-'}</td>
+                <td>${row.review_status ? row.review_status.replaceAll('_', ' ') : '-'}</td>
+                <td>${row.disposition ? row.disposition.replaceAll('_', ' ') : '-'}</td>
+                <td>${formatScanDate(row.sys_updated_on)}</td>
+                <td><a class="btn btn-sm" href="/results/${row.id}">View</a></td>
+            </tr>
+        `;
+    }).join('');
+}
+
+async function loadScanClassOptions() {
+    const classification = document.getElementById('scanResultsClassification');
+    const classFilter = document.getElementById('scanResultsClassFilter');
+    if (!classification || !classFilter) return;
+
+    var classificationVal = classification.value;
+    var optParams = { scan_ids: String(scanId) };
+    if (classificationVal === 'all') {
+        optParams.customized_only = 'false';
+    } else if (classificationVal === 'customized') {
+        optParams.customized_only = 'true';
+        optParams.customization_type = 'all';
+    } else if (classificationVal === 'modified_ootb') {
+        optParams.customized_only = 'true';
+        optParams.customization_type = 'modified_ootb';
+    } else if (classificationVal === 'net_new_customer') {
+        optParams.customized_only = 'true';
+        optParams.customization_type = 'net_new_customer';
+    } else if (classificationVal === 'ootb_untouched') {
+        optParams.customized_only = 'false';
+        optParams.customization_type = 'ootb_untouched';
+    } else if (classificationVal === 'unknown') {
+        optParams.customized_only = 'false';
+        optParams.customization_type = 'unknown';
+    } else if (classificationVal === 'uncustomized') {
+        optParams.customized_only = 'false';
+        optParams.customization_type = 'uncustomized';
+    }
+    const params = new URLSearchParams(optParams);
+
+    const currentValue = classFilter.value;
+    const response = await fetch(`/api/results/options?${params.toString()}`);
+    if (!response.ok) return;
+    const payload = await response.json();
+    const options = payload.app_file_classes || [];
+    classFilter.innerHTML = '<option value="">All Classes</option>';
+    options.forEach((value) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        classFilter.appendChild(option);
+    });
+    if (currentValue && options.includes(currentValue)) {
+        classFilter.value = currentValue;
+    }
+}
+
+async function refreshScanResults() {
+    const meta = document.getElementById('scanResultsMeta');
+    const classification = document.getElementById('scanResultsClassification');
+    const classFilter = document.getElementById('scanResultsClassFilter');
+    if (!classification || !classFilter) return;
+
+    setScanResultsLoading(true);
+    if (meta) meta.textContent = 'Loading...';
+
+    try {
+        await loadScanClassOptions();
+        var classificationVal = classification.value;
+        var apiParams = { limit: '500' };
+        if (classificationVal === 'all') {
+            apiParams.customized_only = 'false';
+        } else if (classificationVal === 'customized') {
+            apiParams.customized_only = 'true';
+            apiParams.customization_type = 'all';
+        } else if (classificationVal === 'modified_ootb') {
+            apiParams.customized_only = 'true';
+            apiParams.customization_type = 'modified_ootb';
+        } else if (classificationVal === 'net_new_customer') {
+            apiParams.customized_only = 'true';
+            apiParams.customization_type = 'net_new_customer';
+        } else if (classificationVal === 'ootb_untouched') {
+            apiParams.customized_only = 'false';
+            apiParams.customization_type = 'ootb_untouched';
+        } else if (classificationVal === 'unknown') {
+            apiParams.customized_only = 'false';
+            apiParams.customization_type = 'unknown';
+        } else if (classificationVal === 'uncustomized') {
+            apiParams.customized_only = 'false';
+            apiParams.customization_type = 'uncustomized';
+        }
+        const params = new URLSearchParams(apiParams);
+        if (classFilter.value) {
+            params.set('app_file_classes', classFilter.value);
+        }
+
+        const response = await fetch(`/api/scans/${scanId}/results?${params.toString()}`);
+        if (!response.ok) {
+            throw new Error('Request failed');
+        }
+        const payload = await response.json();
+        renderScanRows(payload.results || []);
+        if (meta) meta.textContent = `Showing ${payload.count || 0} of ${payload.total || 0} results`;
+    } catch (error) {
+        renderScanRows([]);
+        if (meta) meta.textContent = 'Failed to load results.';
+    } finally {
+        setScanResultsLoading(false);
+    }
+}
+
+document.getElementById('scanResultsClassification')?.addEventListener('change', refreshScanResults);
+document.getElementById('scanResultsClassFilter')?.addEventListener('change', refreshScanResults);
+document.getElementById('scanResultsApply')?.addEventListener('click', refreshScanResults);
+document.getElementById('scanResultsReset')?.addEventListener('click', () => {
+    const classification = document.getElementById('scanResultsClassification');
+    const classFilter = document.getElementById('scanResultsClassFilter');
+    if (classification) classification.value = 'all';
+    if (classFilter) classFilter.value = '';
+    refreshScanResults();
+});
+
+// ── Scan Tab Switching ──────────────────────────────────────────────
+
+function openScanTab(evt, tabName) {
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    const el = document.getElementById(tabName);
+    if (el) el.classList.add('active');
+    if (evt && evt.currentTarget) evt.currentTarget.classList.add('active');
+}
+
+// ── Scan Artifacts Tab ──────────────────────────────────────────────
+
+const scanInstanceId = {{ scan.assessment.instance_id if scan.assessment else 0 }};
+
+function setScanArtifactLoading(isLoading) {
+    const overlay = document.getElementById('scanArtifactLoading');
+    if (overlay) overlay.style.display = isLoading ? 'flex' : 'none';
+}
+
+function renderScanArtifactRows(rows) {
+    const tbody = document.getElementById('scanArtifactBody');
+    const empty = document.getElementById('scanArtifactEmpty');
+    if (!tbody || !empty) return;
+
+    if (!rows.length) {
+        tbody.innerHTML = '';
+        empty.classList.remove('is-hidden');
+        return;
+    }
+
+    empty.classList.add('is-hidden');
+    tbody.innerHTML = rows.map((row) => {
+        const updated = row.sys_updated_on ? String(row.sys_updated_on).replace('T', ' ').slice(0, 16) : '-';
+        return `
+            <tr>
+                <td><a href="/artifacts/${row.sys_class_name}/${row.sys_id}?instance_id=${scanInstanceId}">${row.name || row.sys_id}</a></td>
+                <td>${row.class_label || row.sys_class_name || '-'}</td>
+                <td>${row.active === true || row.active === 'true' ? 'Yes' : row.active === false || row.active === 'false' ? 'No' : '-'}</td>
+                <td>${row.sys_scope || '-'}</td>
+                <td>${updated}</td>
+                <td><a class="btn btn-sm" href="/artifacts/${row.sys_class_name}/${row.sys_id}?instance_id=${scanInstanceId}">View</a></td>
+            </tr>
+        `;
+    }).join('');
+}
+
+async function refreshScanArtifacts() {
+    const meta = document.getElementById('scanArtifactMeta');
+    const classFilter = document.getElementById('scanArtifactClassFilter');
+    if (!classFilter) return;
+
+    setScanArtifactLoading(true);
+    if (meta) meta.textContent = 'Loading...';
+
+    try {
+        const params = new URLSearchParams({ limit: '500' });
+        if (classFilter.value) params.set('sys_class_name', classFilter.value);
+
+        const response = await fetch(`/api/scans/${scanId}/artifacts?${params.toString()}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error('Request failed');
+        const payload = await response.json();
+
+        const classes = payload.classes || [];
+        const currentVal = classFilter.value;
+        classFilter.innerHTML = '<option value="">All Classes</option>';
+        classes.forEach((cls) => {
+            const opt = document.createElement('option');
+            opt.value = cls.sys_class_name;
+            opt.textContent = `${cls.label} (${cls.count})`;
+            classFilter.appendChild(opt);
+        });
+        if (currentVal) classFilter.value = currentVal;
+
+        const artifacts = payload.artifacts || [];
+        renderScanArtifactRows(artifacts);
+
+        const badge = document.getElementById('scanArtifactsTabBadge');
+        if (badge) badge.textContent = String(payload.total || 0);
+
+        if (meta) meta.textContent = `Showing ${artifacts.length} of ${payload.total || 0} artifacts`;
+    } catch (err) {
+        renderScanArtifactRows([]);
+        if (meta) meta.textContent = 'Failed to load artifacts.';
+    } finally {
+        setScanArtifactLoading(false);
+    }
+}
+
+document.getElementById('scanArtifactApply')?.addEventListener('click', refreshScanArtifacts);
+document.getElementById('scanArtifactClassFilter')?.addEventListener('change', refreshScanArtifacts);
+document.getElementById('scanArtifactReset')?.addEventListener('click', () => {
+    const classFilter = document.getElementById('scanArtifactClassFilter');
+    if (classFilter) classFilter.value = '';
+    refreshScanArtifacts();
+});
+
+// ── Customizations Tab ──────────────────────────────────────────────
+
+function setScanCustomizationsLoading(isLoading) {
+    var overlay = document.getElementById('scanCustomizationsLoading');
+    if (overlay) overlay.style.display = isLoading ? 'flex' : 'none';
+}
+
+function renderScanCustomizationRows(rows) {
+    var tbody = document.getElementById('scanCustomizationsBody');
+    var empty = document.getElementById('scanCustomizationsEmpty');
+    if (!tbody || !empty) return;
+    if (!rows.length) {
+        tbody.innerHTML = '';
+        empty.classList.remove('is-hidden');
+        return;
+    }
+    empty.classList.add('is-hidden');
+    tbody.innerHTML = rows.map(function (row) {
+        var updated = typeof formatScanDate === 'function' ? formatScanDate(row.sys_updated_on) : (row.sys_updated_on || '-');
+        var originLabel = row.origin_type === 'modified_ootb' ? 'Modified OOTB'
+            : row.origin_type === 'net_new_customer' ? 'Net New Customer' : (row.origin_type || '-');
+        return '<tr>'
+            + '<td><a href="/results/' + row.scan_result_id + '">' + (row.name || row.sys_id || '-') + '</a></td>'
+            + '<td>' + (row.sys_class_name || row.table_name || '-') + '</td>'
+            + '<td><span class="origin-badge origin-' + (row.origin_type || 'unknown') + '">' + originLabel + '</span></td>'
+            + '<td>' + (row.sys_scope || '-') + '</td>'
+            + '<td>' + (row.review_status || '-') + '</td>'
+            + '<td>' + (row.disposition || '-') + '</td>'
+            + '<td>' + updated + '</td>'
+            + '<td><a class="btn btn-sm" href="/results/' + row.scan_result_id + '">View</a></td>'
+            + '</tr>';
+    }).join('');
+}
+
+function refreshScanCustomizations() {
+    var meta = document.getElementById('scanCustomizationsMeta');
+    var typeFilter = document.getElementById('scanCustomizationsTypeFilter');
+    var classFilter = document.getElementById('scanCustomizationsClassFilter');
+    var badge = document.getElementById('scanCustomizationsTabBadge');
+
+    setScanCustomizationsLoading(true);
+    if (meta) meta.textContent = 'Loading...';
+
+    var params = new URLSearchParams({ limit: '500' });
+    if (typeFilter && typeFilter.value) params.set('origin_type', typeFilter.value);
+    if (classFilter && classFilter.value) params.set('table_name', classFilter.value);
+
+    fetch('/api/scans/' + scanId + '/customizations?' + params.toString(), { cache: 'no-store' })
+        .then(function (r) { if (!r.ok) throw new Error('fail'); return r.json(); })
+        .then(function (payload) {
+            var classes = payload.classes || [];
+            var currentClass = classFilter ? classFilter.value : '';
+            if (classFilter) {
+                classFilter.innerHTML = '<option value="">All Classes</option>';
+                classes.forEach(function (cls) {
+                    var opt = document.createElement('option');
+                    opt.value = cls.table_name;
+                    opt.textContent = (cls.label || cls.table_name) + ' (' + cls.count + ')';
+                    classFilter.appendChild(opt);
+                });
+                if (currentClass) classFilter.value = currentClass;
+            }
+            renderScanCustomizationRows(payload.customizations || []);
+            if (badge) badge.textContent = String(payload.total || 0);
+            if (meta) meta.textContent = 'Showing ' + (payload.customizations || []).length + ' of ' + (payload.total || 0) + ' customizations';
+        })
+        .catch(function () {
+            renderScanCustomizationRows([]);
+            if (meta) meta.textContent = 'Failed to load customizations.';
+        })
+        .finally(function () {
+            setScanCustomizationsLoading(false);
+        });
+}
+
+document.getElementById('scanCustomizationsApply').addEventListener('click', function () { refreshScanCustomizations(); });
+document.getElementById('scanCustomizationsTypeFilter').addEventListener('change', function () { refreshScanCustomizations(); });
+document.getElementById('scanCustomizationsReset').addEventListener('click', function () {
+    var typeFilter = document.getElementById('scanCustomizationsTypeFilter');
+    var classFilter = document.getElementById('scanCustomizationsClassFilter');
+    if (typeFilter) typeFilter.value = '';
+    if (classFilter) classFilter.value = '';
+    refreshScanCustomizations();
+});
+
+// Customizations is the default tab — auto-load on page ready
+refreshScanCustomizations();
+
+// ── Lazy-load non-default tabs on first open ────────────────────────
+let _scanArtifactsLoaded = false;
+let _scanResultsLoaded = false;
+const _origOpenScanTab = window.openScanTab;
+window.openScanTab = function(evt, tabName) {
+    _origOpenScanTab(evt, tabName);
+    if (tabName === 'scan-artifacts' && !_scanArtifactsLoaded) {
+        _scanArtifactsLoaded = true;
+        refreshScanArtifacts();
+    }
+    if (tabName === 'scan-results' && !_scanResultsLoaded) {
+        _scanResultsLoaded = true;
+        refreshScanResults();
+    }
+};
+</script>
+{% endblock %}

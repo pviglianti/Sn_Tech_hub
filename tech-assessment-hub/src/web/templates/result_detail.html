@@ -1,0 +1,657 @@
+{% extends "base.html" %}
+
+{% block title %}Result {{ result.id }} - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="assessment-header">
+        <div class="assessment-info">
+            <div class="assessment-number">Result #{{ result.id }}</div>
+            <h1 class="assessment-title">{{ result.name }}</h1>
+            <div class="assessment-meta">
+                <span><strong>Table:</strong> <code>{{ result.table_name }}</code></span>
+                <span><strong>Origin:</strong> {{ result.origin_type.value if result.origin_type else '-' }}</span>
+                <span><strong>Review:</strong> {{ result.review_status.value | replace('_', ' ') | title }}</span>
+            </div>
+        </div>
+        <div class="assessment-actions">
+            {% if scan %}
+            <a href="/scans/{{ scan.id }}" class="btn btn-secondary">Back to Scan</a>
+            {% endif %}
+            {% if assessment %}
+            <a href="/assessments/{{ assessment.id }}" class="btn btn-secondary">Back to Assessment</a>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<div class="card mt-15">
+    <h2>Identity</h2>
+    <div class="info-grid">
+        <div class="info-item">
+            <div class="info-label">Sys ID</div>
+            <div class="info-value">{{ result.sys_id }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Sys Class</div>
+            <div class="info-value">{{ result.sys_class_name or '-' }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Sys Update Name</div>
+            <div class="info-value">{{ result.sys_update_name or '-' }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Display Value</div>
+            <div class="info-value">{{ result.display_value or '-' }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Target Table</div>
+            <div class="info-value">{{ result.meta_target_table or '-' }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Scope</div>
+            <div class="info-value">{{ result.sys_scope or '-' }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Package</div>
+            <div class="info-value">{{ result.sys_package or '-' }}</div>
+        </div>
+    </div>
+</div>
+
+<!-- Code Content (loaded from artifact detail table) -->
+<div class="card mt-15 is-hidden" id="codeContentCard">
+    <h2>Code Content</h2>
+    <div id="codeContentLoading" class="table-loading-pill">
+        <span class="table-spinner"></span>
+        Loading code...
+    </div>
+    <div id="codeContentContainer"></div>
+</div>
+
+<div class="card mt-15">
+    <h2>Origin Classification</h2>
+    <div class="info-grid">
+        <div class="info-item">
+            <div class="info-label">Origin Type</div>
+            <div class="info-value">{{ result.origin_type.value if result.origin_type else '-' }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Head Owner</div>
+            <div class="info-value">{{ head_owner_label }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Baseline Changed</div>
+            <div class="info-value">{{ 'Yes' if result.changed_baseline_now else 'No' }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Current Version Source</div>
+            <div class="info-value">{{ result.current_version_source or '-' }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Current Version Source Table</div>
+            <div class="info-value">{{ result.current_version_source_table or '-' }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Current Version Sys ID</div>
+            <div class="info-value">{{ result.current_version_sys_id or '-' }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Current Version Recorded</div>
+            <div class="info-value">{{ result.current_version_recorded_at.strftime('%Y-%m-%d %H:%M') if result.current_version_recorded_at else '-' }}</div>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-15">
+    <h2>Related Records</h2>
+    <div class="info-grid">
+        <div class="info-item">
+            <div class="info-label">Metadata Record</div>
+            <div class="info-value">
+                {% if metadata_record_url %}
+                <a href="{{ metadata_record_url }}" target="_blank" rel="noopener noreferrer">{{ result.table_name }}:{{ result.sys_id }}</a>
+                {% else %}
+                {{ result.table_name }}:{{ result.sys_id }}
+                {% endif %}
+            </div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Configuration Artifact</div>
+            <div class="info-value">
+                {% if config_record_url %}
+                <a href="{{ config_record_url }}" target="_blank" rel="noopener noreferrer">{{ config_record_label or (config_record_table ~ ':' ~ config_record_sys_id) }}</a>
+                {% elif config_record_label %}
+                {{ config_record_label }}
+                {% elif config_record_table and config_record_sys_id %}
+                {{ config_record_table }}:{{ config_record_sys_id }}
+                {% else %}
+                -
+                {% endif %}
+            </div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Customer Update XML</div>
+            <div class="info-value">
+                {% if related_customer_update and customer_update_record_url %}
+                <a href="{{ customer_update_record_url }}" class="result-object-link">{{ related_customer_update.sn_sys_id }}</a>
+                {% elif related_customer_update %}
+                {{ related_customer_update.sn_sys_id }}
+                {% else %}
+                -
+                {% endif %}
+            </div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Metadata Customization</div>
+            <div class="info-value">
+                {% if related_metadata_customization and metadata_customization_record_url %}
+                <a href="{{ metadata_customization_record_url }}" class="result-object-link">
+                    {{ related_metadata_customization.author_type or 'Open' }}
+                </a>
+                {% elif related_metadata_customization %}
+                {{ related_metadata_customization.author_type or related_metadata_customization.sn_sys_id }}
+                {% else %}
+                -
+                {% endif %}
+            </div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Update Set</div>
+            <div class="info-value">
+                {% if related_update_set and update_set_record_url %}
+                <a href="{{ update_set_record_url }}" class="result-object-link">{{ related_update_set.name }}</a>
+                {% elif related_update_set and update_set_url %}
+                <a href="{{ update_set_url }}" target="_blank" rel="noopener noreferrer">{{ related_update_set.name }}</a>
+                {% elif related_update_set %}
+                {{ related_update_set.name }}
+                {% else %}
+                -
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="tab-container mt-1">
+        <div class="tab-nav">
+            <button type="button" class="tab-btn active" data-result-tab-btn="version-history" onclick="openResultTab(event, 'version-history')">
+                Version History <span class="badge">{{ version_history_rows | length }}</span>
+            </button>
+            <button type="button" class="tab-btn" data-result-tab-btn="update-set" onclick="openResultTab(event, 'update-set')">
+                Update Set Context <span class="badge">{{ update_set_updates | length }}</span>
+            </button>
+            <button type="button" class="tab-btn" data-result-tab-btn="artifact" onclick="openResultTab(event, 'artifact')">
+                Configuration Artifact
+            </button>
+        </div>
+
+        <div id="version-history" class="tab-content active">
+            <p class="muted mb-075">
+                Note: during scan runs, the cache may include only the <strong>current</strong> version history row initially.
+                Full history is populated later (version history catch-up). Use the Metadata Customization link above as the strongest signal for OOTB modifications.
+            </p>
+            {% if version_history_rows %}
+            <table class="related-table">
+                <thead>
+                    <tr>
+                        <th>State</th>
+                        <th>Recorded At</th>
+                        <th>Source Table</th>
+                        <th>Source</th>
+                        <th>Record Name</th>
+                        <th>Target Sys ID</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for version_row in version_history_rows %}
+                    <tr>
+                        <td>{{ version_row.state or '-' }}</td>
+                        <td>{{ version_row.sys_recorded_at.strftime('%Y-%m-%d %H:%M') if version_row.sys_recorded_at else '-' }}</td>
+                        <td>{{ version_row.source_table or '-' }}</td>
+                        <td>{{ version_row.source_display or version_row.source_sys_id or '-' }}</td>
+                        <td>{{ version_row.record_name or '-' }}</td>
+                        <td>{{ version_row.customer_update_sys_id or '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="text-muted-plain">No related version history cached for this result.</p>
+            {% endif %}
+        </div>
+
+        <div id="update-set" class="tab-content">
+            <div class="info-grid">
+                <div class="info-item">
+                    <div class="info-label">Update Set Name</div>
+                    <div class="info-value">{{ related_update_set.name if related_update_set else '-' }}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">State</div>
+                    <div class="info-value">{{ related_update_set.state if related_update_set else '-' }}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Completed On</div>
+                    <div class="info-value">{{ related_update_set.completed_on.strftime('%Y-%m-%d %H:%M') if related_update_set and related_update_set.completed_on else '-' }}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Description</div>
+                    <div class="info-value">{{ related_update_set.description if related_update_set and related_update_set.description else '-' }}</div>
+                </div>
+            </div>
+            {% if update_set_updates %}
+            <p class="muted mt-075 mb-075">
+                All update XML records from this result's current version update set.
+            </p>
+            <table class="related-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Table</th>
+                        <th>Action</th>
+                        <th>Target</th>
+                        <th>Updated</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for update_row in update_set_updates %}
+                    <tr>
+                        <td>{{ update_row.name }}</td>
+                        <td>{{ update_row.table or '-' }}</td>
+                        <td>{{ update_row.action or '-' }}</td>
+                        <td>{{ update_row.target_name or update_row.target_sys_id or '-' }}</td>
+                        <td>{{ update_row.sys_updated_on.strftime('%Y-%m-%d %H:%M') if update_row.sys_updated_on else '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="text-muted-plain mt-075">No update XML records found for this related update set.</p>
+            {% endif %}
+        </div>
+
+        <div id="artifact" class="tab-content">
+            <div class="info-grid">
+                <div class="info-item">
+                    <div class="info-label">Artifact Table</div>
+                    <div class="info-value">{{ config_record_table or result.meta_target_table or '-' }}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Artifact Sys ID</div>
+                    <div class="info-value">{{ config_record_sys_id or '-' }}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Metadata Sys ID</div>
+                    <div class="info-value">{{ result.sys_id }}</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">Open in Instance</div>
+                    <div class="info-value">
+                        {% if config_record_url %}
+                        <a href="{{ config_record_url }}" target="_blank" rel="noopener noreferrer">Open Configuration Record</a>
+                        {% elif metadata_record_url %}
+                        <a href="{{ metadata_record_url }}" target="_blank" rel="noopener noreferrer">Open Metadata Record</a>
+                        {% else %}
+                        -
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">View Artifact Detail</div>
+                    <div class="info-value">
+                        <a href="/artifacts/{{ result.table_name }}/{{ result.sys_id }}?instance_id={{ assessment.instance_id if assessment else 0 }}" class="btn btn-sm">Open Artifact Record</a>
+                    </div>
+                </div>
+            </div>
+            <!-- Dynamic artifact fields loaded from asmt_* table -->
+            <div id="artifactDetailContainer" class="mt-075">
+                <div id="artifactDetailLoading" class="table-loading-pill is-hidden">
+                    <span class="table-spinner"></span>
+                    Loading artifact details...
+                </div>
+                <table class="related-table is-hidden" id="artifactDetailTable">
+                    <thead>
+                        <tr>
+                            <th>Field</th>
+                            <th>Value</th>
+                        </tr>
+                    </thead>
+                    <tbody id="artifactDetailBody"></tbody>
+                </table>
+                <div id="artifactDetailEmpty" class="is-hidden">
+                    <p class="text-muted-plain">No artifact detail record found in local cache.</p>
+                </div>
+            </div>
+            <div class="mt-075">
+                <div class="info-label">Raw Artifact Snapshot (from scan)</div>
+                {% if result.raw_data_json %}
+                <pre class="code-block max-h-320">{{ result.raw_data_json }}</pre>
+                {% else %}
+                <p class="text-muted-plain">No raw payload stored for this result.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-15">
+    <h2>Review & Disposition</h2>
+    <form method="post" action="/results/{{ result.id }}/update">
+        <div class="info-grid">
+            <div class="info-item">
+                <div class="info-label">Review Status</div>
+                <select name="review_status" class="form-input">
+                    {% for status in review_statuses %}
+                    <option value="{{ status }}" {% if result.review_status.value == status %}selected{% endif %}>
+                        {{ status | replace('_', ' ') | title }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Disposition</div>
+                <select name="disposition" class="form-input">
+                    <option value="">-</option>
+                    {% for disp in dispositions %}
+                    <option value="{{ disp }}" {% if result.disposition and result.disposition.value == disp %}selected{% endif %}>
+                        {{ disp | replace('_', ' ') | title }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Severity</div>
+                <select name="severity" class="form-input">
+                    <option value="">-</option>
+                    {% for sev in severities %}
+                    <option value="{{ sev }}" {% if result.severity and result.severity.value == sev %}selected{% endif %}>
+                        {{ sev | replace('_', ' ') | title }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Category</div>
+                <select name="category" class="form-input">
+                    <option value="">-</option>
+                    {% for cat in categories %}
+                    <option value="{{ cat }}" {% if result.category and result.category.value == cat %}selected{% endif %}>
+                        {{ cat | replace('_', ' ') | title }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Assigned To</div>
+                <input type="text" name="assigned_to" value="{{ result.assigned_to or '' }}" class="form-input" />
+            </div>
+            <div class="info-item">
+                <div class="info-label">Adjacent</div>
+                <label class="checkbox-item mt-05">
+                    <input type="checkbox" name="is_adjacent" {% if result.is_adjacent %}checked{% endif %} />
+                    Mark as adjacent
+                </label>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Feature (Existing)</div>
+                <select name="feature_id" class="form-input">
+                    <option value="">- Select -</option>
+                    {% for feature in features %}
+                    <option value="{{ feature.id }}" {% if feature.id in current_feature_ids %}selected{% endif %}>
+                        {{ feature.name }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="info-item">
+                <div class="info-label">New Feature Name</div>
+                <input type="text" name="new_feature_name" placeholder="Create new feature..." class="form-input" />
+            </div>
+            <div class="info-item">
+                <div class="info-label">New Feature Description</div>
+                <input type="text" name="new_feature_description" placeholder="Optional description" class="form-input" />
+            </div>
+        </div>
+
+        <div class="mt-1">
+            <div class="form-group">
+                <label>Finding Title</label>
+                <input type="text" name="finding_title" value="{{ result.finding_title or '' }}" />
+            </div>
+            <div class="form-group">
+                <label>Finding Description</label>
+                <textarea name="finding_description" rows="4">{{ result.finding_description or '' }}</textarea>
+            </div>
+            <div class="form-group">
+                <label>Recommendation</label>
+                <textarea name="recommendation" rows="3">{{ result.recommendation or '' }}</textarea>
+            </div>
+            <div class="form-group">
+                <label>Observations</label>
+                <textarea name="observations" rows="3">{{ result.observations or '' }}</textarea>
+            </div>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary" title="Save review fields and feature link.">Save</button>
+        </div>
+    </form>
+</div>
+
+<div class="card mt-15">
+    <h2>Audit</h2>
+    <div class="info-grid">
+        <div class="info-item">
+            <div class="info-label">Created</div>
+            <div class="info-value">{{ result.sys_created_on.strftime('%Y-%m-%d %H:%M') if result.sys_created_on else '-' }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Created By</div>
+            <div class="info-value">{{ result.sys_created_by or '-' }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Updated</div>
+            <div class="info-value">{{ result.sys_updated_on.strftime('%Y-%m-%d %H:%M') if result.sys_updated_on else '-' }}</div>
+        </div>
+        <div class="info-item">
+            <div class="info-label">Updated By</div>
+            <div class="info-value">{{ result.sys_updated_by or '-' }}</div>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-15">
+    <h2>Raw Data</h2>
+    {% if result.raw_data_json %}
+    <pre class="code-block max-h-420">{{ result.raw_data_json }}</pre>
+    {% else %}
+    <p class="text-muted-plain">No raw payload stored.</p>
+    {% endif %}
+</div>
+
+{% set modal_id = 'resultRecordPreviewModal' %}
+{% set close_button_id = 'resultRecordPreviewClose' %}
+{% set open_tab_id = 'resultRecordPreviewOpenTab' %}
+{% set frame_id = 'resultRecordPreviewFrame' %}
+{% set frame_title = 'Result Object Preview' %}
+{% include "components/record_preview_modal.html" %}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+function openResultTab(evt, tabName) {
+    ['version-history', 'update-set', 'artifact'].forEach((id) => {
+        const content = document.getElementById(id);
+        if (content) {
+            content.classList.remove('active');
+        }
+    });
+    document.querySelectorAll('[data-result-tab-btn]').forEach((btn) => {
+        btn.classList.remove('active');
+    });
+
+    const selected = document.getElementById(tabName);
+    if (selected) {
+        selected.classList.add('active');
+    }
+    if (evt && evt.currentTarget) {
+        evt.currentTarget.classList.add('active');
+    }
+}
+
+function initResultObjectPreview() {
+    const modal = document.getElementById('resultRecordPreviewModal');
+    const closeBtn = document.getElementById('resultRecordPreviewClose');
+    const frame = document.getElementById('resultRecordPreviewFrame');
+    const openTab = document.getElementById('resultRecordPreviewOpenTab');
+    if (!modal || !closeBtn || !frame || !openTab) {
+        return;
+    }
+
+    const closePreview = () => {
+        modal.style.display = 'none';
+        frame.src = 'about:blank';
+    };
+
+    const toPreviewUrl = (href) => {
+        if (!href) return href;
+        return href.includes('?') ? `${href}&preview=1` : `${href}?preview=1`;
+    };
+
+    const openPreview = (href) => {
+        openTab.href = href;
+        frame.src = toPreviewUrl(href);
+        modal.style.display = 'flex';
+    };
+
+    document.querySelectorAll('a[href^="/data-browser/record"]').forEach((link) => {
+        link.title = link.title || 'Open object preview in this page.';
+        link.addEventListener('click', (event) => {
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+                return;
+            }
+            event.preventDefault();
+            openPreview(link.getAttribute('href'));
+        });
+    });
+
+    closeBtn.addEventListener('click', closePreview);
+    window.addEventListener('click', (event) => {
+        if (event.target === modal) {
+            closePreview();
+        }
+    });
+    window.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            closePreview();
+        }
+    });
+}
+
+document.addEventListener('DOMContentLoaded', initResultObjectPreview);
+
+// ── Code Content (from artifact detail table) ───────────────────────
+
+const resultTableName = '{{ result.table_name }}';
+const resultSysId = '{{ result.sys_id }}';
+const resultInstanceId = {{ assessment.instance_id if assessment else 0 }};
+
+async function loadCodeContent() {
+    if (!resultTableName || !resultSysId || !resultInstanceId) return;
+
+    const card = document.getElementById('codeContentCard');
+    const loading = document.getElementById('codeContentLoading');
+    const container = document.getElementById('codeContentContainer');
+    if (!card || !container) return;
+
+    try {
+        const url = `/api/artifacts/${encodeURIComponent(resultTableName)}/${encodeURIComponent(resultSysId)}/code?instance_id=${resultInstanceId}`;
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (loading) loading.style.display = 'none';
+
+        if (!data.has_code || !data.code_contents || !data.code_contents.length) return;
+
+        card.classList.remove('is-hidden');
+        container.innerHTML = data.code_contents.map((item) => {
+            const escaped = item.content
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+            return `
+                <div class="mt-075">
+                    <div class="info-label">${item.label} <code>(${item.field})</code></div>
+                    <pre class="code-block max-h-420">${escaped}</pre>
+                </div>
+            `;
+        }).join('');
+    } catch (err) {
+        if (loading) loading.style.display = 'none';
+    }
+}
+
+// ── Artifact Detail Tab (lazy load) ─────────────────────────────────
+
+let _artifactDetailLoaded = false;
+
+async function loadArtifactDetail() {
+    if (_artifactDetailLoaded) return;
+    _artifactDetailLoaded = true;
+
+    const loading = document.getElementById('artifactDetailLoading');
+    const table = document.getElementById('artifactDetailTable');
+    const tbody = document.getElementById('artifactDetailBody');
+    const empty = document.getElementById('artifactDetailEmpty');
+    if (!tbody) return;
+
+    if (loading) { loading.classList.remove('is-hidden'); loading.style.display = ''; }
+
+    try {
+        const url = `/api/artifacts/${encodeURIComponent(resultTableName)}/${encodeURIComponent(resultSysId)}?instance_id=${resultInstanceId}`;
+        const res = await fetch(url, { cache: 'no-store' });
+        if (loading) loading.classList.add('is-hidden');
+
+        if (!res.ok) {
+            if (empty) empty.classList.remove('is-hidden');
+            return;
+        }
+
+        const data = await res.json();
+        const fieldRows = data.field_rows || [];
+        if (!fieldRows.length) {
+            if (empty) empty.classList.remove('is-hidden');
+            return;
+        }
+
+        if (table) table.classList.remove('is-hidden');
+        tbody.innerHTML = fieldRows.map((row) => {
+            const val = row.value != null ? String(row.value) : '-';
+            const escaped = val.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const isLong = val.length > 200;
+            return `
+                <tr>
+                    <td><strong>${row.label}</strong><br><code class="text-muted-sm">${row.field}</code></td>
+                    <td>${isLong ? `<pre class="code-block max-h-200">${escaped}</pre>` : escaped}</td>
+                </tr>
+            `;
+        }).join('');
+    } catch (err) {
+        if (loading) loading.classList.add('is-hidden');
+        if (empty) empty.classList.remove('is-hidden');
+    }
+}
+
+// Hook into tab switching to lazy-load artifact detail
+const _origResultTab = window.openResultTab;
+window.openResultTab = function(evt, tabName) {
+    _origResultTab(evt, tabName);
+    if (tabName === 'artifact') loadArtifactDetail();
+};
+
+// Load code content on page load
+document.addEventListener('DOMContentLoaded', loadCodeContent);
+</script>
+{% endblock %}

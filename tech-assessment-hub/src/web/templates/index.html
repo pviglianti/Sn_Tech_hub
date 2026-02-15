@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <h1>Dashboard</h1>
+
+    <!-- Stats Cards -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <h3>Instances</h3>
+            <p class="stat-number">{{ instance_count }}</p>
+            <a href="/instances">Manage &rarr;</a>
+        </div>
+        <div class="stat-card">
+            <h3>Assessments</h3>
+            <p class="stat-number">{{ assessment_count }}</p>
+            <a href="/assessments">View &rarr;</a>
+        </div>
+        <div class="stat-card">
+            <h3>Scans Run</h3>
+            <p class="stat-number">{{ scan_count }}</p>
+        </div>
+        <div class="stat-card">
+            <h3>Results</h3>
+            <p class="stat-number">{{ result_count }}</p>
+            <a href="/results">View &rarr;</a>
+        </div>
+    </div>
+
+    <!-- Findings by Severity -->
+    <div class="card">
+        <h2>Findings by Severity</h2>
+        <div class="severity-grid">
+            <div class="severity-item critical">
+                <span class="severity-count">{{ severity_counts.critical }}</span>
+                <span class="severity-label">Critical</span>
+            </div>
+            <div class="severity-item high">
+                <span class="severity-count">{{ severity_counts.high }}</span>
+                <span class="severity-label">High</span>
+            </div>
+            <div class="severity-item medium">
+                <span class="severity-count">{{ severity_counts.medium }}</span>
+                <span class="severity-label">Medium</span>
+            </div>
+            <div class="severity-item low">
+                <span class="severity-count">{{ severity_counts.low }}</span>
+                <span class="severity-label">Low</span>
+            </div>
+            <div class="severity-item info">
+                <span class="severity-count">{{ severity_counts.info }}</span>
+                <span class="severity-label">Info</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="card">
+        <h2>Quick Actions</h2>
+        <div class="button-group">
+            <a href="/instances/add" class="btn btn-primary">+ Add Instance</a>
+            {% if instances %}
+            <a href="/assessments/new" class="btn btn-secondary">+ New Assessment</a>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Connected Instances -->
+    {% if instances %}
+    <div class="card">
+        <h2>Configured Instances</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>URL</th>
+                    <th>Status</th>
+                    <th>Version</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for instance in instances %}
+                <tr>
+                    <td>{{ instance.name }}</td>
+                    <td><a href="{{ instance.url }}" target="_blank">{{ instance.url }}</a></td>
+                    <td>
+                        {% set badge_status = instance.connection_status.value %}
+                        {% set badge_text = instance.connection_status.value %}
+                        {% include "components/status_badge.html" %}
+                    </td>
+                    <td>{{ instance.instance_version or '-' }}</td>
+                    <td>
+                        <button class="btn btn-sm" onclick="testConnection({{ instance.id }})">Test</button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function testConnection(instanceId) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = 'Testing...';
+
+    try {
+        const response = await fetch(`/instances/${instanceId}/test`, { method: 'POST' });
+        const result = await response.json();
+
+        if (result.success) {
+            alert('Connection successful! Version: ' + result.version);
+        } else {
+            alert('Connection failed: ' + result.message);
+        }
+        location.reload();
+    } catch (error) {
+        alert('Error: ' + error.message);
+        btn.disabled = false;
+        btn.textContent = 'Test';
+    }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,375 @@
+{% extends "base.html" %}
+
+{% block title %}Results - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Scan Results</h1>
+</div>
+
+<div class="card">
+    <div class="result-filter-card">
+        <div class="result-filter-grid">
+            <div class="filter-group">
+                <label for="resultsInstanceFilter">Instance</label>
+                <select id="resultsInstanceFilter" class="form-control">
+                    <option value="">Select Instance</option>
+                    {% for instance in instances %}
+                    <option value="{{ instance.id }}">{{ instance.name }}{% if instance.company %} ({{ instance.company }}){% endif %}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="filter-group">
+                <label for="resultsAssessmentFilter">Assessments</label>
+                <select id="resultsAssessmentFilter" class="form-control" multiple size="5" title="Select one or more assessments."></select>
+            </div>
+            <div class="filter-group">
+                <label for="resultsScanFilter">Scans</label>
+                <select id="resultsScanFilter" class="form-control" multiple size="5" title="Leave empty to include all scans in the selected assessments."></select>
+            </div>
+            <div class="filter-group">
+                <label for="resultsCustomizedOnly">Customization Scope</label>
+                <label class="checkbox-item">
+                    <input id="resultsCustomizedOnly" type="checkbox" checked />
+                    Customized Only
+                </label>
+            </div>
+            <div class="filter-group" id="resultsClassificationGroup">
+                <label for="resultsClassificationFilter">Customization Type</label>
+                <select id="resultsClassificationFilter" class="form-control">
+                    <option value="all">All Customized</option>
+                    <option value="net_new_customer">Customer Customized</option>
+                    <option value="modified_ootb">OOTB Modified</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label for="resultsClassFilter">App File Class</label>
+                <select id="resultsClassFilter" class="form-control">
+                    <option value="">All Classes</option>
+                </select>
+            </div>
+            <div class="filter-group filter-actions-inline">
+                <label>Actions</label>
+                <div class="inline-actions">
+                    <button id="resultsApply" type="button" class="btn btn-sm btn-primary">Apply</button>
+                    <button id="resultsReset" type="button" class="btn btn-sm btn-secondary">Reset</button>
+                </div>
+                <div id="resultsMeta" class="filter-meta muted">Loading results...</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="table-scroll">
+        <div id="resultsLoading" class="table-loading-overlay is-hidden">
+            <div class="table-loading-pill">
+                <span class="table-spinner"></span>
+                Loading results...
+            </div>
+        </div>
+        <table class="data-table" id="resultsTable">
+            <thead>
+                <tr>
+                    <th>Instance</th>
+                    <th>Assessment</th>
+                    <th>Scan</th>
+                    <th>Artifact</th>
+                    <th>App File Class</th>
+                    <th>Customized</th>
+                    <th>Classification</th>
+                    <th>Review</th>
+                    <th>Disposition</th>
+                    <th>Updated</th>
+                </tr>
+            </thead>
+            <tbody id="resultsBody"></tbody>
+        </table>
+    </div>
+
+    <div id="resultsEmpty" class="empty-state is-hidden">
+        <h2>No Results</h2>
+        <p>No records match the current filters.</p>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+let recommendedAssessmentIds = [];
+
+function formatResultsDate(value) {
+    if (!value) return '-';
+    return value.replace('T', ' ').slice(0, 16);
+}
+
+function getSelectedValues(selectId) {
+    const element = document.getElementById(selectId);
+    if (!element) return [];
+    return Array.from(element.selectedOptions).map((option) => option.value);
+}
+
+function setResultsLoading(isLoading) {
+    const overlay = document.getElementById('resultsLoading');
+    if (!overlay) return;
+    overlay.style.display = isLoading ? 'flex' : 'none';
+}
+
+function syncResultsClassificationVisibility() {
+    const customizedOnly = document.getElementById('resultsCustomizedOnly');
+    const group = document.getElementById('resultsClassificationGroup');
+    if (!customizedOnly || !group) return;
+    group.style.display = customizedOnly.checked ? '' : 'none';
+}
+
+function rebuildSelectOptions(selectElement, options, valueGetter, labelGetter, selectedValues) {
+    if (!selectElement) return;
+    selectElement.innerHTML = '';
+    options.forEach((item) => {
+        const option = document.createElement('option');
+        option.value = String(valueGetter(item));
+        option.textContent = labelGetter(item);
+        if (selectedValues.includes(option.value)) {
+            option.selected = true;
+        }
+        selectElement.appendChild(option);
+    });
+}
+
+function renderResultsRows(rows) {
+    const tbody = document.getElementById('resultsBody');
+    const empty = document.getElementById('resultsEmpty');
+    if (!tbody || !empty) return;
+    if (!rows.length) {
+        tbody.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+    }
+
+    empty.style.display = 'none';
+    tbody.innerHTML = rows.map((row) => {
+        const classification = row.customization_classification ? row.customization_classification.replaceAll('_', ' ') : '-';
+        const originClass = row.origin_type ? `origin-${row.origin_type}` : '';
+        return `
+            <tr>
+                <td>${row.instance?.name || '-'}</td>
+                <td>${row.assessment?.number || ''} ${row.assessment?.name || '-'}</td>
+                <td>${row.scan?.name || '-'}</td>
+                <td><strong><a href="/results/${row.id}">${row.name || row.sys_id}</a></strong></td>
+                <td><code>${row.table_name || '-'}</code></td>
+                <td>${row.is_customized ? 'Yes' : 'No'}</td>
+                <td>${row.origin_type ? `<span class="origin-badge ${originClass}">${classification}</span>` : '-'}</td>
+                <td>${row.review_status ? row.review_status.replaceAll('_', ' ') : '-'}</td>
+                <td>${row.disposition ? row.disposition.replaceAll('_', ' ') : '-'}</td>
+                <td>${formatResultsDate(row.sys_updated_on)}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+async function refreshResultsAssessmentAndScanOptions() {
+    const instanceFilter = document.getElementById('resultsInstanceFilter');
+    const assessmentFilter = document.getElementById('resultsAssessmentFilter');
+    const scanFilter = document.getElementById('resultsScanFilter');
+    const classFilter = document.getElementById('resultsClassFilter');
+    const customizedOnly = document.getElementById('resultsCustomizedOnly');
+    const classification = document.getElementById('resultsClassificationFilter');
+    if (!instanceFilter || !assessmentFilter || !scanFilter || !classFilter || !customizedOnly || !classification) return;
+
+    const selectedAssessments = getSelectedValues('resultsAssessmentFilter');
+    const selectedScans = getSelectedValues('resultsScanFilter');
+
+    const params = new URLSearchParams({
+        customized_only: customizedOnly.checked ? 'true' : 'false',
+        customization_type: customizedOnly.checked ? classification.value : 'all',
+    });
+    if (instanceFilter.value) {
+        params.set('instance_id', instanceFilter.value);
+    }
+    if (selectedAssessments.length) {
+        params.set('assessment_ids', selectedAssessments.join(','));
+    }
+
+    const response = await fetch(`/api/results/options?${params.toString()}`, { cache: 'no-store' });
+    if (!response.ok) {
+        return;
+    }
+    const payload = await response.json();
+    recommendedAssessmentIds = (payload.recommended_assessment_ids || []).map((id) => String(id));
+
+    const assessments = payload.assessments || [];
+    let assessmentsToSelect = selectedAssessments.filter((value) => assessments.some((assessment) => String(assessment.id) === value));
+    if (!assessmentsToSelect.length && instanceFilter.value && recommendedAssessmentIds.length) {
+        assessmentsToSelect = recommendedAssessmentIds;
+    }
+    rebuildSelectOptions(
+        assessmentFilter,
+        assessments,
+        (item) => item.id,
+        (item) => `${item.number} - ${item.name}`,
+        assessmentsToSelect,
+    );
+
+    const scans = (payload.scans || []).filter((scan) => {
+        if (!assessmentsToSelect.length) {
+            return true;
+        }
+        return assessmentsToSelect.includes(String(scan.assessment_id));
+    });
+    const scansToSelect = selectedScans.filter((value) => scans.some((scan) => String(scan.id) === value));
+    rebuildSelectOptions(
+        scanFilter,
+        scans,
+        (item) => item.id,
+        (item) => item.name,
+        scansToSelect,
+    );
+}
+
+async function refreshResultsClassOptions() {
+    const instanceFilter = document.getElementById('resultsInstanceFilter');
+    const classFilter = document.getElementById('resultsClassFilter');
+    const customizedOnly = document.getElementById('resultsCustomizedOnly');
+    const classification = document.getElementById('resultsClassificationFilter');
+    if (!instanceFilter || !classFilter || !customizedOnly || !classification) return;
+
+    const selectedAssessments = getSelectedValues('resultsAssessmentFilter');
+    const selectedScans = getSelectedValues('resultsScanFilter');
+    const selectedClass = classFilter.value;
+
+    const params = new URLSearchParams({
+        customized_only: customizedOnly.checked ? 'true' : 'false',
+        customization_type: customizedOnly.checked ? classification.value : 'all',
+    });
+    if (instanceFilter.value) {
+        params.set('instance_id', instanceFilter.value);
+    }
+    if (selectedAssessments.length) {
+        params.set('assessment_ids', selectedAssessments.join(','));
+    }
+    if (selectedScans.length) {
+        params.set('scan_ids', selectedScans.join(','));
+    }
+
+    const response = await fetch(`/api/results/options?${params.toString()}`, { cache: 'no-store' });
+    if (!response.ok) {
+        return;
+    }
+    const payload = await response.json();
+
+    const classes = payload.app_file_classes || [];
+    classFilter.innerHTML = '<option value="">All Classes</option>';
+    classes.forEach((value) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = value;
+        classFilter.appendChild(option);
+    });
+    if (selectedClass && classes.includes(selectedClass)) {
+        classFilter.value = selectedClass;
+    } else {
+        classFilter.value = '';
+    }
+}
+
+async function refreshResultsOptions() {
+    await refreshResultsAssessmentAndScanOptions();
+    await refreshResultsClassOptions();
+}
+
+async function refreshResultsTable() {
+    const instanceFilter = document.getElementById('resultsInstanceFilter');
+    const classFilter = document.getElementById('resultsClassFilter');
+    const customizedOnly = document.getElementById('resultsCustomizedOnly');
+    const classification = document.getElementById('resultsClassificationFilter');
+    const meta = document.getElementById('resultsMeta');
+    if (!instanceFilter || !classFilter || !customizedOnly || !classification) return;
+
+    setResultsLoading(true);
+    if (meta) meta.textContent = 'Loading...';
+
+    try {
+        await refreshResultsOptions();
+        const assessmentIds = getSelectedValues('resultsAssessmentFilter');
+        const scanIds = getSelectedValues('resultsScanFilter');
+        const params = new URLSearchParams({
+            customized_only: customizedOnly.checked ? 'true' : 'false',
+            customization_type: customizedOnly.checked ? classification.value : 'all',
+            limit: '1000',
+        });
+        if (instanceFilter.value) {
+            params.set('instance_id', instanceFilter.value);
+        }
+        if (assessmentIds.length) {
+            params.set('assessment_ids', assessmentIds.join(','));
+        }
+        if (scanIds.length) {
+            params.set('scan_ids', scanIds.join(','));
+        }
+        if (classFilter.value) {
+            params.set('app_file_classes', classFilter.value);
+        }
+
+        const response = await fetch(`/api/results/query?${params.toString()}`);
+        if (!response.ok) {
+            throw new Error('Request failed');
+        }
+        const payload = await response.json();
+        renderResultsRows(payload.results || []);
+        if (meta) {
+            meta.textContent = `Showing ${payload.count || 0} of ${payload.total || 0} results`;
+        }
+    } catch (error) {
+        renderResultsRows([]);
+        if (meta) {
+            meta.textContent = 'Failed to load results.';
+        }
+    } finally {
+        setResultsLoading(false);
+    }
+}
+
+document.getElementById('resultsInstanceFilter')?.addEventListener('change', refreshResultsTable);
+document.getElementById('resultsAssessmentFilter')?.addEventListener('change', refreshResultsTable);
+document.getElementById('resultsScanFilter')?.addEventListener('change', refreshResultsTable);
+document.getElementById('resultsCustomizedOnly')?.addEventListener('change', () => {
+    syncResultsClassificationVisibility();
+    refreshResultsTable();
+});
+document.getElementById('resultsClassificationFilter')?.addEventListener('change', refreshResultsTable);
+document.getElementById('resultsClassFilter')?.addEventListener('change', refreshResultsTable);
+document.getElementById('resultsApply')?.addEventListener('click', refreshResultsTable);
+document.getElementById('resultsReset')?.addEventListener('click', () => {
+    const instanceFilter = document.getElementById('resultsInstanceFilter');
+    const customizedOnly = document.getElementById('resultsCustomizedOnly');
+    const classification = document.getElementById('resultsClassificationFilter');
+    const classFilter = document.getElementById('resultsClassFilter');
+    if (instanceFilter && instanceFilter.options.length > 1) {
+        instanceFilter.selectedIndex = 1;
+    }
+    if (customizedOnly) customizedOnly.checked = true;
+    if (classification) classification.value = 'all';
+    if (classFilter) classFilter.value = '';
+    const assessmentFilter = document.getElementById('resultsAssessmentFilter');
+    const scanFilter = document.getElementById('resultsScanFilter');
+    if (assessmentFilter) {
+        Array.from(assessmentFilter.options).forEach((option) => {
+            option.selected = false;
+        });
+    }
+    if (scanFilter) {
+        Array.from(scanFilter.options).forEach((option) => {
+            option.selected = false;
+        });
+    }
+    syncResultsClassificationVisibility();
+    refreshResultsTable();
+});
+
+const instanceFilter = document.getElementById('resultsInstanceFilter');
+if (instanceFilter && instanceFilter.options.length > 1 && !instanceFilter.value) {
+    instanceFilter.selectedIndex = 1;
+}
+syncResultsClassificationVisibility();
+refreshResultsTable();
+</script>
+{% endblock %}

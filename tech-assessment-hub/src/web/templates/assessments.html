@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block title %}Assessments - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Assessments</h1>
+    <a href="/assessments/new" class="btn btn-primary">+ New Assessment</a>
+</div>
+
+{% if assessments %}
+<div class="card">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Number</th>
+                <th>Name</th>
+                <th>Instance</th>
+                <th>Type</th>
+                <th>State</th>
+                <th>Scans</th>
+                <th>Created</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for assessment in assessments %}
+            <tr>
+                <td><code>{{ assessment.number }}</code></td>
+                <td><a href="/assessments/{{ assessment.id }}">{{ assessment.name }}</a></td>
+                <td>{{ assessment.instance.name if assessment.instance else 'N/A' }}</td>
+                <td>{{ assessment.assessment_type.value | replace('_', ' ') | title }}</td>
+                <td>
+                    {% set badge_prefix = 'state' %}
+                    {% set badge_status = assessment.state.value %}
+                    {% set badge_text = assessment.state.value | replace('_', ' ') | title %}
+                    {% include "components/status_badge.html" %}
+                </td>
+                <td>{{ assessment.scans | length }}</td>
+                <td>{{ assessment.created_at.strftime('%Y-%m-%d') }}</td>
+                <td>
+                    <a href="/assessments/{{ assessment.id }}" class="btn btn-sm">View</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="card empty-state">
+    <h2>No Assessments Yet</h2>
+    <p>Create an assessment to start analyzing a ServiceNow instance.</p>
+    <a href="/assessments/new" class="btn btn-primary">+ New Assessment</a>
+</div>
+{% endif %}
+{% endblock %}

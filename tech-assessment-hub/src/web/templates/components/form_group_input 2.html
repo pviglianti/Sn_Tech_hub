@@ -1,0 +1,15 @@
+<div class="form-group">
+    <label for="{{ field_id }}">{{ field_label }}</label>
+    <input
+        type="{{ field_type|default('text') }}"
+        id="{{ field_id }}"
+        name="{{ field_name|default(field_id) }}"
+        {% if field_required %}required{% endif %}
+        {% if field_placeholder %}placeholder="{{ field_placeholder }}"{% endif %}
+        {% if field_value is defined and field_value is not none %}value="{{ field_value }}"{% endif %}
+        {% if field_extra_attrs %}{{ field_extra_attrs|safe }}{% endif %}
+    >
+    {% if field_help_text %}
+    <small>{{ field_help_text }}</small>
+    {% endif %}
+</div>

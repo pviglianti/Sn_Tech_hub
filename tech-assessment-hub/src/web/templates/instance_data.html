@@ -1,0 +1,274 @@
+{% extends "base.html" %}
+
+{% block title %}Pre Flight Data Manager - {{ instance.name }} - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<!-- Instance Header -->
+<div class="card">
+    <div class="assessment-header">
+        <div class="assessment-info">
+            <div class="assessment-number">Pre Flight Data Manager</div>
+            <h1 class="assessment-title">{{ instance.name }}</h1>
+            <div class="assessment-meta">
+                <span>
+                    <strong>URL:</strong>
+                    <a href="{{ instance.url }}" target="_blank">{{ instance.url }}</a>
+                </span>
+                <span>
+                    <strong>Company:</strong>
+                    {{ instance.company or 'N/A' }}
+                </span>
+                <span>
+                    <strong>Version:</strong>
+                    {{ instance.instance_version or 'N/A' }}
+                </span>
+            </div>
+        </div>
+        <div class="assessment-actions">
+            <a href="/data-browser?instance_id={{ instance.id }}" class="btn btn-secondary" title="Open the Pre Flight Data Browser for this instance.">Pre Flight Data Browser</a>
+            <a href="/job-log?module=preflight&instance_id={{ instance.id }}" class="btn btn-secondary" title="View unified job log entries filtered to preflight pulls for this instance.">Pre Flight Job Log</a>
+            <a href="/instances" class="btn btn-secondary">Back to Instances</a>
+        </div>
+    </div>
+</div>
+
+<!-- Data Pull Form -->
+<div class="card mt-1">
+    <h2 class="mb-1">Pull Data</h2>
+    <form method="post" action="/instances/{{ instance.id }}/data/pull">
+        <div class="data-type-grid">
+            {% for dt in data_types %}
+            <label class="data-type-checkbox">
+                <input type="checkbox" name="data_types" value="{{ dt }}" />
+                <span class="checkmark"></span>
+                <span class="label-text">{{ dt | replace('_', ' ') | title }}</span>
+            </label>
+            {% endfor %}
+        </div>
+
+        <div class="inline-controls-row">
+            <div>
+                <label class="label-inline-gap"><strong>Mode:</strong></label>
+                <select name="mode" class="form-control inline-select-auto">
+                    <option value="full">Full Pull</option>
+                    <option value="delta">Delta (since last pull)</option>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary">Pull Selected</button>
+            <button type="button" class="btn btn-secondary" onclick="selectAllDataTypes()">Select All</button>
+            <button type="button" class="btn btn-secondary" onclick="deselectAllDataTypes()">Deselect All</button>
+        </div>
+    </form>
+</div>
+
+<!-- Data Status Table -->
+<div class="card mt-1">
+    <h2 class="mb-1">Data Status</h2>
+    <div class="card summary-inline-card summary-inline-card-muted">
+        <strong>Pull Progress:</strong>
+        <span class="ml-1">Idle: <span id="pull-count-idle">0</span></span>
+        <span class="ml-1">Running: <span id="pull-count-running">0</span></span>
+        <span class="ml-1">Completed: <span id="pull-count-completed">0</span></span>
+        <span class="ml-1">Failed: <span id="pull-count-failed">0</span></span>
+    </div>
+    <div class="card summary-inline-card summary-inline-card-muted mt-1" id="pull-run-summary">
+        <strong>Run:</strong> No active run.
+    </div>
+
+    <table class="related-table">
+        <thead>
+            <tr>
+                <th>Data Type</th>
+                <th>Status</th>
+                <th>Records in DB</th>
+                <th>Records Pulled</th>
+                <th>Last Pulled</th>
+                <th>Duration</th>
+                <th>Error</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for dt in data_types %}
+            {% set pull = data_pulls.get(dt) %}
+            <tr data-data-type="{{ dt }}">
+                <td>{{ dt | replace('_', ' ') | title }}</td>
+                <td>
+                    {% set _pull_status = pull.status.value if pull else 'idle' %}
+                    {% set badge_status = _pull_status %}
+                    {% set badge_text = _pull_status %}
+                    {% set badge_attrs = 'data-pull-field="status"' %}
+                    {% include "components/status_badge.html" %}
+                </td>
+                <td data-pull-field="record_count">{{ record_counts.get(dt, 0) }}</td>
+                <td data-pull-field="records_pulled">{{ pull.records_pulled if pull else 0 }}</td>
+                <td data-pull-field="last_pulled_at">
+                    {{ pull.last_pulled_at.strftime('%Y-%m-%d %H:%M') if pull and pull.last_pulled_at else '-' }}
+                </td>
+                <td data-pull-field="duration">
+                    {% if pull and pull.started_at and pull.completed_at %}
+                    {{ ((pull.completed_at - pull.started_at).total_seconds() | int) }}s
+                    {% elif pull and pull.started_at %}
+                    Running...
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+                <td data-pull-field="error_message" class="ellipsis-cell" title="{{ pull.error_message if pull else '' }}">
+                    {{ pull.error_message[:50] + '...' if pull and pull.error_message and pull.error_message|length > 50 else (pull.error_message if pull else '-') }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Clear Data Section -->
+<div class="card mt-1">
+    <h2 class="mb-1">Clear Data</h2>
+    <p class="text-muted-plain mb-1">
+        Select data types to clear from the database. This action cannot be undone.
+    </p>
+    <form method="post" action="/instances/{{ instance.id }}/data/clear" onsubmit="return confirmClear()">
+        <div class="data-type-grid">
+            {% for dt in data_types %}
+            <label class="data-type-checkbox">
+                <input type="checkbox" name="clear_data_types" value="{{ dt }}" />
+                <span class="checkmark"></span>
+                <span class="label-text">{{ dt | replace('_', ' ') | title }} ({{ record_counts.get(dt, 0) }} records)</span>
+            </label>
+            {% endfor %}
+        </div>
+
+        <div class="mt-1">
+            <button type="submit" class="btn btn-danger">Clear Selected Data</button>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+function selectAllDataTypes() {
+    document.querySelectorAll('input[name="data_types"]').forEach(cb => cb.checked = true);
+}
+
+function deselectAllDataTypes() {
+    document.querySelectorAll('input[name="data_types"]').forEach(cb => cb.checked = false);
+}
+
+function confirmClear() {
+    const checked = document.querySelectorAll('input[name="clear_data_types"]:checked');
+    if (checked.length === 0) {
+        alert('Please select at least one data type to clear.');
+        return false;
+    }
+    return confirm(`Are you sure you want to clear ${checked.length} data type(s)? This action cannot be undone.`);
+}
+
+function formatEta(seconds) {
+    if (seconds === null || seconds === undefined) return '';
+    const total = Math.max(0, Math.round(seconds));
+    const hrs = Math.floor(total / 3600);
+    const mins = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+    if (hrs > 0) return `${hrs}h:${String(mins).padStart(2, '0')}m:${String(secs).padStart(2, '0')}s`;
+    if (mins > 0) return `${mins}m:${String(secs).padStart(2, '0')}s`;
+    return `${secs}s`;
+}
+
+async function refreshDataStatus() {
+    if (window.__instanceDataStatusInFlight) return;
+    window.__instanceDataStatusInFlight = true;
+    try {
+        const res = await fetch(`/api/instances/{{ instance.id }}/data-status`);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        // Update counts
+        let counts = {idle: 0, running: 0, completed: 0, failed: 0};
+        for (const [dt, pull] of Object.entries(data.pulls || {})) {
+            counts[pull.status] = (counts[pull.status] || 0) + 1;
+
+            const row = document.querySelector(`tr[data-data-type='${dt}']`);
+            if (!row) continue;
+
+            const statusEl = row.querySelector('[data-pull-field="status"]');
+            if (statusEl) {
+                statusEl.textContent = pull.status;
+                statusEl.className = `status-badge status-${pull.status}`;
+            }
+
+            const countEl = row.querySelector('[data-pull-field="record_count"]');
+            if (countEl) countEl.textContent = pull.record_count ?? 0;
+
+            const pulledEl = row.querySelector('[data-pull-field="records_pulled"]');
+            if (pulledEl) pulledEl.textContent = pull.records_pulled ?? 0;
+
+            const lastEl = row.querySelector('[data-pull-field="last_pulled_at"]');
+            if (lastEl) lastEl.textContent = pull.last_pulled_at ? pull.last_pulled_at.slice(0,16).replace('T',' ') : '-';
+
+            const durationEl = row.querySelector('[data-pull-field="duration"]');
+            if (durationEl) {
+                if (pull.duration !== null && pull.duration !== undefined) {
+                    if (pull.status === 'running') {
+                        durationEl.textContent = `${Math.round(pull.duration)}s...`;
+                    } else {
+                        durationEl.textContent = `${Math.round(pull.duration)}s`;
+                    }
+                } else {
+                    durationEl.textContent = '-';
+                }
+            }
+
+            const errorEl = row.querySelector('[data-pull-field="error_message"]');
+            if (errorEl) {
+                const msg = pull.error_message || '-';
+                errorEl.textContent = msg.length > 50 ? msg.slice(0, 50) + '...' : msg;
+                errorEl.title = pull.error_message || '';
+            }
+        }
+
+        document.getElementById('pull-count-idle').textContent = counts.idle;
+        document.getElementById('pull-count-running').textContent = counts.running;
+        document.getElementById('pull-count-completed').textContent = counts.completed;
+        document.getElementById('pull-count-failed').textContent = counts.failed;
+
+        const runSummaryEl = document.getElementById('pull-run-summary');
+        if (runSummaryEl) {
+            const run = data.active_run || data.latest_run;
+            if (run) {
+                const status = run.status || 'unknown';
+                const queueTotal = run.queue_total || 0;
+                const queueCompleted = run.queue_completed || 0;
+                const currentLabel = run.current_data_type_label || 'N/A';
+                const currentPulled = run.current_records_pulled ?? 0;
+                const currentExpected = run.current_expected_total ?? '-';
+                const currentInDb = run.current_records_in_db ?? '-';
+                const pct = run.progress_pct ?? 0;
+                const eta = formatEta(run.estimated_remaining_seconds);
+                const lead = status === 'running' ? 'Active Run' : 'Latest Run';
+                let message = `<strong>${lead}:</strong> ${status} · Pulling ${queueCompleted + (status === 'running' && run.current_data_type ? 1 : 0)} of ${queueTotal}`;
+                if (status === 'running' && run.current_data_type) {
+                    message += ` · ${currentLabel}: ${currentPulled} / ${currentExpected} · In DB: ${currentInDb} · ${pct}%`;
+                } else {
+                    message += ` · Completed: ${queueCompleted} / ${queueTotal} · ${pct}%`;
+                }
+                if (eta) message += ` · ETA: ${eta}`;
+                runSummaryEl.innerHTML = message;
+            } else {
+                runSummaryEl.innerHTML = '<strong>Run:</strong> No active run.';
+            }
+        }
+
+    } catch (err) {
+        // ignore polling errors
+    } finally {
+        window.__instanceDataStatusInFlight = false;
+    }
+}
+
+refreshDataStatus();
+setInterval(refreshDataStatus, 4000);
+</script>
+{% endblock %}

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}{{ table_label }} Browser - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<a href="/browse?instance_id={{ instance_id }}" class="browse-back-link">&larr; Back to Table Index</a>
+
+<div class="browse-header">
+    <h1>{{ table_label }}</h1>
+    <span class="table-index-source-badge browse-source-badge source-{{ source }}">{{ source }}</span>
+</div>
+<p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1.25rem;">
+    <code style="font-size:0.82rem;">{{ sn_table_name }}</code>
+    &mdash; {{ instance.name }}
+    {% if instance.url %}
+    (<a href="{{ instance.url }}/{{ sn_table_name }}_list.do" target="_blank" style="color:var(--primary-color);">Open in ServiceNow</a>)
+    {% endif %}
+</p>
+
+<div class="card">
+    <div id="dataTableContainer"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/ConditionBuilder.js?v={{ static_version }}"></script>
+<script src="/static/js/ColumnPicker.js?v={{ static_version }}"></script>
+<script src="/static/js/DataTable.js?v={{ static_version }}"></script>
+<script>
+(function () {
+    var container = document.getElementById('dataTableContainer');
+    if (!container) return;
+
+    var tableName = {{ sn_table_name|tojson }};
+    var instanceId = {{ instance_id }};
+    var filterField = {{ filter_field|tojson }};
+    var filterValue = {{ filter_value|tojson }};
+
+    var dt = new DataTable(container, {
+        dataUrl: '/api/dynamic-browser/records',
+        schemaUrl: '/api/dynamic-browser/field-schema?table=' + encodeURIComponent(tableName) + '&instance_id=' + instanceId,
+        instanceId: instanceId,
+        tableName: tableName,
+        pageSize: 50,
+        storageKey: 'dt_' + tableName + '_' + instanceId,
+        initialFilter: (filterField && filterValue) ? { field: filterField, value: filterValue } : null,
+        onReferenceClick: function (refTable, value) {
+            // Navigate directly to the referenced record's detail page
+            window.location.href = '/browse/' + encodeURIComponent(refTable) +
+                '/record/' + encodeURIComponent(value) +
+                '?instance_id=' + instanceId;
+        },
+        onRecordClick: function (sysId) {
+            window.location.href = '/browse/' + encodeURIComponent(tableName) +
+                '/record/' + encodeURIComponent(sysId) +
+                '?instance_id=' + instanceId;
+        },
+    });
+
+    dt.init().catch(function (err) {
+        console.error('DataTable init error:', err);
+        container.innerHTML = '<div class="empty-state"><h2>Error</h2><p>' + err.message + '</p></div>';
+    });
+})();
+</script>
+{% endblock %}

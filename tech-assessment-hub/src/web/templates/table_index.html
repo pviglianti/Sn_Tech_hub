@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}Table Browser - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Table Browser</h1>
+</div>
+
+<div class="card">
+    <div class="dt-instance-selector">
+        <label for="instanceSelect">Instance</label>
+        <select id="instanceSelect" class="form-control" style="max-width:300px;">
+            {% for inst in instances %}
+            <option value="{{ inst.id }}" {% if instance and inst.id == instance.id %}selected{% endif %}>
+                {{ inst.name }}{% if inst.company %} &mdash; {{ inst.company }}{% endif %}
+            </option>
+            {% endfor %}
+        </select>
+    </div>
+
+    {% if instance %}
+    <p style="font-size:0.9rem;color:var(--text-muted);margin-bottom:1rem;">
+        {{ total_tables }} registered table{{ 's' if total_tables != 1 else '' }} for
+        <strong>{{ instance.name }}</strong>
+        {% if instance.url %}&mdash; <a href="{{ instance.url }}" target="_blank" style="color:var(--primary-color);">{{ instance.url }}</a>{% endif %}
+    </p>
+    {% endif %}
+
+    {% for source, tables in groups.items() %}
+    <div class="source-group-header" {% if loop.first %}style="margin-top:0"{% endif %}>
+        <h3>
+            <span class="table-index-source-badge source-{{ source or 'csdm' }}">{{ (source or 'csdm')|upper }}</span>
+        </h3>
+        <span class="source-group-count">{{ tables|length }} table{{ 's' if tables|length != 1 else '' }}</span>
+    </div>
+    <div class="table-index-grid">
+        {% for t in tables %}
+        <a href="/browse/{{ t.sn_table_name }}?instance_id={{ instance_id }}" class="table-index-card">
+            <span class="table-index-card-name">{{ t.sn_table_label }}</span>
+            <span class="table-index-card-tech">{{ t.sn_table_name }}</span>
+            <span class="table-index-card-meta">
+                {% if t.field_count %}<span>{{ t.field_count }} fields</span>{% endif %}
+                {% if t.row_count %}<span>{{ t.row_count }} rows</span>{% endif %}
+                {% if t.priority_group %}<span>Group {{ t.priority_group }}</span>{% endif %}
+            </span>
+        </a>
+        {% endfor %}
+    </div>
+    {% endfor %}
+
+    {% if not groups %}
+    <div class="empty-state">
+        <h2>No Tables Registered</h2>
+        <p>Run a dictionary pull or CSDM ingestion to register tables.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    var sel = document.getElementById('instanceSelect');
+    if (sel) {
+        sel.addEventListener('change', function () {
+            window.location.href = '/browse?instance_id=' + sel.value;
+        });
+    }
+})();
+</script>
+{% endblock %}

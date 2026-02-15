@@ -1,0 +1,7 @@
+<div class="form-group">
+    <label for="{{ token_input_id }}">Admin Token</label>
+    <input id="{{ token_input_id }}" type="password" placeholder="{{ token_placeholder|default('X-MCP-Admin-Token (optional on localhost)') }}" />
+    {% if token_help_text %}
+    <small>{{ token_help_text }}</small>
+    {% endif %}
+</div>
