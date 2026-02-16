@@ -76,7 +76,11 @@ _normalize_bridge_config = normalize_bridge_config
 
 
 def load_bridge_config(session: Session) -> Dict[str, Any]:
-    row = session.exec(select(AppConfig).where(AppConfig.key == CONFIG_KEY)).first()
+    row = session.exec(
+        select(AppConfig)
+        .where(AppConfig.key == CONFIG_KEY)
+        .where(AppConfig.instance_id.is_(None))
+    ).first()
     if not row:
         return default_bridge_config()
 
@@ -90,7 +94,11 @@ def load_bridge_config(session: Session) -> Dict[str, Any]:
 def save_bridge_config(session: Session, cfg: Dict[str, Any]) -> Dict[str, Any]:
     normalized = normalize_bridge_config(cfg)
 
-    row = session.exec(select(AppConfig).where(AppConfig.key == CONFIG_KEY)).first()
+    row = session.exec(
+        select(AppConfig)
+        .where(AppConfig.key == CONFIG_KEY)
+        .where(AppConfig.instance_id.is_(None))
+    ).first()
     now = datetime.utcnow()
     if row:
         row.value = json.dumps(normalized)
@@ -99,6 +107,7 @@ def save_bridge_config(session: Session, cfg: Dict[str, Any]) -> Dict[str, Any]:
         session.add(row)
     else:
         row = AppConfig(
+            instance_id=None,
             key=CONFIG_KEY,
             value=json.dumps(normalized),
             description="MCP sidecar bridge settings",

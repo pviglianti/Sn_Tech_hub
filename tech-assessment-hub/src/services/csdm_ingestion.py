@@ -375,7 +375,12 @@ def _get_client_for_instance(instance_id: int) -> tuple[ServiceNowClient, Instan
         if not instance:
             raise ValueError(f"Instance {instance_id} not found")
         password = decrypt_password(instance.password_encrypted)
-        client = ServiceNowClient(instance.url, instance.username, password)
+        client = ServiceNowClient(
+            instance.url,
+            instance.username,
+            password,
+            instance_id=instance.id,
+        )
         return client, instance
 
 
@@ -515,7 +520,7 @@ def build_delta_query(last_updated_on_str: Optional[str]) -> str:
     are correct.
     """
     if last_updated_on_str:
-        return f"sys_updated_on>{last_updated_on_str}^ORDERBYsys_updated_on"
+        return f"sys_updated_on>={last_updated_on_str}^ORDERBYsys_updated_on"
     return "ORDERBYsys_updated_on"
 
 
@@ -743,7 +748,7 @@ def ingest_table(
         # Step 5: Paginated fetch loop.
         # Load effective config from Integration Properties (AppConfig) once
         # per pull, so admin-tuned batch_size / delay / max_batches apply.
-        _cfg = get_effective_config()
+        _cfg = get_effective_config(instance_id=instance_id)
         _batch_size = _cfg['batch_size']
         _inter_batch_delay = _cfg['inter_batch_delay']
         _max_batches = _cfg['max_batches']

@@ -174,13 +174,13 @@
 
     <div class="tab-container mt-1">
         <div class="tab-nav">
-            <button type="button" class="tab-btn active" data-result-tab-btn="version-history" onclick="openResultTab(event, 'version-history')">
+            <button type="button" class="tab-btn active" data-result-tab-btn="version-history" onclick="openTab(event, 'version-history')">
                 Version History <span class="badge">{{ version_history_rows | length }}</span>
             </button>
-            <button type="button" class="tab-btn" data-result-tab-btn="update-set" onclick="openResultTab(event, 'update-set')">
+            <button type="button" class="tab-btn" data-result-tab-btn="update-set" onclick="openTab(event, 'update-set')">
                 Update Set Context <span class="badge">{{ update_set_updates | length }}</span>
             </button>
-            <button type="button" class="tab-btn" data-result-tab-btn="artifact" onclick="openResultTab(event, 'artifact')">
+            <button type="button" class="tab-btn" data-result-tab-btn="artifact" onclick="openTab(event, 'artifact')">
                 Configuration Artifact
             </button>
         </div>
@@ -480,26 +480,6 @@
 {% block scripts %}
 {{ super() }}
 <script>
-function openResultTab(evt, tabName) {
-    ['version-history', 'update-set', 'artifact'].forEach((id) => {
-        const content = document.getElementById(id);
-        if (content) {
-            content.classList.remove('active');
-        }
-    });
-    document.querySelectorAll('[data-result-tab-btn]').forEach((btn) => {
-        btn.classList.remove('active');
-    });
-
-    const selected = document.getElementById(tabName);
-    if (selected) {
-        selected.classList.add('active');
-    }
-    if (evt && evt.currentTarget) {
-        evt.currentTarget.classList.add('active');
-    }
-}
-
 function initResultObjectPreview() {
     const modal = document.getElementById('resultRecordPreviewModal');
     const closeBtn = document.getElementById('resultRecordPreviewClose');
@@ -557,101 +537,35 @@ const resultTableName = '{{ result.table_name }}';
 const resultSysId = '{{ result.sys_id }}';
 const resultInstanceId = {{ assessment.instance_id if assessment else 0 }};
 
-async function loadCodeContent() {
-    if (!resultTableName || !resultSysId || !resultInstanceId) return;
-
-    const card = document.getElementById('codeContentCard');
-    const loading = document.getElementById('codeContentLoading');
-    const container = document.getElementById('codeContentContainer');
-    if (!card || !container) return;
-
-    try {
-        const url = `/api/artifacts/${encodeURIComponent(resultTableName)}/${encodeURIComponent(resultSysId)}/code?instance_id=${resultInstanceId}`;
-        const res = await fetch(url, { cache: 'no-store' });
-        if (!res.ok) return;
-        const data = await res.json();
-
-        if (loading) loading.style.display = 'none';
-
-        if (!data.has_code || !data.code_contents || !data.code_contents.length) return;
-
-        card.classList.remove('is-hidden');
-        container.innerHTML = data.code_contents.map((item) => {
-            const escaped = item.content
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;');
-            return `
-                <div class="mt-075">
-                    <div class="info-label">${item.label} <code>(${item.field})</code></div>
-                    <pre class="code-block max-h-420">${escaped}</pre>
-                </div>
-            `;
-        }).join('');
-    } catch (err) {
-        if (loading) loading.style.display = 'none';
-    }
-}
+document.addEventListener('DOMContentLoaded', function () {
+    ArtifactDetail.loadCode({
+        sysClassName: resultTableName,
+        sysId: resultSysId,
+        instanceId: resultInstanceId,
+        cardId: 'codeContentCard',
+        containerId: 'codeContentContainer',
+        loadingId: 'codeContentLoading',
+    });
+});
 
 // ── Artifact Detail Tab (lazy load) ─────────────────────────────────
 
 let _artifactDetailLoaded = false;
 
-async function loadArtifactDetail() {
-    if (_artifactDetailLoaded) return;
-    _artifactDetailLoaded = true;
-
-    const loading = document.getElementById('artifactDetailLoading');
-    const table = document.getElementById('artifactDetailTable');
-    const tbody = document.getElementById('artifactDetailBody');
-    const empty = document.getElementById('artifactDetailEmpty');
-    if (!tbody) return;
-
-    if (loading) { loading.classList.remove('is-hidden'); loading.style.display = ''; }
-
-    try {
-        const url = `/api/artifacts/${encodeURIComponent(resultTableName)}/${encodeURIComponent(resultSysId)}?instance_id=${resultInstanceId}`;
-        const res = await fetch(url, { cache: 'no-store' });
-        if (loading) loading.classList.add('is-hidden');
-
-        if (!res.ok) {
-            if (empty) empty.classList.remove('is-hidden');
-            return;
-        }
-
-        const data = await res.json();
-        const fieldRows = data.field_rows || [];
-        if (!fieldRows.length) {
-            if (empty) empty.classList.remove('is-hidden');
-            return;
-        }
-
-        if (table) table.classList.remove('is-hidden');
-        tbody.innerHTML = fieldRows.map((row) => {
-            const val = row.value != null ? String(row.value) : '-';
-            const escaped = val.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            const isLong = val.length > 200;
-            return `
-                <tr>
-                    <td><strong>${row.label}</strong><br><code class="text-muted-sm">${row.field}</code></td>
-                    <td>${isLong ? `<pre class="code-block max-h-200">${escaped}</pre>` : escaped}</td>
-                </tr>
-            `;
-        }).join('');
-    } catch (err) {
-        if (loading) loading.classList.add('is-hidden');
-        if (empty) empty.classList.remove('is-hidden');
+// Lazy-load artifact detail on first tab open
+document.addEventListener('tab:activated', function(e) {
+    if (e.detail.tabName === 'artifact' && !_artifactDetailLoaded) {
+        _artifactDetailLoaded = true;
+        ArtifactDetail.loadDetail({
+            sysClassName: resultTableName,
+            sysId: resultSysId,
+            instanceId: resultInstanceId,
+            tableId: 'artifactDetailTable',
+            bodyId: 'artifactDetailBody',
+            emptyId: 'artifactDetailEmpty',
+            loadingId: 'artifactDetailLoading',
+        });
     }
-}
-
-// Hook into tab switching to lazy-load artifact detail
-const _origResultTab = window.openResultTab;
-window.openResultTab = function(evt, tabName) {
-    _origResultTab(evt, tabName);
-    if (tabName === 'artifact') loadArtifactDetail();
-};
-
-// Load code content on page load
-document.addEventListener('DOMContentLoaded', loadCodeContent);
+});
 </script>
 {% endblock %}

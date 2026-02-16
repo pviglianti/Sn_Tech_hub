@@ -166,12 +166,26 @@ def get_integration_property_definitions() -> List[IntegrationPropertyDefinition
     return list(PROPERTY_DEFINITIONS.values())
 
 
-def _read_row(session: Session, key: str) -> Optional[AppConfig]:
-    return session.exec(select(AppConfig).where(AppConfig.key == key)).first()
+def _read_row_exact(session: Session, key: str, instance_id: Optional[int]) -> Optional[AppConfig]:
+    stmt = select(AppConfig).where(AppConfig.key == key)
+    if instance_id is None:
+        stmt = stmt.where(AppConfig.instance_id.is_(None))
+    else:
+        stmt = stmt.where(AppConfig.instance_id == instance_id)
+    return session.exec(stmt).first()
 
 
-def _read_property(session: Session, key: str) -> Optional[str]:
-    row = _read_row(session, key)
+def _read_row(session: Session, key: str, instance_id: Optional[int] = None) -> Optional[AppConfig]:
+    """Read property row with optional instance fallback to global."""
+    if instance_id is not None:
+        scoped = _read_row_exact(session, key, instance_id)
+        if scoped:
+            return scoped
+    return _read_row_exact(session, key, None)
+
+
+def _read_property(session: Session, key: str, instance_id: Optional[int] = None) -> Optional[str]:
+    row = _read_row(session, key, instance_id=instance_id)
     if not row or row.value is None:
         return None
     return str(row.value).strip()
@@ -213,12 +227,28 @@ def _normalize_for_storage(value: Any, definition: IntegrationPropertyDefinition
     return f"{float(parsed):g}"
 
 
-def list_integration_property_snapshots(session: Session) -> List[Dict[str, Any]]:
+def list_integration_property_snapshots(
+    session: Session,
+    instance_id: Optional[int] = None,
+) -> List[Dict[str, Any]]:
     snapshots: List[Dict[str, Any]] = []
     for definition in get_integration_property_definitions():
-        raw = _read_property(session, definition.key)
-        current_value = raw
-        effective_value = raw if raw not in (None, "") else definition.default
+        scoped_row = _read_row_exact(session, definition.key, instance_id) if instance_id is not None else None
+        global_row = _read_row_exact(session, definition.key, None)
+
+        current_row = scoped_row if instance_id is not None else global_row
+        current_value = str(current_row.value).strip() if current_row and current_row.value is not None else None
+
+        if scoped_row and scoped_row.value not in (None, ""):
+            effective_value = str(scoped_row.value).strip()
+            effective_source = "instance"
+        elif global_row and global_row.value not in (None, ""):
+            effective_value = str(global_row.value).strip()
+            effective_source = "global"
+        else:
+            effective_value = definition.default
+            effective_source = "default"
+
         snap: Dict[str, Any] = {
             "key": definition.key,
             "label": definition.label,
@@ -231,6 +261,8 @@ def list_integration_property_snapshots(session: Session) -> List[Dict[str, Any]
             "current_value": current_value,
             "effective_value": effective_value,
             "is_default": current_value in (None, ""),
+            "effective_source": effective_source,
+            "instance_id": instance_id,
             "min_value": definition.min_value,
             "max_value": definition.max_value,
         }
@@ -245,6 +277,7 @@ def list_integration_property_snapshots(session: Session) -> List[Dict[str, Any]
 def update_integration_properties(
     session: Session,
     updates: Dict[str, Any],
+    instance_id: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     unknown = [key for key in updates.keys() if key not in PROPERTY_DEFINITIONS]
     if unknown:
@@ -252,7 +285,7 @@ def update_integration_properties(
 
     for key, value in updates.items():
         definition = PROPERTY_DEFINITIONS[key]
-        row = _read_row(session, key)
+        row = _read_row_exact(session, key, instance_id)
         if value is None or str(value).strip() == "":
             if row:
                 session.delete(row)
@@ -264,6 +297,7 @@ def update_integration_properties(
             row.description = definition.description
         else:
             row = AppConfig(
+                instance_id=instance_id,
                 key=key,
                 value=normalized_value,
                 description=definition.description,
@@ -271,11 +305,11 @@ def update_integration_properties(
         session.add(row)
 
     session.commit()
-    return list_integration_property_snapshots(session)
+    return list_integration_property_snapshots(session, instance_id=instance_id)
 
 
-def _get_int(session: Session, key: str, default: int) -> int:
-    raw = _read_property(session, key)
+def _get_int(session: Session, key: str, default: int, instance_id: Optional[int] = None) -> int:
+    raw = _read_property(session, key, instance_id=instance_id)
     if raw is None or raw == "":
         return default
     try:
@@ -284,8 +318,8 @@ def _get_int(session: Session, key: str, default: int) -> int:
         return default
 
 
-def _get_float(session: Session, key: str, default: float) -> float:
-    raw = _read_property(session, key)
+def _get_float(session: Session, key: str, default: float, instance_id: Optional[int] = None) -> float:
+    raw = _read_property(session, key, instance_id=instance_id)
     if raw is None or raw == "":
         return default
     try:
@@ -294,20 +328,20 @@ def _get_float(session: Session, key: str, default: float) -> float:
         return default
 
 
-def load_fetch_properties(session: Session) -> FetchProperties:
+def load_fetch_properties(session: Session, instance_id: Optional[int] = None) -> FetchProperties:
     """Load typed fetch/pagination properties from app_config with safe defaults."""
     defaults = FetchProperties()
     return FetchProperties(
-        default_batch_size=_get_int(session, FETCH_DEFAULT_BATCH_SIZE, defaults.default_batch_size),
-        inter_batch_delay=_get_float(session, FETCH_INTER_BATCH_DELAY, defaults.inter_batch_delay),
-        request_timeout=_get_int(session, FETCH_REQUEST_TIMEOUT, defaults.request_timeout),
-        max_batches=_get_int(session, FETCH_MAX_BATCHES, defaults.max_batches),
+        default_batch_size=_get_int(session, FETCH_DEFAULT_BATCH_SIZE, defaults.default_batch_size, instance_id=instance_id),
+        inter_batch_delay=_get_float(session, FETCH_INTER_BATCH_DELAY, defaults.inter_batch_delay, instance_id=instance_id),
+        request_timeout=_get_int(session, FETCH_REQUEST_TIMEOUT, defaults.request_timeout, instance_id=instance_id),
+        max_batches=_get_int(session, FETCH_MAX_BATCHES, defaults.max_batches, instance_id=instance_id),
     )
 
 
-def load_display_timezone(session: Session) -> str:
+def load_display_timezone(session: Session, instance_id: Optional[int] = None) -> str:
     """Return the configured IANA display timezone (e.g. 'America/New_York')."""
-    raw = _read_property(session, GENERAL_DISPLAY_TIMEZONE)
+    raw = _read_property(session, GENERAL_DISPLAY_TIMEZONE, instance_id=instance_id)
     if raw and raw.strip():
         return raw.strip()
     return PROPERTY_DEFAULTS[GENERAL_DISPLAY_TIMEZONE]

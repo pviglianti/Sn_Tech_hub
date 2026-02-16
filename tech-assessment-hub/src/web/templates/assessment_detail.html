@@ -120,18 +120,18 @@
     </div>
 </div>
 
-<div class="card">
-    <h2>Preflight Sync Plan</h2>
-    <p class="preflight-subtitle">
+<div class="card" id="syncCard">
+    <h2 id="syncCardTitle">Preflight Sync Plan</h2>
+    <p class="preflight-subtitle" id="syncCardSubtitle">
         Before scans run, cached Pre Flight Data Browser datasets are synced for this instance.
         Required gating set: Metadata Customization, Version History (current), Update XML, and Update Sets.
-        Freshness window: {{ preflight_summary.stale_minutes }} minutes.
     </p>
     {% set status_labels = {'completed': 'Complete', 'pending': 'Pending', 'failed': 'Failed', 'cancelled': 'Cancelled'} %}
     {% set full_group_status = preflight_summary.full_status or ('pending' if (preflight_summary.full | length) else 'completed') %}
     {% set delta_group_status = preflight_summary.delta_status or ('pending' if (preflight_summary.delta | length) else 'completed') %}
     {% set fresh_group_status = preflight_summary.fresh_status or 'completed' %}
     {% set skip_group_status = preflight_summary.skip_status or ('pending' if (preflight_summary.skip | length) else 'completed') %}
+    {% set has_pending_all = (preflight_summary.pending_all | default([])) | length > 0 %}
     <div id="assessmentRunStatus" class="preflight-runtime-status is-hidden">
         <div class="table-loading-pill">
             <span id="assessmentRunSpinner" class="table-spinner"></span>
@@ -141,7 +141,30 @@
             <div id="assessmentRunProgressBar" class="preflight-runtime-progress-bar"></div>
         </div>
     </div>
-    <div class="preflight-grid">
+    {% if has_pending_all %}
+    <!-- Pending assessment: all types in a single list, no speculative bucket categorization -->
+    <div id="pendingAllGrid">
+        <div class="preflight-group" data-preflight-group="pending_all">
+            <h3 class="preflight-group-title">
+                <span class="preflight-status-icon status-pending" data-preflight-group-icon aria-hidden="true"></span>
+                Preflight Data Types ({{ preflight_summary.pending_all | length }})
+                <span class="preflight-status-text status-pending" data-preflight-group-text>- Pending</span>
+            </h3>
+            <ul class="preflight-list">
+                {% for item in preflight_summary.pending_all %}
+                <li class="preflight-item status-pending" data-preflight-type="{{ item.data_type }}">
+                    <span class="preflight-status-icon status-pending" data-preflight-item-icon aria-hidden="true"></span>
+                    <span class="preflight-item-label">{{ item.label }}{% if item.is_required %} <em class="text-muted-sm">(required)</em>{% endif %}</span>
+                    <span class="preflight-item-count" data-preflight-item-count data-local="0" data-expected=""></span>
+                    <span class="preflight-status-text status-pending" data-preflight-item-text>- Pending</span>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        <p class="text-muted-sm mt-05">Pull mode (full / delta / skip) will be determined by probes when the scan workflow starts.</p>
+    </div>
+    {% endif %}
+    <div id="preflightGrid" class="preflight-grid{% if has_pending_all %} is-hidden{% endif %}">
         <div class="preflight-group" data-preflight-group="full">
             <h3 class="preflight-group-title">
                 <span class="preflight-status-icon status-{{ full_group_status }}" data-preflight-group-icon aria-hidden="true"></span>
@@ -279,23 +302,18 @@
             {% endif %}
         </div>
     </div>
-</div>
-
-<!-- Post Flight Sync -->
-<div class="card is-hidden" id="postflightCard">
-    <h2>Post Flight Sync</h2>
-    <p class="preflight-subtitle">
-        After scans complete, full artifact details are pulled for each file type found in results.
-    </p>
-    <div class="preflight-grid">
-        <div class="preflight-group" data-postflight-group="artifacts">
-            <h3 class="preflight-group-title">
-                <span class="preflight-status-icon status-pending" data-postflight-group-icon aria-hidden="true"></span>
-                Artifact Details (<span id="postflightCount">0</span>)
-                <span class="preflight-status-text status-pending" data-postflight-group-text>- Pending</span>
-            </h3>
-            <ul class="preflight-list" id="postflightList">
-            </ul>
+    <!-- Post Flight content (hidden until postflight stage) -->
+    <div id="postflightGrid" class="is-hidden">
+        <div class="preflight-grid">
+            <div class="preflight-group" data-postflight-group="artifacts">
+                <h3 class="preflight-group-title">
+                    <span class="preflight-status-icon status-pending" data-postflight-group-icon aria-hidden="true"></span>
+                    Artifact Details (<span id="postflightCount">0</span>)
+                    <span class="preflight-status-text status-pending" data-postflight-group-text>- Pending</span>
+                </h3>
+                <ul class="preflight-list" id="postflightList">
+                </ul>
+            </div>
         </div>
     </div>
 </div>
@@ -615,80 +633,74 @@
 {% block scripts %}
 {{ super() }}
 <script>
-function openTab(evt, tabName) {
-    // Hide all tab contents
-    document.querySelectorAll('.tab-content').forEach(content => {
-        content.classList.remove('active');
-    });
-
-    // Remove active class from all tab buttons
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-        btn.classList.remove('active');
-    });
-
-    // Show the selected tab content
-    document.getElementById(tabName).classList.add('active');
-
-    // Add active class to the clicked button
-    evt.currentTarget.classList.add('active');
-}
-</script>
-<script>
 const assessmentId = {{ assessment.id }};
 const assessmentInstanceId = {{ assessment.instance_id }};
 
-function formatAssessmentDate(value) {
-    if (!value) return '-';
-    return value.replace('T', ' ').slice(0, 16);
+// ── Assessment Results (via ResultsFilterTable) ─────────────────────
+
+function setAssessmentResultsCounts(opts) {
+    var labelEl = document.getElementById('assessmentResultsScopeLabel');
+    var scopeEl = document.getElementById('assessmentResultsScopeTotal');
+    var activeEl = document.getElementById('assessmentResultsActiveTotal');
+    var tabBadge = document.getElementById('assessmentResultsTabBadge');
+    if (labelEl) labelEl.textContent = (opts && opts.scopeLabel) || 'Customizations';
+    if (scopeEl) scopeEl.textContent = typeof (opts && opts.scopeTotal) === 'number' ? String(opts.scopeTotal) : '-';
+    if (activeEl) activeEl.textContent = typeof (opts && opts.activeTotal) === 'number' ? String(opts.activeTotal) : '-';
+    if (tabBadge) tabBadge.textContent = typeof (opts && opts.activeTotal) === 'number' ? String(opts.activeTotal) : (tabBadge.textContent || '0');
 }
 
-	function setAssessmentResultsLoading(isLoading) {
-	    const overlay = document.getElementById('assessmentResultsLoading');
-	    if (!overlay) return;
-	    overlay.style.display = isLoading ? 'flex' : 'none';
-	}
+var assessmentResultsTable = new ResultsFilterTable({
+    resultsApiUrl: '/api/assessments/' + assessmentId + '/results',
+    optionsApiBaseParams: { instance_id: String(assessmentInstanceId), assessment_ids: String(assessmentId) },
+    bodyId: 'assessmentResultsBody',
+    emptyId: 'assessmentResultsEmpty',
+    loadingId: 'assessmentResultsLoading',
+    metaId: 'assessmentResultsMeta',
+    classificationId: 'assessmentResultsClassification',
+    classFilterId: 'assessmentResultsClassFilter',
+    showScanColumn: true,
+    onCounts: function (payload, scopedCount) {
+        if (!payload) {
+            setAssessmentResultsCounts({ scopeLabel: 'Customizations', scopeTotal: null, activeTotal: null });
+            return;
+        }
+        var total = Number(payload.total || 0);
+        var classificationEl = document.getElementById('assessmentResultsClassification');
+        var classVal = classificationEl ? classificationEl.value : 'all';
+        var scopeLabel = (classVal === 'all') ? 'Results'
+            : (classificationEl && classificationEl.options[classificationEl.selectedIndex]
+                ? classificationEl.options[classificationEl.selectedIndex].text : 'Results');
+        var scopeTotal = Number.isFinite(scopedCount) ? Number(scopedCount) : total;
+        setAssessmentResultsCounts({ scopeLabel: scopeLabel, scopeTotal: scopeTotal, activeTotal: total });
+    },
+    onMeta: function (payload, scopedCount) {
+        if (!payload) return 'Failed to load results.';
+        var shown = Number(payload.count || 0);
+        var total = Number(payload.total || 0);
+        var classFilter = document.getElementById('assessmentResultsClassFilter');
+        var scopeTotal = Number.isFinite(scopedCount) ? Number(scopedCount) : total;
+        if (classFilter && classFilter.value) {
+            return 'Showing ' + shown + ' of ' + total + ' results (filtered from ' + scopeTotal + ')';
+        }
+        return 'Showing ' + shown + ' of ' + total + ' results';
+    },
+});
+assessmentResultsTable.bindControls('assessmentResultsApply', 'assessmentResultsReset');
 
-	function setAssessmentResultsCounts({ scopeLabel, scopeTotal, activeTotal }) {
-	    const labelEl = document.getElementById('assessmentResultsScopeLabel');
-	    const scopeEl = document.getElementById('assessmentResultsScopeTotal');
-	    const activeEl = document.getElementById('assessmentResultsActiveTotal');
-	    const tabBadge = document.getElementById('assessmentResultsTabBadge');
+// Whether a scan is actively running — gates preflight status updates in pending-all mode
+let _scanIsActive = false;
 
-	    if (labelEl) labelEl.textContent = scopeLabel || 'Customizations';
-	    if (scopeEl) scopeEl.textContent = typeof scopeTotal === 'number' ? String(scopeTotal) : '-';
-	    if (activeEl) activeEl.textContent = typeof activeTotal === 'number' ? String(activeTotal) : '-';
-	    if (tabBadge) tabBadge.textContent = typeof activeTotal === 'number' ? String(activeTotal) : (tabBadge.textContent || '0');
-	}
-
-	function renderAssessmentResultsRows(rows) {
-	    const tbody = document.getElementById('assessmentResultsBody');
-	    const empty = document.getElementById('assessmentResultsEmpty');
-	    if (!tbody || !empty) return;
-
-    if (!rows.length) {
-        tbody.innerHTML = '';
-        empty.style.display = 'block';
-        return;
+function _hidePendingAllGrid() {
+    // Transition from the flat "Pending" list to the real 4-column preflight grid.
+    // Only do this when preflightGrid actually has content (i.e. NOT a pending_all render).
+    const pendingAllGrid = document.getElementById('pendingAllGrid');
+    const preflightGrid = document.getElementById('preflightGrid');
+    const hasBucketItems = preflightGrid && preflightGrid.querySelectorAll('.preflight-item[data-preflight-type]').length > 0;
+    if (pendingAllGrid && hasBucketItems) {
+        pendingAllGrid.classList.add('is-hidden');
+        preflightGrid.classList.remove('is-hidden');
     }
-
-    empty.style.display = 'none';
-    tbody.innerHTML = rows.map((row) => {
-        const classification = row.customization_classification ? row.customization_classification.replaceAll('_', ' ') : '-';
-        const originClass = row.origin_type ? `origin-${row.origin_type}` : '';
-        return `
-            <tr>
-                <td><a href="/results/${row.id}">${row.name || row.sys_id}</a></td>
-                <td><code>${row.table_name || '-'}</code></td>
-                <td>${row.scan?.name || '-'}</td>
-                <td>${row.is_customized ? 'Yes' : 'No'}</td>
-                <td>${row.origin_type ? `<span class="origin-badge ${originClass}">${classification}</span>` : '-'}</td>
-                <td>${row.review_status ? row.review_status.replaceAll('_', ' ') : '-'}</td>
-                <td>${row.disposition ? row.disposition.replaceAll('_', ' ') : '-'}</td>
-                <td>${formatAssessmentDate(row.sys_updated_on)}</td>
-                <td><a class="btn btn-sm" href="/results/${row.id}">View</a></td>
-            </tr>
-        `;
-    }).join('');
+    // If preflightGrid is empty (pending_all render), keep the flat list visible
 }
 
 function showAssessmentRunStatusPending(actionLabel) {
@@ -702,8 +714,70 @@ function showAssessmentRunStatusPending(actionLabel) {
     spinner.style.display = '';
     text.textContent = `${actionLabel}: submitting request...`;
     bar.style.width = '6%';
+    _scanIsActive = true;
+    // Try to transition to real preflight grid (only if it has items)
+    _hidePendingAllGrid();
+    // Reset card to preflight phase and clear stale statuses
+    _setSyncCardPhase('preflight');
+    _resetPreflightToPending();
+    _preflightResetDone = true;
 }
 
+// Stages that are past preflight (postflight or later)
+const _POSTFLIGHT_STAGES = new Set([
+    'postflight_artifact_pull', 'preflight_optional_sync',
+    'version_history_catchup', 'completed',
+]);
+const _PREFLIGHT_STAGES = new Set([
+    'queued', 'validating_instance', 'preflight_required_sync',
+]);
+let _lastSyncPhase = 'preflight';  // tracks which phase the card is showing
+
+function _setSyncCardPhase(phase) {
+    if (phase === _lastSyncPhase) return;
+    _lastSyncPhase = phase;
+    const title = document.getElementById('syncCardTitle');
+    const subtitle = document.getElementById('syncCardSubtitle');
+    const pendingAllGrid = document.getElementById('pendingAllGrid');
+    const preflightGrid = document.getElementById('preflightGrid');
+    const postflightGrid = document.getElementById('postflightGrid');
+
+    if (phase === 'postflight') {
+        if (title) title.textContent = 'Post Flight';
+        if (subtitle) subtitle.textContent = 'Full artifact details are being pulled for each file type found in scan results.';
+        // Hide BOTH preflight grids (bucketed + pending-all flat list)
+        if (pendingAllGrid) pendingAllGrid.classList.add('is-hidden');
+        if (preflightGrid) preflightGrid.classList.add('is-hidden');
+        if (postflightGrid) postflightGrid.classList.remove('is-hidden');
+    } else {
+        if (title) title.textContent = 'Preflight Sync Plan';
+        if (subtitle) subtitle.textContent = 'Before scans run, cached Pre Flight Data Browser datasets are synced for this instance.';
+        // Show the appropriate preflight grid; pendingAllGrid visibility managed by _hidePendingAllGrid
+        if (preflightGrid) preflightGrid.classList.remove('is-hidden');
+        if (postflightGrid) postflightGrid.classList.add('is-hidden');
+    }
+}
+
+function _resetPreflightToPending() {
+    const setStatusClasses = (node, status) => {
+        if (!node) return;
+        node.classList.remove('status-completed', 'status-pending', 'status-failed', 'status-cancelled', 'status-running');
+        node.classList.add(`status-${status}`);
+    };
+    document.querySelectorAll('.preflight-item[data-preflight-type]').forEach((item) => {
+        setStatusClasses(item, 'pending');
+        setStatusClasses(item.querySelector('[data-preflight-item-icon]'), 'pending');
+        const text = item.querySelector('[data-preflight-item-text]');
+        if (text) { setStatusClasses(text, 'pending'); text.textContent = '- Pending'; }
+    });
+    document.querySelectorAll('.preflight-group[data-preflight-group]').forEach((group) => {
+        setStatusClasses(group.querySelector('[data-preflight-group-icon]'), 'pending');
+        const text = group.querySelector('[data-preflight-group-text]');
+        if (text) { setStatusClasses(text, 'pending'); text.textContent = '- Pending'; }
+    });
+}
+
+let _preflightResetDone = false;
 function updateAssessmentRunStatus(runStatus) {
     const container = document.getElementById('assessmentRunStatus');
     const spinner = document.getElementById('assessmentRunSpinner');
@@ -717,6 +791,7 @@ function updateAssessmentRunStatus(runStatus) {
     }
 
     const status = runStatus.status || 'running';
+    const stage = runStatus.stage || '';
     const modeLabel = runStatus.mode_label || 'Scan workflow';
     const stageLabel = runStatus.stage_label || 'Running';
     const message = runStatus.message || '';
@@ -731,6 +806,41 @@ function updateAssessmentRunStatus(runStatus) {
         spinner.style.display = '';
     } else {
         spinner.style.display = 'none';
+    }
+
+    // Capture whether we were previously active before updating the flag
+    const wasActive = _scanIsActive;
+    _scanIsActive = (status === 'running');
+
+    // Phase transitions: switch from pending-all to real grid, reset when a new run starts
+    if (status === 'running') {
+        _hidePendingAllGrid();
+    }
+    if (status === 'running' && !_preflightResetDone) {
+        _preflightResetDone = true;
+        _resetPreflightToPending();
+        if (_PREFLIGHT_STAGES.has(stage)) {
+            _setSyncCardPhase('preflight');
+        }
+    }
+
+    // Swap to postflight view when we pass the scan stage
+    if (_POSTFLIGHT_STAGES.has(stage)) {
+        _setSyncCardPhase('postflight');
+    } else if (stage === 'running_scans') {
+        // During scans, keep showing preflight (already done)
+        _setSyncCardPhase('preflight');
+    }
+
+    // Reset the flag when workflow completes so next run can reset again
+    if (status === 'completed' || status === 'failed') {
+        _preflightResetDone = false;
+        // Reload the page ONCE when workflow transitions from active → finished.
+        // Using wasActive prevents re-triggering after the reload (since _scanIsActive
+        // starts as false on a fresh page load, wasActive will also be false).
+        if (wasActive) {
+            setTimeout(() => { window.location.reload(); }, 1500);
+        }
     }
 }
 
@@ -756,8 +866,23 @@ document.querySelectorAll('[data-preflight-item-count]').forEach((el) => {
     renderPreflightCounts(el, el.dataset.local, el.dataset.expected);
 });
 
-function applyPreflightStatus(dataSync) {
+// Track run start time so we can ignore stale preflight data from previous runs
+let _currentRunStartedAt = null;
+
+function applyPreflightStatus(dataSync, runStatus) {
     if (!dataSync || !Array.isArray(dataSync.details)) return;
+
+    // In pending-all mode (new assessment), don't overwrite "Pending" with stale instance data
+    // until a scan is actively running and producing fresh pull statuses.
+    const pendingAllGrid = document.getElementById('pendingAllGrid');
+    if (pendingAllGrid && !pendingAllGrid.classList.contains('is-hidden') && !_scanIsActive) {
+        return;
+    }
+
+    // Track the current run's start time
+    if (runStatus && runStatus.started_at) {
+        _currentRunStartedAt = runStatus.started_at;
+    }
 
     const statusLabel = {
         completed: 'Complete',
@@ -776,12 +901,31 @@ function applyPreflightStatus(dataSync) {
         return 'pending';
     };
 
+    // Determine if we should filter by run start time.
+    // When a run is active AND we're still in the preflight phase, only show statuses
+    // for types verified in THIS run (completed_at >= run started_at). Types not yet
+    // touched stay pending (grey). Once past preflight (scans/postflight), all preflight
+    // items should reflect their actual DB status — skipped probes keep old completed_at
+    // timestamps which would incorrectly be filtered to "pending".
+    const inPreflightPhase = _lastSyncPhase === 'preflight';
+    const filterByRunTime = _scanIsActive && _currentRunStartedAt && inPreflightPhase;
+
     const statusByType = {};
     const detailByType = {};
     dataSync.details.forEach((row) => {
         if (!row || !row.data_type) return;
         const dt = String(row.data_type);
-        statusByType[dt] = normalizeStatus(row.status);
+        let status = normalizeStatus(row.status);
+
+        // If a run is active, check if this type was updated during the current run
+        if (filterByRunTime && status !== 'running') {
+            const completedAt = row.completed_at;
+            if (!completedAt || completedAt < _currentRunStartedAt) {
+                status = 'pending';  // not yet verified in this run
+            }
+        }
+
+        statusByType[dt] = status;
         detailByType[dt] = row;
     });
 
@@ -800,12 +944,16 @@ function applyPreflightStatus(dataSync) {
         setStatusClasses(item, status);
         setStatusClasses(item.querySelector('[data-preflight-item-icon]'), status);
 
-        // Update counts from polling data
+        // Update counts from polling data (only if status is not pending/stale)
         const countEl = item.querySelector('[data-preflight-item-count]');
         if (countEl) {
-            const local = detail.local_count || 0;
-            const expected = detail.expected_total || detail.last_remote_count || 0;
-            renderPreflightCounts(countEl, local, expected);
+            if (status === 'pending') {
+                countEl.textContent = '';
+            } else {
+                const local = detail.local_count || 0;
+                const expected = detail.expected_total || detail.last_remote_count || 0;
+                renderPreflightCounts(countEl, local, expected);
+            }
         }
 
         const text = item.querySelector('[data-preflight-item-text]');
@@ -839,127 +987,6 @@ function applyPreflightStatus(dataSync) {
             text.textContent = `- ${statusLabel[groupStatus] || groupStatus}`;
         }
     });
-}
-
-async function loadAssessmentClassOptions() {
-    const meta = document.getElementById('assessmentResultsMeta');
-    const classification = document.getElementById('assessmentResultsClassification');
-    const classFilter = document.getElementById('assessmentResultsClassFilter');
-    if (!classification || !classFilter) return;
-
-    const classificationValue = classification.value;
-    const optionsParams = new URLSearchParams({
-        instance_id: String(assessmentInstanceId),
-        assessment_ids: String(assessmentId),
-    });
-    if (classificationValue === 'customized') {
-        optionsParams.set('customized_only', 'true');
-        optionsParams.set('customization_type', 'all');
-    } else if (classificationValue === 'uncustomized') {
-        optionsParams.set('customized_only', 'false');
-        optionsParams.set('customization_type', 'uncustomized');
-    } else if (classificationValue === 'modified_ootb') {
-        optionsParams.set('customized_only', 'true');
-        optionsParams.set('customization_type', 'modified_ootb');
-    } else if (classificationValue === 'net_new_customer') {
-        optionsParams.set('customized_only', 'true');
-        optionsParams.set('customization_type', 'net_new_customer');
-    } else if (classificationValue === 'ootb_untouched') {
-        optionsParams.set('customized_only', 'false');
-        optionsParams.set('customization_type', 'ootb_untouched');
-    } else if (classificationValue === 'unknown') {
-        optionsParams.set('customized_only', 'false');
-        optionsParams.set('customization_type', 'unknown');
-    }
-    const params = optionsParams;
-
-    const currentValue = classFilter.value;
-    const response = await fetch(`/api/results/options?${params.toString()}`, { cache: 'no-store' });
-    if (!response.ok) {
-        if (meta) meta.textContent = 'Failed to load filter options.';
-        return;
-    }
-    const payload = await response.json();
-    const options = payload.app_file_classes || [];
-    classFilter.innerHTML = '<option value="">All Classes</option>';
-    options.forEach((value) => {
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent = value;
-        classFilter.appendChild(option);
-    });
-    if (currentValue && options.includes(currentValue)) {
-        classFilter.value = currentValue;
-    }
-    return Number(payload.scoped_count ?? 0);
-}
-
-async function refreshAssessmentResults() {
-    const meta = document.getElementById('assessmentResultsMeta');
-    const classification = document.getElementById('assessmentResultsClassification');
-    const classFilter = document.getElementById('assessmentResultsClassFilter');
-    if (!classification || !classFilter) return;
-
-    setAssessmentResultsLoading(true);
-    if (meta) meta.textContent = 'Loading...';
-    try {
-        const scopedCount = await loadAssessmentClassOptions();
-        const classificationValue = classification.value;
-        const params = new URLSearchParams({ limit: '500' });
-        if (classificationValue === 'customized') {
-            params.set('customized_only', 'true');
-            params.set('customization_type', 'all');
-        } else if (classificationValue === 'uncustomized') {
-            params.set('customized_only', 'false');
-            params.set('customization_type', 'uncustomized');
-        } else if (classificationValue === 'modified_ootb') {
-            params.set('customized_only', 'true');
-            params.set('customization_type', 'modified_ootb');
-        } else if (classificationValue === 'net_new_customer') {
-            params.set('customized_only', 'true');
-            params.set('customization_type', 'net_new_customer');
-        } else if (classificationValue === 'ootb_untouched') {
-            params.set('customized_only', 'false');
-            params.set('customization_type', 'ootb_untouched');
-        } else if (classificationValue === 'unknown') {
-            params.set('customized_only', 'false');
-            params.set('customization_type', 'unknown');
-        }
-        if (classFilter.value) {
-            params.set('app_file_classes', classFilter.value);
-        }
-
-        const response = await fetch(`/api/assessments/${assessmentId}/results?${params.toString()}`, { cache: 'no-store' });
-        if (!response.ok) {
-            throw new Error('Request failed');
-        }
-        const payload = await response.json();
-        const total = Number(payload.total || 0);
-        const scopeLabel = (classificationValue === 'all') ? 'Results' : classification.options[classification.selectedIndex].text;
-        const scopeTotal = Number.isFinite(scopedCount) ? Number(scopedCount) : total;
-        setAssessmentResultsCounts({
-            scopeLabel,
-            scopeTotal,
-            activeTotal: total,
-        });
-        renderAssessmentResultsRows(payload.results || []);
-        if (meta) {
-            const shown = Number(payload.count || 0);
-            if (classFilter.value) {
-                meta.textContent = `Showing ${shown} of ${total} results (filtered from ${scopeTotal})`;
-            } else {
-                meta.textContent = `Showing ${shown} of ${total} results`;
-            }
-        }
-    } catch (error) {
-        renderAssessmentResultsRows([]);
-        setAssessmentResultsCounts({ scopeLabel: 'Customizations', scopeTotal: null, activeTotal: null });
-        if (meta) {
-            meta.textContent = 'Failed to load results.';
-        }
-    } finally {
-        setAssessmentResultsLoading(false);
-    }
 }
 
 function _formatScanType(scanType) {
@@ -1075,17 +1102,16 @@ async function refreshScanStatus() {
 
         // Auto-refresh results when scans finish (transition from active → idle)
         if (_lastScansActive && !hasActive && scans.length > 0) {
-            refreshAssessmentResults();
-            loadAssessmentClassOptions();
+            assessmentResultsTable.refresh();
         }
         // Also refresh results periodically while scans are running (every other poll = ~8s)
         if (hasActive && _scanPollCount % 2 === 0) {
-            refreshAssessmentResults();
+            assessmentResultsTable.refresh();
         }
         _lastScansActive = hasActive;
 
         updateAssessmentRunStatus(data.run_status || null);
-        applyPreflightStatus(data.data_sync || null);
+        applyPreflightStatus(data.data_sync || null, data.run_status || null);
         applyPostflightStatus(data.postflight_details || null);
     } catch (err) {
         // ignore polling errors
@@ -1096,9 +1122,6 @@ let _scanPollCount = 0;
 refreshScanStatus();
 setInterval(() => { _scanPollCount++; refreshScanStatus(); }, 4000);
 
-document.getElementById('assessmentResultsClassification')?.addEventListener('change', refreshAssessmentResults);
-document.getElementById('assessmentResultsClassFilter')?.addEventListener('change', refreshAssessmentResults);
-document.getElementById('assessmentResultsApply')?.addEventListener('click', refreshAssessmentResults);
 document.querySelectorAll('form.assessment-scan-job-form').forEach((form) => {
     form.addEventListener('submit', () => {
         const action = (form.dataset.jobAction || 'run').toLowerCase();
@@ -1119,27 +1142,18 @@ document.querySelectorAll('form.assessment-scan-job-form').forEach((form) => {
         }
     });
 });
-document.getElementById('assessmentResultsReset')?.addEventListener('click', () => {
-    const classification = document.getElementById('assessmentResultsClassification');
-    const classFilter = document.getElementById('assessmentResultsClassFilter');
-    if (classification) classification.value = 'all';
-    if (classFilter) classFilter.value = '';
-    refreshAssessmentResults();
-});
-
-refreshAssessmentResults();
+assessmentResultsTable.refresh();
 
 // ── Post Flight Status ──────────────────────────────────────────────
 
 function applyPostflightStatus(postflightDetails) {
-    const card = document.getElementById('postflightCard');
     const list = document.getElementById('postflightList');
     const countEl = document.getElementById('postflightCount');
-    if (!card || !list) return;
+    if (!list) return;
 
     if (!postflightDetails || !postflightDetails.length) return;
 
-    card.classList.remove('is-hidden');
+    // Phase transition is handled by updateAssessmentRunStatus — just update content
     if (countEl) countEl.textContent = String(postflightDetails.length);
 
     const statusLabel = {
@@ -1223,7 +1237,7 @@ function renderCustomizationRows(rows) {
     }
     empty.classList.add('is-hidden');
     tbody.innerHTML = rows.map(function (row) {
-        var updated = typeof formatAssessmentDate === 'function' ? formatAssessmentDate(row.sys_updated_on) : (row.sys_updated_on || '-');
+        var updated = formatDate(row.sys_updated_on);
         var originLabel = row.origin_type === 'modified_ootb' ? 'Modified OOTB'
             : row.origin_type === 'net_new_customer' ? 'Net New Customer' : (row.origin_type || '-');
         return '<tr>'
@@ -1293,102 +1307,31 @@ document.getElementById('customizationsReset').addEventListener('click', functio
 
 // ── Artifacts Tab ───────────────────────────────────────────────────
 
-function setArtifactLoading(isLoading) {
-    const overlay = document.getElementById('artifactLoading');
-    if (overlay) overlay.style.display = isLoading ? 'flex' : 'none';
-}
-
-function renderArtifactRows(rows) {
-    const tbody = document.getElementById('artifactBody');
-    const empty = document.getElementById('artifactEmpty');
-    if (!tbody || !empty) return;
-
-    if (!rows.length) {
-        tbody.innerHTML = '';
-        empty.classList.remove('is-hidden');
-        return;
-    }
-
-    empty.classList.add('is-hidden');
-    tbody.innerHTML = rows.map((row) => {
-        const updated = row.sys_updated_on ? String(row.sys_updated_on).replace('T', ' ').slice(0, 16) : '-';
-        return `
-            <tr>
-                <td><a href="/artifacts/${row.sys_class_name}/${row.sys_id}?instance_id=${assessmentInstanceId}">${row.name || row.sys_id}</a></td>
-                <td>${row.class_label || row.sys_class_name || '-'}</td>
-                <td>${row.active === true || row.active === 'true' ? 'Yes' : row.active === false || row.active === 'false' ? 'No' : '-'}</td>
-                <td>${row.sys_scope || '-'}</td>
-                <td>${updated}</td>
-                <td><a class="btn btn-sm" href="/artifacts/${row.sys_class_name}/${row.sys_id}?instance_id=${assessmentInstanceId}">View</a></td>
-            </tr>
-        `;
-    }).join('');
-}
-
-async function refreshArtifacts() {
-    const meta = document.getElementById('artifactMeta');
-    const classFilter = document.getElementById('artifactClassFilter');
-    if (!classFilter) return;
-
-    setArtifactLoading(true);
-    if (meta) meta.textContent = 'Loading...';
-
-    try {
-        const params = new URLSearchParams({ limit: '500' });
-        if (classFilter.value) params.set('sys_class_name', classFilter.value);
-
-        const response = await fetch(`/api/assessments/${assessmentId}/artifacts?${params.toString()}`, { cache: 'no-store' });
-        if (!response.ok) throw new Error('Request failed');
-        const payload = await response.json();
-
-        // Populate class filter from response
-        const classes = payload.classes || [];
-        const currentVal = classFilter.value;
-        classFilter.innerHTML = '<option value="">All Classes</option>';
-        classes.forEach((cls) => {
-            const opt = document.createElement('option');
-            opt.value = cls.sys_class_name;
-            opt.textContent = `${cls.label} (${cls.count})`;
-            classFilter.appendChild(opt);
-        });
-        if (currentVal) classFilter.value = currentVal;
-
-        const artifacts = payload.artifacts || [];
-        renderArtifactRows(artifacts);
-
-        const badge = document.getElementById('artifactsTabBadge');
-        if (badge) badge.textContent = String(payload.total || 0);
-
-        if (meta) meta.textContent = `Showing ${artifacts.length} of ${payload.total || 0} artifacts`;
-    } catch (err) {
-        renderArtifactRows([]);
-        if (meta) meta.textContent = 'Failed to load artifacts.';
-    } finally {
-        setArtifactLoading(false);
-    }
-}
-
-document.getElementById('artifactApply')?.addEventListener('click', refreshArtifacts);
-document.getElementById('artifactClassFilter')?.addEventListener('change', refreshArtifacts);
-document.getElementById('artifactReset')?.addEventListener('click', () => {
-    const classFilter = document.getElementById('artifactClassFilter');
-    if (classFilter) classFilter.value = '';
-    refreshArtifacts();
+var artifactList = new ArtifactList({
+    apiUrl: '/api/assessments/' + assessmentId + '/artifacts',
+    instanceId: assessmentInstanceId,
+    bodyId: 'artifactBody',
+    emptyId: 'artifactEmpty',
+    loadingId: 'artifactLoading',
+    metaId: 'artifactMeta',
+    filterId: 'artifactClassFilter',
+    badgeId: 'artifactsTabBadge',
 });
+artifactList.bindControls('artifactApply', 'artifactReset');
 
-// Load artifacts + customizations on first tab open (lazy)
-let _artifactsLoaded = false;
-const _origOpenTab = window.openTab;
-window.openTab = function(evt, tabName) {
-    _origOpenTab(evt, tabName);
-    if (tabName === 'customizations' && !_customizationsLoaded) {
+// Eagerly load badges for all tabs, re-fetch table data on first tab open
+refreshCustomizations();
+artifactList.refresh();
+let _artifactsLoaded = true;
+document.addEventListener('tab:activated', function(e) {
+    if (e.detail.tabName === 'customizations' && !_customizationsLoaded) {
         _customizationsLoaded = true;
         refreshCustomizations();
     }
-    if (tabName === 'artifacts' && !_artifactsLoaded) {
+    if (e.detail.tabName === 'artifacts' && !_artifactsLoaded) {
         _artifactsLoaded = true;
-        refreshArtifacts();
+        artifactList.refresh();
     }
-};
+});
 </script>
 {% endblock %}

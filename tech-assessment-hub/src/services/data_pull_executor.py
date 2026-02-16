@@ -230,40 +230,41 @@ def _estimate_expected_total(
     data_type: DataPullType,
     since: Optional[datetime],
     instance_id: Optional[int] = None,
+    inclusive: bool = True,
 ) -> Optional[int]:
     try:
         if data_type == DataPullType.update_sets:
-            query = client.build_update_set_query(since=since)
+            query = client.build_update_set_query(since=since, inclusive=inclusive)
             return client.get_record_count("sys_update_set", query)
         if data_type == DataPullType.customer_update_xml:
-            query = client.build_customer_update_xml_query(since=since)
+            query = client.build_customer_update_xml_query(since=since, inclusive=inclusive)
             return client.get_record_count("sys_update_xml", query)
         if data_type == DataPullType.version_history:
-            query = client.build_version_history_query(since=since)
+            query = client.build_version_history_query(since=since, inclusive=inclusive)
             return client.get_record_count("sys_update_version", query)
         if data_type == DataPullType.metadata_customization:
             class_names = _fetch_app_file_class_names(session, instance_id=instance_id)
-            return client.get_metadata_customization_count(since=since, class_names=class_names)
+            return client.get_metadata_customization_count(since=since, class_names=class_names, inclusive=inclusive)
         if data_type == DataPullType.app_file_types:
-            query = client.build_app_file_types_query(since=since)
+            query = client.build_app_file_types_query(since=since, inclusive=inclusive)
             return client.get_record_count("sys_app_file_type", query)
         if data_type == DataPullType.plugins:
-            query = client.build_plugins_query(active_only=False, since=since)
+            query = client.build_plugins_query(active_only=False, since=since, inclusive=inclusive)
             return client.get_record_count("sys_plugins", query)
         if data_type == DataPullType.plugin_view:
-            query = client.build_plugin_view_query(active_only=False, since=since)
+            query = client.build_plugin_view_query(active_only=False, since=since, inclusive=inclusive)
             return client.get_record_count("v_plugin", query)
         if data_type == DataPullType.scopes:
-            query = client.build_scopes_query(active_only=False, since=since)
+            query = client.build_scopes_query(active_only=False, since=since, inclusive=inclusive)
             return client.get_record_count("sys_scope", query)
         if data_type == DataPullType.packages:
-            query = client.build_packages_query(since=since)
+            query = client.build_packages_query(since=since, inclusive=inclusive)
             return client.get_record_count("sys_package", query)
         if data_type == DataPullType.applications:
-            query = client.build_applications_query(active_only=False, since=since)
+            query = client.build_applications_query(active_only=False, since=since, inclusive=inclusive)
             return client.get_record_count("sys_app", query)
         if data_type == DataPullType.sys_db_object:
-            query = client.build_sys_db_object_query(since=since)
+            query = client.build_sys_db_object_query(since=since, inclusive=inclusive)
             return client.get_record_count("sys_db_object", query)
     except Exception as exc:
         logger.warning("Failed to estimate expected total for %s: %s", data_type.value, exc)
@@ -294,6 +295,7 @@ def _resolve_delta_pull_mode(
         data_type,
         since=watermark,
         instance_id=instance_id,
+        inclusive=False,
     )
     decision = resolve_delta_decision(
         local_count=local_count,

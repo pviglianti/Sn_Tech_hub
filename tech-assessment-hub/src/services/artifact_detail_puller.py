@@ -22,7 +22,11 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
-from ..artifact_detail_defs import ARTIFACT_DETAIL_DEFS, get_sn_fields_for_class
+from ..artifact_detail_defs import (
+    ARTIFACT_DETAIL_DEFS,
+    get_class_label,
+    get_sn_fields_for_class,
+)
 from ..models import Assessment, Scan, ScanResult
 from .artifact_ddl import upsert_artifact_records
 from .sn_client import ServiceNowClient
@@ -37,24 +41,6 @@ DEFAULT_INTER_BATCH_DELAY = 0.5
 
 # Callback signature: (sys_class_name, label, status, pulled, total)
 PostflightCallback = Callable[[str, str, str, int, int], None]
-
-
-def _get_class_label(sys_class_name: str) -> str:
-    """Get the user-friendly label for an artifact class.
-
-    Tries the catalog first, falls back to humanizing the table name.
-    """
-    # Import here to avoid circular dependency
-    from ..app_file_class_catalog import APP_FILE_CLASS_CATALOG
-
-    for entry in APP_FILE_CLASS_CATALOG:
-        if entry["sys_class_name"] == sys_class_name:
-            return entry["label"]
-    # Fallback: humanize the local_table name
-    defn = ARTIFACT_DETAIL_DEFS.get(sys_class_name)
-    if defn:
-        return defn["local_table"].replace("asmt_", "").replace("_", " ").title()
-    return sys_class_name
 
 
 def _collect_artifact_targets(
@@ -187,11 +173,11 @@ def pull_artifact_details_for_assessment(
     # Notify all classes as pending first
     if progress_callback:
         for class_name, sys_ids in targets.items():
-            label = _get_class_label(class_name)
+            label = get_class_label(class_name)
             progress_callback(class_name, label, "pending", 0, len(sys_ids))
 
     for class_name, sys_ids in targets.items():
-        label = _get_class_label(class_name)
+        label = get_class_label(class_name)
         total = len(sys_ids)
         logger.info(
             "Pulling %d %s artifacts for assessment %d (instance %d)",

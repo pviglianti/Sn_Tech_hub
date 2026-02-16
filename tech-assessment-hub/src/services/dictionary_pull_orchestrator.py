@@ -499,7 +499,12 @@ def pull_dictionary_for_instance(
 
         try:
             password = decrypt_password(instance.password_encrypted)
-            client = ServiceNowClient(instance.url, instance.username, password)
+            client = ServiceNowClient(
+                instance.url,
+                instance.username,
+                password,
+                instance_id=instance.id,
+            )
         except Exception as exc:
             error_message = f"Failed to create client: {exc}"
             progress.status = "failed"
@@ -897,7 +902,12 @@ def backfill_missing_labels(instance_id: int) -> int:
             return 0
 
         password = decrypt_password(instance.password_encrypted)
-        client = ServiceNowClient(instance.url, instance.username, password)
+        client = ServiceNowClient(
+            instance.url,
+            instance.username,
+            password,
+            instance_id=instance.id,
+        )
 
         # Find registries with field mappings missing labels
         registries = session.exec(

@@ -88,7 +88,7 @@ These should be grouped together, not analyzed as 15 separate items.
 - Prefixes may be company-wide, not feature-specific
 
 **Heuristics**:
-- Tokenize names, find common n-grams
+- Tokenize names, find common n-grams 
 - Weight by specificity (longer prefix = stronger)
 - Combine with table affinity
 

@@ -204,7 +204,7 @@ def _fetch_fields_for_table(
     if since:
         # Format datetime for ServiceNow query (UTC, ServiceNow format)
         since_str = since.strftime("%Y-%m-%d %H:%M:%S")
-        query_parts.append(f"sys_updated_on>{since_str}")
+        query_parts.append(f"sys_updated_on>={since_str}")
 
     params = {
         "sysparm_query": "^".join(query_parts),

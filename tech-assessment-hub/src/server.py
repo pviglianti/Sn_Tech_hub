@@ -338,6 +338,8 @@ _ASSESSMENT_SCAN_STAGE_LABELS = {
 }
 _ASSESSMENT_SCAN_RUN_MODULE = "assessment"
 _ASSESSMENT_SCAN_RUN_TYPE = "assessment_scan"
+_POSTFLIGHT_RUN_MODULE = "postflight"
+_POSTFLIGHT_RUN_TYPE = "artifact_pull"
 
 
 def _assessment_scan_progress_percent(
@@ -619,29 +621,63 @@ def _update_assessment_postflight_details(
     status: str,
     pulled: int,
     total: int,
+    pf_run_uid: Optional[str] = None,
 ) -> None:
-    """Thread-safe update of per-class postflight artifact pull progress."""
+    """Thread-safe update of per-class postflight artifact pull progress.
+
+    Updates both in-memory state (for live polling) and the postflight
+    JobRun metadata_json (for persistence across restarts).
+    """
+    detail_entry = {
+        "sys_class_name": sys_class_name,
+        "label": label,
+        "status": status,
+        "pulled": pulled,
+        "total": total,
+    }
+
     with _ASSESSMENT_SCAN_JOBS_LOCK:
         job = _ASSESSMENT_SCAN_JOBS.get(assessment_id)
-        if not job:
-            return
-        if job.postflight_details is None:
-            job.postflight_details = []
-        # Update existing entry or append new one
-        for entry in job.postflight_details:
-            if entry["sys_class_name"] == sys_class_name:
-                entry["label"] = label
-                entry["status"] = status
-                entry["pulled"] = pulled
-                entry["total"] = total
-                return
-        job.postflight_details.append({
-            "sys_class_name": sys_class_name,
-            "label": label,
-            "status": status,
-            "pulled": pulled,
-            "total": total,
-        })
+        if job:
+            if job.postflight_details is None:
+                job.postflight_details = []
+            # Update existing entry or append new one
+            found = False
+            for entry in job.postflight_details:
+                if entry["sys_class_name"] == sys_class_name:
+                    entry["label"] = label
+                    entry["status"] = status
+                    entry["pulled"] = pulled
+                    entry["total"] = total
+                    found = True
+                    break
+            if not found:
+                job.postflight_details.append(dict(detail_entry))
+            # Persist to DB via postflight JobRun metadata_json
+            details_snapshot = list(job.postflight_details)
+        else:
+            details_snapshot = [detail_entry]
+
+    if pf_run_uid:
+        try:
+            with Session(engine) as persist_session:
+                pf_run = persist_session.exec(
+                    select(JobRun).where(JobRun.run_uid == pf_run_uid)
+                ).first()
+                if pf_run:
+                    existing_meta = {}
+                    if pf_run.metadata_json:
+                        try:
+                            existing_meta = json.loads(pf_run.metadata_json)
+                        except Exception:
+                            existing_meta = {}
+                    existing_meta["postflight_details"] = details_snapshot
+                    pf_run.metadata_json = _json_dumps(existing_meta)
+                    pf_run.updated_at = datetime.utcnow()
+                    persist_session.add(pf_run)
+                    persist_session.commit()
+        except Exception:
+            pass  # non-fatal — in-memory state is primary during active run
 
 
 def _get_assessment_scan_job_snapshot(
@@ -804,6 +840,7 @@ def _assessment_data_sync_summary(session: Session, instance_id: int) -> Dict[st
                 "last_remote_count": pull.last_remote_count if pull else None,
                 "last_local_count": pull.last_local_count if pull else None,
                 "error_message": pull.error_message if pull else None,
+                "completed_at": pull.completed_at.isoformat() if pull and pull.completed_at else None,
             }
         )
 
@@ -1643,7 +1680,12 @@ def _run_scans_background(assessment_id: int, mode: str = "full") -> None:
         if not instance:
             raise RuntimeError("Instance not found")
         password = decrypt_password(instance.password_encrypted)
-        client = ServiceNowClient(instance.url, instance.username, password)
+        client = ServiceNowClient(
+            instance.url,
+            instance.username,
+            password,
+            instance_id=instance.id,
+        )
         test_result = client.test_connection()
         if not test_result.get("success"):
             message = test_result.get("message") or "Connection test failed"
@@ -1682,8 +1724,32 @@ def _run_scans_background(assessment_id: int, mode: str = "full") -> None:
             status="running",
             message="Pulling artifact details...",
         )
+        pf_run_uid = None
         try:
             from .services.artifact_detail_puller import pull_artifact_details_for_assessment
+
+            # Create a durable JobRun for postflight tracking
+            pf_now = datetime.utcnow()
+            pf_run_uid = uuid.uuid4().hex
+            pf_run = JobRun(
+                run_uid=pf_run_uid,
+                instance_id=instance.id,
+                module=_POSTFLIGHT_RUN_MODULE,
+                job_type=_POSTFLIGHT_RUN_TYPE,
+                mode="artifact_pull",
+                status=JobRunStatus.running,
+                queue_total=0,
+                queue_completed=0,
+                progress_pct=0,
+                message="Pulling artifact details for scan results...",
+                metadata_json=_json_dumps({"assessment_id": assessment_id}),
+                created_at=pf_now,
+                started_at=pf_now,
+                updated_at=pf_now,
+                last_heartbeat_at=pf_now,
+            )
+            bg_session.add(pf_run)
+            bg_session.commit()
 
             def _postflight_cb(
                 sys_class_name: str,
@@ -1694,17 +1760,46 @@ def _run_scans_background(assessment_id: int, mode: str = "full") -> None:
             ) -> None:
                 _update_assessment_postflight_details(
                     assessment_id, sys_class_name, label, status, pulled, total,
+                    pf_run_uid=pf_run_uid,
                 )
 
-            pull_artifact_details_for_assessment(
+            summary = pull_artifact_details_for_assessment(
                 session=bg_session,
                 assessment=assessment,
                 client=client,
                 engine=engine,
                 progress_callback=_postflight_cb,
             )
+
+            # Mark postflight JobRun as completed
+            bg_session.refresh(pf_run)
+            pf_run.status = JobRunStatus.completed
+            pf_run.completed_at = datetime.utcnow()
+            pf_run.progress_pct = 100
+            pf_run.queue_total = summary.get("total_classes", 0)
+            pf_run.queue_completed = summary.get("total_classes", 0)
+            pf_run.current_data_type = f"{summary.get('total_pulled', 0)} artifacts"
+            pf_run.message = f"Pulled {summary.get('total_pulled', 0)} artifacts across {summary.get('total_classes', 0)} classes."
+            pf_run.updated_at = datetime.utcnow()
+            bg_session.add(pf_run)
+            bg_session.commit()
+
         except Exception as exc:
             logger.warning("Postflight artifact pull failed (non-fatal): %s", exc)
+            if pf_run_uid:
+                try:
+                    pf_run = bg_session.exec(
+                        select(JobRun).where(JobRun.run_uid == pf_run_uid)
+                    ).first()
+                    if pf_run:
+                        pf_run.status = JobRunStatus.failed
+                        pf_run.completed_at = datetime.utcnow()
+                        pf_run.error_message = str(exc)[:500]
+                        pf_run.updated_at = datetime.utcnow()
+                        bg_session.add(pf_run)
+                        bg_session.commit()
+                except Exception:
+                    pass
         _set_assessment_scan_job_state(
             assessment_id,
             stage="preflight_optional_sync",
@@ -1746,7 +1841,12 @@ def _run_single_scan_background(scan_id: int, mode: str = "full") -> None:
         if not instance:
             return
         password = decrypt_password(instance.password_encrypted)
-        client = ServiceNowClient(instance.url, instance.username, password)
+        client = ServiceNowClient(
+            instance.url,
+            instance.username,
+            password,
+            instance_id=instance.id,
+        )
         test_result = client.test_connection()
         if not test_result.get("success"):
             return
@@ -1825,7 +1925,12 @@ def _run_data_pulls_background(
                 )
             return
         password = decrypt_password(instance.password_encrypted)
-        client = ServiceNowClient(instance.url, instance.username, password)
+        client = ServiceNowClient(
+            instance.url,
+            instance.username,
+            password,
+            instance_id=instance.id,
+        )
         test_result = client.test_connection()
         if not test_result.get("success"):
             if run_uid:
@@ -1984,13 +2089,8 @@ def _build_assessment_preflight_plan(
             decisions[dt.value] = "already_running"
             continue
 
-        # Freshness check: if pulled recently, consider data fresh (skip sync).
-        if pull and pull.status == DataPullStatus.completed and pull.last_pulled_at:
-            minutes_since = (reference_now - pull.last_pulled_at).total_seconds() / 60
-            if minutes_since < stale_minutes:
-                fresh_types.append(dt)
-                decisions[dt.value] = f"fresh (synced {minutes_since:.0f}m ago, within {stale_minutes}m window)"
-                continue
+        # No time-based freshness gate — always fall through to
+        # resolve_delta_decision which uses count + delta probes.
 
         local_count = session.exec(
             select(func.count())
@@ -2163,6 +2263,28 @@ def _run_assessment_preflight_data_sync(
             version_state_filter="current",
         )
 
+    # Touch fresh/skip types so they appear in the job log with current timestamps.
+    # These types were verified as up-to-date; updating completed_at ensures they
+    # sort alongside the actual pulls in the unified job log view.
+    fresh_and_skip = list(plan.get("fresh", [])) + list(plan.get("skip", []))
+    if fresh_and_skip:
+        now = datetime.utcnow()
+        for dt in fresh_and_skip:
+            pull = session.exec(
+                select(InstanceDataPull)
+                .where(InstanceDataPull.instance_id == instance.id)
+                .where(InstanceDataPull.data_type == dt)
+            ).first()
+            if pull:
+                pull.completed_at = now
+                pull.updated_at = now
+                if pull.status != DataPullStatus.running:
+                    pull.status = DataPullStatus.completed
+                if not pull.started_at:
+                    pull.started_at = now
+                session.add(pull)
+        session.commit()
+
     return plan
 
 
@@ -2270,7 +2392,12 @@ def _apply_instance_metrics(instance: Instance, metrics: Dict[str, Any]) -> None
 
 def _refresh_instance_metrics(instance: Instance) -> Dict[str, Any]:
     password = decrypt_password(instance.password_encrypted)
-    client = ServiceNowClient(instance.url, instance.username, password)
+    client = ServiceNowClient(
+        instance.url,
+        instance.username,
+        password,
+        instance_id=instance.id,
+    )
     test_result = client.test_connection()
     if not test_result.get("success"):
         raise ServiceNowClientError(test_result.get("message", "Authentication failed"))
@@ -2297,7 +2424,12 @@ def _sync_app_file_types_for_instance(
     Returns effective mode: full, delta, or skip.
     """
     password = decrypt_password(instance.password_encrypted)
-    client = ServiceNowClient(instance.url, instance.username, password)
+    client = ServiceNowClient(
+        instance.url,
+        instance.username,
+        password,
+        instance_id=instance.id,
+    )
     test_result = client.test_connection()
     if not test_result.get("success"):
         raise ServiceNowClientError(test_result.get("message", "Authentication failed"))
@@ -2339,7 +2471,11 @@ def _resolve_mcp_admin_token(session: Session) -> str:
     if env_token:
         return env_token
 
-    row = session.exec(select(AppConfig).where(AppConfig.key == MCP_ADMIN_TOKEN_KEY)).first()
+    row = session.exec(
+        select(AppConfig)
+        .where(AppConfig.key == MCP_ADMIN_TOKEN_KEY)
+        .where(AppConfig.instance_id.is_(None))
+    ).first()
     if not row:
         return ""
     return (row.value or "").strip()
@@ -3150,74 +3286,107 @@ async def view_assessment(
     if not assessment:
         raise HTTPException(status_code=404, detail="Assessment not found")
 
-    preflight_plan = _build_assessment_preflight_plan(
-        session=session,
-        instance_id=assessment.instance_id,
-        stale_minutes=ASSESSMENT_PREFLIGHT_STALE_MINUTES,
-    )
-
     def _label_for(dt: DataPullType) -> str:
         return DATA_TYPE_LABELS.get(dt.value, dt.value)
 
-    sync_summary = _assessment_data_sync_summary(session, assessment.instance_id)
-    pull_status_map: Dict[DataPullType, str] = {}
-    sync_detail_map: Dict[str, Dict[str, Any]] = {}
-    for row in sync_summary.get("details", []):
-        try:
-            dt = DataPullType(row.get("data_type"))
-        except Exception:
-            continue
-        pull_status_map[dt] = str(row.get("status") or "idle")
-        sync_detail_map[row.get("data_type")] = row
-
     required_set = set(ASSESSMENT_PREFLIGHT_REQUIRED_TYPES)
+    assessment_has_scans = bool(assessment.scans)
 
-    def _preflight_ui_status(dt: DataPullType, bucket: str) -> str:
-        pull_status = pull_status_map.get(dt, "idle")
-        if pull_status in {"failed", "cancelled"}:
-            return pull_status
-        if pull_status == "completed":
-            return "completed"
-        if bucket == "fresh":
-            return "completed"
-        return "pending"
+    if assessment_has_scans:
+        # Assessment has run — show plan with real probe-based decisions
+        preflight_plan = _build_assessment_preflight_plan(
+            session=session,
+            instance_id=assessment.instance_id,
+            stale_minutes=ASSESSMENT_PREFLIGHT_STALE_MINUTES,
+        )
 
-    def _make_item(dt: DataPullType, bucket: str) -> Dict[str, Any]:
-        detail = sync_detail_map.get(dt.value, {})
-        return {
-            "data_type": dt.value,
-            "label": _label_for(dt),
-            "status": _preflight_ui_status(dt, bucket),
-            "is_required": dt in required_set,
-            "local_count": detail.get("local_count") or 0,
-            "records_pulled": detail.get("records_pulled") or 0,
-            "expected_total": detail.get("expected_total"),
-            "decision": preflight_plan["decisions"].get(dt.value, ""),
+        sync_summary = _assessment_data_sync_summary(session, assessment.instance_id)
+        pull_status_map: Dict[DataPullType, str] = {}
+        sync_detail_map: Dict[str, Dict[str, Any]] = {}
+        for row in sync_summary.get("details", []):
+            try:
+                dt = DataPullType(row.get("data_type"))
+            except Exception:
+                continue
+            pull_status_map[dt] = str(row.get("status") or "idle")
+            sync_detail_map[row.get("data_type")] = row
+
+        def _preflight_ui_status(dt: DataPullType, bucket: str) -> str:
+            pull_status = pull_status_map.get(dt, "idle")
+            if pull_status in {"failed", "cancelled"}:
+                return pull_status
+            if pull_status == "completed":
+                return "completed"
+            if bucket == "fresh":
+                return "completed"
+            return "pending"
+
+        def _make_item(dt: DataPullType, bucket: str) -> Dict[str, Any]:
+            detail = sync_detail_map.get(dt.value, {})
+            return {
+                "data_type": dt.value,
+                "label": _label_for(dt),
+                "status": _preflight_ui_status(dt, bucket),
+                "is_required": dt in required_set,
+                "local_count": detail.get("local_count") or 0,
+                "records_pulled": detail.get("records_pulled") or 0,
+                "expected_total": detail.get("expected_total"),
+                "decision": preflight_plan["decisions"].get(dt.value, ""),
+            }
+
+        def _preflight_group_status(items: List[Dict[str, Any]]) -> str:
+            statuses = {row.get("status") for row in items}
+            if "failed" in statuses:
+                return "failed"
+            if "cancelled" in statuses:
+                return "cancelled"
+            if "pending" in statuses:
+                return "pending"
+            return "completed"
+
+        preflight_summary = {
+            "full": [_make_item(dt, "full") for dt in preflight_plan["full"]],
+            "delta": [_make_item(dt, "delta") for dt in preflight_plan["delta"]],
+            "fresh": [_make_item(dt, "fresh") for dt in preflight_plan["fresh"]],
+            "skip": [_make_item(dt, "skip") for dt in preflight_plan["skip"]],
+            "pending_all": [],
+            "stale_minutes": preflight_plan["stale_minutes"],
+            "decisions": preflight_plan["decisions"],
         }
 
-    def _preflight_group_status(items: List[Dict[str, Any]]) -> str:
-        statuses = {row.get("status") for row in items}
-        if "failed" in statuses:
-            return "failed"
-        if "cancelled" in statuses:
-            return "cancelled"
-        if "pending" in statuses:
-            return "pending"
-        return "completed"
-
-    preflight_summary = {
-        "full": [_make_item(dt, "full") for dt in preflight_plan["full"]],
-        "delta": [_make_item(dt, "delta") for dt in preflight_plan["delta"]],
-        "fresh": [_make_item(dt, "fresh") for dt in preflight_plan["fresh"]],
-        "skip": [_make_item(dt, "skip") for dt in preflight_plan["skip"]],
-        "stale_minutes": preflight_plan["stale_minutes"],
-        "decisions": preflight_plan["decisions"],
-    }
-
-    preflight_summary["full_status"] = _preflight_group_status(preflight_summary["full"])
-    preflight_summary["delta_status"] = _preflight_group_status(preflight_summary["delta"])
-    preflight_summary["fresh_status"] = _preflight_group_status(preflight_summary["fresh"])
-    preflight_summary["skip_status"] = _preflight_group_status(preflight_summary["skip"])
+        preflight_summary["full_status"] = _preflight_group_status(preflight_summary["full"])
+        preflight_summary["delta_status"] = _preflight_group_status(preflight_summary["delta"])
+        preflight_summary["fresh_status"] = _preflight_group_status(preflight_summary["fresh"])
+        preflight_summary["skip_status"] = _preflight_group_status(preflight_summary["skip"])
+    else:
+        # Fresh assessment — no probes have run, don't speculate on buckets.
+        # Show all preflight data types in a single "Pending" group.
+        all_types = list(ASSESSMENT_PREFLIGHT_DATA_TYPES)
+        preflight_summary = {
+            "full": [],
+            "delta": [],
+            "fresh": [],
+            "skip": [],
+            "pending_all": [
+                {
+                    "data_type": dt.value,
+                    "label": _label_for(dt),
+                    "status": "pending",
+                    "is_required": dt in required_set,
+                    "local_count": 0,
+                    "records_pulled": 0,
+                    "expected_total": None,
+                    "decision": "awaiting_probes",
+                }
+                for dt in all_types
+            ],
+            "stale_minutes": ASSESSMENT_PREFLIGHT_STALE_MINUTES,
+            "decisions": {dt.value: "awaiting_probes" for dt in all_types},
+            "full_status": "completed",
+            "delta_status": "completed",
+            "fresh_status": "completed",
+            "skip_status": "completed",
+        }
 
     return templates.TemplateResponse("assessment_detail.html", {
         "request": request,
@@ -3950,12 +4119,32 @@ async def api_assessment_scan_status(
             status_counts=status_counts,
         )
 
-    # Grab postflight artifact pull details from in-memory job state
+    # Grab postflight artifact pull details — prefer in-memory, fall back to DB
     postflight_details = None
     with _ASSESSMENT_SCAN_JOBS_LOCK:
         _pf_job = _ASSESSMENT_SCAN_JOBS.get(assessment_id)
         if _pf_job and _pf_job.postflight_details:
             postflight_details = list(_pf_job.postflight_details)
+
+    if postflight_details is None:
+        # Fall back to persisted postflight details from the latest postflight JobRun
+        pf_run = session.exec(
+            select(JobRun)
+            .where(JobRun.module == _POSTFLIGHT_RUN_MODULE)
+            .where(JobRun.job_type == _POSTFLIGHT_RUN_TYPE)
+            .where(JobRun.instance_id == assessment.instance_id)
+            .order_by(JobRun.created_at.desc())
+            .limit(5)
+        ).all()
+        for run in pf_run:
+            if run.metadata_json:
+                try:
+                    meta = json.loads(run.metadata_json)
+                    if int(meta.get("assessment_id") or 0) == assessment_id:
+                        postflight_details = meta.get("postflight_details")
+                        break
+                except Exception:
+                    pass
 
     return {
         "assessment_id": assessment_id,
@@ -4185,7 +4374,12 @@ async def api_instance_inventory(
         return {"success": True, "inventory": _safe_json(instance.inventory_json, {}), "cached": True}
 
     password = decrypt_password(instance.password_encrypted)
-    client = ServiceNowClient(instance.url, instance.username, password)
+    client = ServiceNowClient(
+        instance.url,
+        instance.username,
+        password,
+        instance_id=instance.id,
+    )
 
     try:
         inventory = client.scan_inventory(scope="global")

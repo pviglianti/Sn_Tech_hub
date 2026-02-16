@@ -55,6 +55,7 @@ def _run_pull_in_background(instance_id: int, data_types: List[DataPullType], mo
             instance.url,
             instance.username,
             decrypt_password(instance.password_encrypted),
+            instance_id=instance.id,
         )
         for dt in data_types:
             try:

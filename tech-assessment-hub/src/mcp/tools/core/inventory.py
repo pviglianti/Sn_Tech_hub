@@ -27,7 +27,7 @@ INPUT_SCHEMA: Dict[str, Any] = {
 }
 
 
-def _resolve_credentials(params: Dict[str, Any], session: Session) -> Dict[str, str]:
+def _resolve_credentials(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
     instance_id = params.get("instance_id")
     if instance_id is not None:
         instance = session.get(Instance, int(instance_id))
@@ -36,7 +36,8 @@ def _resolve_credentials(params: Dict[str, Any], session: Session) -> Dict[str, 
         return {
             "url": instance.url,
             "username": instance.username,
-            "password": decrypt_password(instance.password_encrypted)
+            "password": decrypt_password(instance.password_encrypted),
+            "instance_id": instance.id,
         }
 
     url = params.get("url")
@@ -44,13 +45,18 @@ def _resolve_credentials(params: Dict[str, Any], session: Session) -> Dict[str, 
     password = params.get("password")
     if not url or not username or not password:
         raise ValueError("Provide instance_id or url/username/password")
-    return {"url": url, "username": username, "password": password}
+    return {"url": url, "username": username, "password": password, "instance_id": None}
 
 
 def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
     scope = params.get("scope") or "global"
     creds = _resolve_credentials(params, session)
-    client = ServiceNowClient(creds["url"], creds["username"], creds["password"])
+    client = ServiceNowClient(
+        creds["url"],
+        creds["username"],
+        creds["password"],
+        instance_id=creds.get("instance_id"),
+    )
 
     try:
         counts = client.scan_inventory(scope=scope)

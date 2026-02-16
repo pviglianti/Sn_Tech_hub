@@ -96,3 +96,56 @@ def test_update_integration_properties_rejects_unknown_key(db_session):
         assert False, "Expected ValueError"
     except ValueError as exc:
         assert "Unknown integration property keys" in str(exc)
+
+
+def test_load_fetch_properties_instance_override_precedence(db_session, sample_instance):
+    db_session.add(
+        AppConfig(
+            instance_id=None,
+            key=FETCH_DEFAULT_BATCH_SIZE,
+            value="300",
+            description="global default",
+        )
+    )
+    db_session.add(
+        AppConfig(
+            instance_id=sample_instance.id,
+            key=FETCH_DEFAULT_BATCH_SIZE,
+            value="700",
+            description="instance override",
+        )
+    )
+    db_session.commit()
+
+    props_global = load_fetch_properties(db_session)
+    props_instance = load_fetch_properties(db_session, instance_id=sample_instance.id)
+    assert props_global.default_batch_size == 300
+    assert props_instance.default_batch_size == 700
+
+
+def test_load_fetch_properties_instance_falls_back_to_global(db_session, sample_instance):
+    db_session.add(
+        AppConfig(
+            instance_id=None,
+            key=FETCH_INTER_BATCH_DELAY,
+            value="1.25",
+            description="global default",
+        )
+    )
+    db_session.commit()
+
+    props_instance = load_fetch_properties(db_session, instance_id=sample_instance.id)
+    assert props_instance.inter_batch_delay == 1.25
+
+
+def test_update_and_snapshot_instance_scope(db_session, sample_instance):
+    rows = update_integration_properties(
+        db_session,
+        {FETCH_REQUEST_TIMEOUT: "95"},
+        instance_id=sample_instance.id,
+    )
+    by_key = {row["key"]: row for row in rows}
+    assert by_key[FETCH_REQUEST_TIMEOUT]["current_value"] == "95"
+    assert by_key[FETCH_REQUEST_TIMEOUT]["effective_value"] == "95"
+    assert by_key[FETCH_REQUEST_TIMEOUT]["effective_source"] == "instance"
+    assert by_key[FETCH_REQUEST_TIMEOUT]["instance_id"] == sample_instance.id

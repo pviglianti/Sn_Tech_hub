@@ -88,6 +88,7 @@ def _run_scans_in_background(assessment_id: int, mode: str) -> None:
             instance.url,
             instance.username,
             decrypt_password(instance.password_encrypted),
+            instance_id=instance.id,
         )
         run_scans_for_assessment(session, assessment, client, mode)
     except Exception:

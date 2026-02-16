@@ -15,6 +15,38 @@ Additionally, the classification logic in `scan_executor.py` needs an audit agai
 
 ---
 
+## Execution Status (Updated 2026-02-15)
+
+**ALL 5 PHASES COMPLETE.**
+
+Phase 1 (Protocol) — Codex:
+- Added `PromptSpec`/`ResourceSpec` + `PromptRegistry`/`ResourceRegistry` in `src/mcp/registry.py`; added JSON-RPC handlers for `prompts/list`, `prompts/get`, `resources/list`, `resources/read` and advertised capabilities in `initialize`.
+- Tests: `tests/test_mcp_prompts_resources_protocol.py` — 15 protocol tests.
+
+Phase 2 (Prompts) — Claude:
+- Created `src/mcp/prompts/__init__.py` and `src/mcp/prompts/tech_assessment.py`.
+- Two prompts registered: `tech_assessment_expert` (full methodology — classification, disposition, grouping, tool usage, token efficiency) and `tech_assessment_reviewer` (lighter review checklist).
+- Auto-population via `_populate_prompt_registry()` in `registry.py`.
+- Tests: `tests/test_mcp_prompts_content.py` — 12 tests (registration, MCP structure, content coverage).
+
+Phase 3 (Resources) — Claude:
+- Created `src/mcp/resources/__init__.py` and `src/mcp/resources/assessment_docs.py`.
+- Six resources at `assessment://` URIs: classification-rules, grouping-signals, finding-patterns, app-file-types, scan-result-fields, feature-fields.
+- Auto-population via `_populate_resource_registry()` in `registry.py`.
+- Tests: `tests/test_mcp_resources_content.py` — 16 tests (registration, structure, content verification).
+
+Phase 4 (Classification Quality) — Claude:
+- Fixed `_classify_origin` Gaps 1-3: OOB+customer→modified_ootb, wired `changed_baseline_now`, unknown vs unknown_no_history distinction. Gap 4 deferred (data enrichment).
+- Tests: 22 classification tests in `tests/test_scan_origin_classification.py`.
+
+Phase 5 (Tools) — Codex:
+- Added 5 new MCP tools: `update_scan_result`, `update_feature`, `get_feature_detail`, `get_update_set_contents`, `save_general_recommendation`.
+- Added `GeneralRecommendation` model. Registered all tools in `build_registry()`.
+
+Final validation: `./venv/bin/python -m pytest tests/ -q` → **147 passed, 8 warnings**.
+
+---
+
 ## What Exists Today
 
 ### MCP Protocol (complete for tools)

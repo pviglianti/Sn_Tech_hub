@@ -33,6 +33,23 @@ COMMON_INHERITED_FIELDS: List[Tuple[str, str, str]] = [
 ]
 
 
+def get_class_label(sys_class_name: str) -> str:
+    """User-friendly label for an artifact class.
+
+    Checks APP_FILE_CLASS_CATALOG first, falls back to humanizing the table name.
+    """
+    # Import here to avoid circular dependency at module load time.
+    from .app_file_class_catalog import APP_FILE_CLASS_CATALOG
+
+    for entry in APP_FILE_CLASS_CATALOG:
+        if entry["sys_class_name"] == sys_class_name:
+            return entry["label"]
+    defn = ARTIFACT_DETAIL_DEFS.get(sys_class_name)
+    if defn:
+        return defn["local_table"].replace("asmt_", "").replace("_", " ").title()
+    return sys_class_name
+
+
 # ---------------------------------------------------------------------------
 # Per-class field definitions keyed by sys_class_name
 # ---------------------------------------------------------------------------

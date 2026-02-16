@@ -239,7 +239,7 @@ async def api_tasks_series(
     series = {}
     for inst in instances:
         password = decrypt_password(inst.password_encrypted)
-        client = ServiceNowClient(inst.url, inst.username, password)
+        client = ServiceNowClient(inst.url, inst.username, password, instance_id=inst.id)
         inst_labels, inst_counts = client.get_monthly_counts(
             task_tables[task_type],
             instance_starts[inst.id],
@@ -294,7 +294,7 @@ async def api_tasks_summary(
 
     for inst in instances:
         password = decrypt_password(inst.password_encrypted)
-        client = ServiceNowClient(inst.url, inst.username, password)
+        client = ServiceNowClient(inst.url, inst.username, password, instance_id=inst.id)
 
         inst_end = end
         if inst.metrics_last_refreshed_at and end:
@@ -377,7 +377,7 @@ async def api_config_summary(
 
     for inst in instances:
         password = decrypt_password(inst.password_encrypted)
-        client = ServiceNowClient(inst.url, inst.username, password)
+        client = ServiceNowClient(inst.url, inst.username, password, instance_id=inst.id)
 
         inst_end = end
         if inst.metrics_last_refreshed_at and end:

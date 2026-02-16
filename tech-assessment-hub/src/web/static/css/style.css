@@ -289,6 +289,10 @@ body {
     margin: 0.25rem 0;
     color: var(--text-color);
     font-size: 0.85rem;
+    /* Override generic .status-* rules — preflight items use icons + text
+       for status indication, not background bands or inherited text color. */
+    background-color: transparent !important;
+    color: var(--text-color) !important;
 }
 
 .preflight-item-label {
@@ -323,7 +327,12 @@ body {
     content: '✓';
 }
 
-.preflight-status-icon.status-pending,
+.preflight-status-icon.status-pending {
+    background: rgba(156, 163, 175, 0.10);
+    border-color: #9ca3af;
+    color: #9ca3af;
+}
+
 .preflight-status-icon.status-failed,
 .preflight-status-icon.status-cancelled {
     background: rgba(239, 68, 68, 0.08);
@@ -347,7 +356,10 @@ body {
     50% { opacity: 0.5; }
 }
 
-.preflight-status-icon.status-pending::before,
+.preflight-status-icon.status-pending::before {
+    content: '—';
+}
+
 .preflight-status-icon.status-failed::before,
 .preflight-status-icon.status-cancelled::before {
     content: '✕';
@@ -372,7 +384,10 @@ body {
     color: var(--primary-color);
 }
 
-.preflight-status-text.status-pending,
+.preflight-status-text.status-pending {
+    color: #9ca3af;
+}
+
 .preflight-status-text.status-failed,
 .preflight-status-text.status-cancelled {
     color: var(--danger-color);

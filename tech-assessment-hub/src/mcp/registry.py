@@ -48,6 +48,92 @@ class ToolRegistry:
         return self._tools[name].handler(arguments, session)
 
 
+# ── Prompt Registry ──────────────────────────────────────────────────
+
+@dataclass
+class PromptSpec:
+    """MCP Prompt specification."""
+    name: str
+    description: str
+    arguments: List[Dict[str, Any]]
+    handler: Callable[[Dict[str, Any]], Dict[str, Any]]
+
+
+class PromptRegistry:
+    def __init__(self) -> None:
+        self._prompts: Dict[str, PromptSpec] = {}
+
+    def register(self, spec: PromptSpec) -> None:
+        self._prompts[spec.name] = spec
+
+    def list_prompts(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "name": spec.name,
+                "description": spec.description,
+                "arguments": spec.arguments,
+            }
+            for spec in self._prompts.values()
+        ]
+
+    def has_prompt(self, name: str) -> bool:
+        return name in self._prompts
+
+    def get_prompt(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if name not in self._prompts:
+            raise KeyError(f"Prompt not found: {name}")
+        return self._prompts[name].handler(arguments or {})
+
+
+# ── Resource Registry ────────────────────────────────────────────────
+
+@dataclass
+class ResourceSpec:
+    """MCP Resource specification."""
+    uri: str
+    name: str
+    description: str
+    mime_type: str
+    handler: Callable[[], str]
+
+
+class ResourceRegistry:
+    def __init__(self) -> None:
+        self._resources: Dict[str, ResourceSpec] = {}
+
+    def register(self, spec: ResourceSpec) -> None:
+        self._resources[spec.uri] = spec
+
+    def list_resources(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "uri": spec.uri,
+                "name": spec.name,
+                "description": spec.description,
+                "mimeType": spec.mime_type,
+            }
+            for spec in self._resources.values()
+        ]
+
+    def has_resource(self, uri: str) -> bool:
+        return uri in self._resources
+
+    def read_resource(self, uri: str) -> Dict[str, Any]:
+        if uri not in self._resources:
+            raise KeyError(f"Resource not found: {uri}")
+        spec = self._resources[uri]
+        content = spec.handler()
+        return {
+            "contents": [
+                {
+                    "uri": spec.uri,
+                    "mimeType": spec.mime_type,
+                    "text": content,
+                }
+            ]
+        }
+
+
 def build_registry() -> ToolRegistry:
     registry = ToolRegistry()
 
@@ -98,6 +184,19 @@ def build_registry() -> ToolRegistry:
     registry.register(customization_summary_tool)
     registry.register(feature_grouping_tool)
 
+    # --- Level 1 write-back tools ---
+    from .tools.core.update_result import TOOL_SPEC as update_result_tool
+    from .tools.core.update_feature import TOOL_SPEC as update_feature_tool
+    from .tools.core.feature_detail import TOOL_SPEC as feature_detail_tool
+    from .tools.core.update_set_contents import TOOL_SPEC as update_set_contents_tool
+    from .tools.core.general_recommendation import TOOL_SPEC as general_recommendation_tool
+
+    registry.register(update_result_tool)
+    registry.register(update_feature_tool)
+    registry.register(feature_detail_tool)
+    registry.register(update_set_contents_tool)
+    registry.register(general_recommendation_tool)
+
     return registry
 
 
@@ -140,3 +239,25 @@ class _LazyRegistry:
 
 
 REGISTRY = _LazyRegistry()
+PROMPT_REGISTRY = PromptRegistry()
+RESOURCE_REGISTRY = ResourceRegistry()
+
+
+def _populate_prompt_registry() -> None:
+    """Register assessment methodology prompts."""
+    from .prompts.tech_assessment import PROMPT_SPECS
+
+    for spec in PROMPT_SPECS:
+        PROMPT_REGISTRY.register(spec)
+
+
+def _populate_resource_registry() -> None:
+    """Register assessment reference resources."""
+    from .resources.assessment_docs import RESOURCE_SPECS
+
+    for spec in RESOURCE_SPECS:
+        RESOURCE_REGISTRY.register(spec)
+
+
+_populate_prompt_registry()
+_populate_resource_registry()

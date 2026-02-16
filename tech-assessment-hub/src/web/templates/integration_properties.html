@@ -9,7 +9,20 @@
 
 <div class="card">
     <p class="text-muted-plain mb-0">
-        Scope: <strong>{{ property_scope }}</strong> (global to this running app/database, not per ServiceNow instance).
+        Scope: <strong>{{ property_scope }}</strong> (global defaults + optional per-instance overrides).
+    </p>
+</div>
+
+<div class="card mt-1">
+    <h2>Override Scope</h2>
+    <div class="form-group">
+        <label for="integrationInstanceScope">Property Scope</label>
+        <select id="integrationInstanceScope" class="form-input">
+            <option value="">Global Defaults (all instances)</option>
+        </select>
+    </div>
+    <p class="text-muted-plain mb-0">
+        Select an instance to edit overrides for that instance only. Leave Global selected to edit app-wide defaults.
     </p>
 </div>
 
@@ -26,6 +39,16 @@
     <pre id="integrationPropertiesStatus" class="code-block mt-1">Ready.</pre>
 </div>
 
+<div class="card mt-1">
+    <h2>Assessment Tools</h2>
+    <p class="text-muted-plain mb-05">
+        Manage per-instance assessment configuration pages.
+    </p>
+    <div id="assessmentToolsLinks" class="button-group">
+        <!-- Populated by JS from instance options -->
+    </div>
+</div>
+
 <div id="integrationSectionsContainer"></div>
 {% endblock %}
 
@@ -33,6 +56,27 @@
 <script>
     window.INTEGRATION_PROPERTIES = {{ properties_json | safe }};
     window.INTEGRATION_SECTION_ORDER = {{ section_order_json | safe }};
+    window.INTEGRATION_INSTANCE_OPTIONS = {{ instance_options_json | safe }};
+    window.INTEGRATION_SELECTED_INSTANCE_ID = {{ selected_instance_id | tojson }};
 </script>
 <script src="/static/js/integration_properties.js?v={{ static_version }}"></script>
+<script>
+(function () {
+    var container = document.getElementById('assessmentToolsLinks');
+    if (!container) return;
+    var instances = window.INTEGRATION_INSTANCE_OPTIONS || [];
+    if (!instances.length) {
+        container.innerHTML = '<span class="text-muted-plain">No instances configured. <a href="/instances/add">Add an instance</a> first.</span>';
+        return;
+    }
+    instances.forEach(function (inst) {
+        var a = document.createElement('a');
+        a.href = '/instances/' + inst.id + '/assessment-app-file-options';
+        a.className = 'btn btn-secondary';
+        a.textContent = inst.name + ' — App File Options';
+        a.title = 'Manage app file type availability and defaults for ' + inst.name;
+        container.appendChild(a);
+    });
+})();
+</script>
 {% endblock %}

@@ -257,6 +257,12 @@ class Assessment(SQLModel, table=True):
     target_app: Optional["GlobalApp"] = Relationship(back_populates="assessments")
     scans: List["Scan"] = Relationship(back_populates="assessment")
     features: List["Feature"] = Relationship(back_populates="assessment")
+    general_recommendations: List["GeneralRecommendation"] = Relationship(back_populates="assessment")
+
+    @property
+    def records_customized(self) -> int:
+        """Count total customized records across all scans."""
+        return sum(scan.records_customized for scan in self.scans)
 
     @property
     def total_findings(self) -> int:
@@ -589,6 +595,32 @@ class Feature(SQLModel, table=True):
     children: List["Feature"] = Relationship(back_populates="parent")
     primary_update_set: Optional["UpdateSet"] = Relationship(back_populates="features")
     scan_result_links: List["FeatureScanResult"] = Relationship(back_populates="feature")
+
+
+# ============================================
+# TABLE: GeneralRecommendation (assessment-wide recommendations)
+# ============================================
+
+class GeneralRecommendation(SQLModel, table=True):
+    """Assessment-scoped general technical recommendation.
+
+    High-level recommendations not tied to a specific scan result or feature.
+    """
+    __tablename__ = "general_recommendation"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+
+    title: str
+    description: Optional[str] = None
+    category: Optional[str] = None
+    severity: Optional[Severity] = None
+    created_by: str = "ai_agent"
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    assessment: Assessment = Relationship(back_populates="general_recommendations")
 
 
 # ============================================
@@ -1311,7 +1343,8 @@ class AppConfig(SQLModel, table=True):
     __tablename__ = "app_config"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    key: str = Field(unique=True, index=True)
+    instance_id: Optional[int] = Field(default=None, foreign_key="instance.id", index=True)
+    key: str = Field(index=True)
     value: str
     description: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)

@@ -10,6 +10,10 @@
 - Classification quality must follow Assessment Guide logic, including fallback linkage behavior.
 - Large historical narratives belong in archive, not active admin files.
 - Shared instruction baseline is now unified across agents: `AGENTS.md` is canonical, `CLAUDE.md` is extension-only, and routing starts from `ACTIVE_PROJECT.md`.
+- UI consolidation Group 1 + Group 2 are complete; Group 3A (Jinja filter-card macros) is deferred to backlog as low-value relative to current roadmap.
+- Remaining full-app UI modularization opportunities (outside consolidation plan scope) are tracked as backlog in `00_admin/todos.md`, sourced from `02_working/01_notes/codex_full_app_ui_modularization_audit_2026-02-15.md`.
+- MCP plan status: Phase 1 protocol support and Phase 5 write-back/read tools are complete (Codex, 2026-02-15), and Phase 4 classification audit/fixes are complete (Claude, 2026-02-15); remaining work is Phase 2/3 prompt/resource content registration.
+- Config architecture update: `AppConfig` now supports per-instance overrides (`instance_id`) with global fallback and partial unique indexes; global-only config consumers (MCP runtime, bridge, admin token) explicitly query `instance_id IS NULL`.
 
 ### ARCHITECTURE: Dynamic Registry is Canonical for ALL SN Table Mirroring
 - **`SnTableRegistry` + `SnFieldMapping`** (in `models_sn.py`) is the ONE system for mirroring any ServiceNow table — CSDM, preflight, custom, or future modules. Renamed from `Csdm*` prefix on 2026-02-15.

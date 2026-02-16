@@ -13,7 +13,7 @@ Properties UI (AppConfig table), with graceful fallback to these defaults.
 from __future__ import annotations
 
 import logging
-from typing import Dict
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def _hardcoded_defaults() -> Dict[str, object]:
     }
 
 
-def get_effective_config() -> Dict[str, object]:
+def get_effective_config(instance_id: Optional[int] = None) -> Dict[str, object]:
     """Load live fetch config from the Integration Properties UI (AppConfig).
 
     Opens a short-lived DB session, reads the four tunable values, and falls
@@ -64,7 +64,7 @@ def get_effective_config() -> Dict[str, object]:
         from .integration_properties import load_fetch_properties
 
         with Session(engine) as session:
-            props = load_fetch_properties(session)
+            props = load_fetch_properties(session, instance_id=instance_id)
             return {
                 "batch_size": props.default_batch_size,
                 "inter_batch_delay": props.inter_batch_delay,

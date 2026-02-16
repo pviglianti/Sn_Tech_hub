@@ -66,94 +66,21 @@ const artifactClass = '{{ sys_class_name }}';
 const artifactSysId = '{{ sys_id }}';
 const artifactInstanceId = {{ instance_id }};
 
-async function loadArtifactRecord() {
-    const loading = document.getElementById('artifactLoading');
-    const table = document.getElementById('artifactFieldTable');
-    const tbody = document.getElementById('artifactFieldBody');
-    const empty = document.getElementById('artifactEmpty');
-    const nameEl = document.getElementById('artifactName');
-    if (!tbody) return;
-
-    try {
-        const url = `/api/artifacts/${encodeURIComponent(artifactClass)}/${encodeURIComponent(artifactSysId)}?instance_id=${artifactInstanceId}`;
-        const res = await fetch(url, { cache: 'no-store' });
-        if (loading) loading.style.display = 'none';
-
-        if (!res.ok) {
-            if (empty) empty.classList.remove('is-hidden');
-            return;
-        }
-
-        const data = await res.json();
-
-        // Update page title with name if available
-        const fieldRows = data.field_rows || [];
-        const nameRow = fieldRows.find(r => r.field === 'name');
-        if (nameRow && nameRow.value && nameEl) {
-            nameEl.textContent = nameRow.value;
-        }
-
-        // Render field-value table
-        if (!fieldRows.length) {
-            if (empty) empty.classList.remove('is-hidden');
-            return;
-        }
-
-        if (table) table.classList.remove('is-hidden');
-        tbody.innerHTML = fieldRows.map((row) => {
-            const val = row.value != null ? String(row.value) : '-';
-            const escaped = val.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            const isLong = val.length > 200;
-            return `
-                <tr>
-                    <td><strong>${row.label}</strong><br><code class="text-muted-sm">${row.field}</code></td>
-                    <td>${isLong ? `<pre class="code-block max-h-200">${escaped}</pre>` : escaped}</td>
-                </tr>
-            `;
-        }).join('');
-
-        // Render code content
-        const codeContents = data.code_contents || [];
-        if (codeContents.length) {
-            const codeCard = document.getElementById('codeCard');
-            const codeContainer = document.getElementById('codeContainer');
-            if (codeCard && codeContainer) {
-                codeCard.classList.remove('is-hidden');
-                codeContainer.innerHTML = codeContents.map((item) => {
-                    const escaped = item.content
-                        .replace(/&/g, '&amp;')
-                        .replace(/</g, '&lt;')
-                        .replace(/>/g, '&gt;');
-                    return `
-                        <div class="mt-075">
-                            <div class="info-label">${item.label} <code>(${item.field})</code></div>
-                            <pre class="code-block max-h-420">${escaped}</pre>
-                        </div>
-                    `;
-                }).join('');
-            }
-        }
-
-        // Render raw JSON
-        const rawJson = data.raw_json;
-        if (rawJson) {
-            const rawCard = document.getElementById('rawJsonCard');
-            const rawContent = document.getElementById('rawJsonContent');
-            if (rawCard && rawContent) {
-                rawCard.classList.remove('is-hidden');
-                try {
-                    rawContent.textContent = JSON.stringify(JSON.parse(rawJson), null, 2);
-                } catch (e) {
-                    rawContent.textContent = rawJson;
-                }
-            }
-        }
-    } catch (err) {
-        if (loading) loading.style.display = 'none';
-        if (empty) empty.classList.remove('is-hidden');
-    }
-}
-
-document.addEventListener('DOMContentLoaded', loadArtifactRecord);
+document.addEventListener('DOMContentLoaded', function () {
+    ArtifactDetail.loadDetail({
+        sysClassName: artifactClass,
+        sysId: artifactSysId,
+        instanceId: artifactInstanceId,
+        tableId: 'artifactFieldTable',
+        bodyId: 'artifactFieldBody',
+        emptyId: 'artifactEmpty',
+        loadingId: 'artifactLoading',
+        nameId: 'artifactName',
+        codeCardId: 'codeCard',
+        codeContainerId: 'codeContainer',
+        rawJsonCardId: 'rawJsonCard',
+        rawJsonContentId: 'rawJsonContent',
+    });
+});
 </script>
 {% endblock %}

@@ -30,7 +30,7 @@ def test_iterate_delta_keyset_builds_watermark_then_cursor_queries():
         )
 
     assert len(result) == 1
-    assert "sys_updated_on>2026-02-13 09:00:00" in queries[0]
+    assert "sys_updated_on>=2026-02-13 09:00:00" in queries[0]
     assert "ORDERBYsys_updated_on" in queries[0]
     assert "ORDERBYsys_id" in queries[0]
     assert "sys_updated_on>2026-02-13 10:00:00^ORsys_updated_on=2026-02-13 10:00:00^sys_id>bbb" in queries[1]

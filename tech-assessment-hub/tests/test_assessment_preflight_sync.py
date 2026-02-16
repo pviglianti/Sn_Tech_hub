@@ -98,8 +98,12 @@ def test_cached_with_stale_pull_plans_delta(preflight_ctx):
     assert plan["skip"] == []
 
 
-def test_cached_with_fresh_pull_skips_sync(preflight_ctx):
-    """Fresh pull within skip_if_recent_hours → fresh (skip sync)."""
+def test_cached_with_recent_pull_uses_probes_not_freshness(preflight_ctx):
+    """No time-based freshness gate — always delegates to resolve_delta_decision.
+
+    Without a client (no probes), the function falls through to delta
+    because a watermark exists and probe data is unavailable.
+    """
     preflight_ctx.add_update_set()
     preflight_ctx.set_pull(
         status=DataPullStatus.completed,
@@ -112,8 +116,8 @@ def test_cached_with_fresh_pull_skips_sync(preflight_ctx):
         data_types=[DataPullType.update_sets],
     )
     assert plan["full"] == []
-    assert plan["delta"] == []
-    assert plan["fresh"] == [DataPullType.update_sets]
+    assert plan["delta"] == [DataPullType.update_sets]
+    assert plan["fresh"] == []
     assert plan["skip"] == []
 
 

@@ -38,6 +38,15 @@ window.DataTable = (function () {
         this.initialConditions = opts.initialConditions || null;
         this.includeTableAndInstanceParams = opts.includeTableAndInstanceParams !== false;
 
+        // Extension: custom cell renderers — map of column_name → function(value, rowData, tdElement)
+        this.customRenderers = opts.customRenderers || {};
+
+        // Extension: row selection checkboxes
+        this.selectable = !!opts.selectable;
+        this.onSelectionChange = opts.onSelectionChange || function () {};
+        this._selectedRowIds = new Set();
+        this._rowIdField = opts.rowIdField || 'id';
+
         this.schema = null;
         this.fields = [];
         this.visibleColumns = [];
@@ -325,6 +334,22 @@ window.DataTable = (function () {
         this._thead.innerHTML = '';
         var headerRow = document.createElement('tr');
 
+        // Selection checkbox column header
+        if (this.selectable) {
+            var selectTh = document.createElement('th');
+            selectTh.className = 'dt-th dt-th-select';
+            selectTh.style.width = '36px';
+            var selectAllCb = document.createElement('input');
+            selectAllCb.type = 'checkbox';
+            selectAllCb.title = 'Select/deselect all visible rows';
+            selectAllCb.addEventListener('change', function () {
+                self._toggleSelectAll(selectAllCb.checked);
+            });
+            this._selectAllCheckbox = selectAllCb;
+            selectTh.appendChild(selectAllCb);
+            headerRow.appendChild(selectTh);
+        }
+
         this.visibleColumns.forEach(function (col) {
             var th = document.createElement('th');
             var fm = fieldMap[col];
@@ -359,14 +384,17 @@ window.DataTable = (function () {
         // Render tbody
         this._tbody.innerHTML = '';
 
+        var totalCols = this.visibleColumns.length + (this.selectable ? 1 : 0);
+
         if (this.rows.length === 0) {
             var emptyRow = document.createElement('tr');
             var emptyTd = document.createElement('td');
-            emptyTd.colSpan = this.visibleColumns.length || 1;
+            emptyTd.colSpan = totalCols || 1;
             emptyTd.className = 'dt-empty';
             emptyTd.textContent = 'No records found';
             emptyRow.appendChild(emptyTd);
             this._tbody.appendChild(emptyRow);
+            this._syncSelectAllCheckbox();
             return;
         }
 
@@ -379,6 +407,8 @@ window.DataTable = (function () {
             if (c === 'sys_id') continue;
             var cfm = fieldMap[c];
             if (cfm && cfm.is_reference) continue;
+            // Skip columns with custom renderers from being record-link columns
+            if (self.customRenderers[c]) continue;
             recordLinkCol = c;
             break;
         }
@@ -387,6 +417,29 @@ window.DataTable = (function () {
             var tr = document.createElement('tr');
             tr.className = 'dt-row';
             var rowSysId = row['sys_id'] || row['sn_sys_id'];
+            var rowId = row[self._rowIdField];
+
+            // Selection checkbox cell
+            if (self.selectable) {
+                var selectTd = document.createElement('td');
+                selectTd.className = 'dt-cell dt-cell-select';
+                var cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.checked = self._selectedRowIds.has(rowId);
+                cb.addEventListener('change', function (e) {
+                    e.stopPropagation();
+                    if (cb.checked) {
+                        self._selectedRowIds.add(rowId);
+                    } else {
+                        self._selectedRowIds.delete(rowId);
+                    }
+                    self._syncSelectAllCheckbox();
+                    self.onSelectionChange(self.getSelectedRows());
+                });
+                cb.addEventListener('click', function (e) { e.stopPropagation(); });
+                selectTd.appendChild(cb);
+                tr.appendChild(selectTd);
+            }
 
             self.visibleColumns.forEach(function (col) {
                 var td = document.createElement('td');
@@ -395,7 +448,10 @@ window.DataTable = (function () {
                 var displayVal = value != null ? String(value) : '';
                 var fm = fieldMap[col];
 
-                if (fm && fm.is_reference && fm.sn_reference_table && displayVal) {
+                // Custom renderer takes priority
+                if (self.customRenderers[col]) {
+                    self.customRenderers[col](value, row, td);
+                } else if (fm && fm.is_reference && fm.sn_reference_table && displayVal) {
                     var refAvailable = !!self._availableTables[fm.sn_reference_table];
                     if (refAvailable) {
                         // Blue clickable link — table exists locally
@@ -476,6 +532,8 @@ window.DataTable = (function () {
             self._tbody.appendChild(tr);
         });
 
+        this._syncSelectAllCheckbox();
+
         // Update info
         var from = this.total > 0 ? this.offset + 1 : 0;
         var to = Math.min(this.offset + this.pageSize, this.total);
@@ -531,6 +589,134 @@ window.DataTable = (function () {
                 self._renderTable();
             },
         });
+    };
+
+    // ----- Selection helpers -----
+
+    DataTable.prototype._toggleSelectAll = function (checked) {
+        var self = this;
+        this.rows.forEach(function (row) {
+            var rowId = row[self._rowIdField];
+            if (rowId == null) return;
+            if (checked) {
+                self._selectedRowIds.add(rowId);
+            } else {
+                self._selectedRowIds.delete(rowId);
+            }
+        });
+        // Update checkboxes in DOM
+        var cbs = this._tbody.querySelectorAll('.dt-cell-select input[type="checkbox"]');
+        cbs.forEach(function (cb) { cb.checked = checked; });
+        this.onSelectionChange(this.getSelectedRows());
+    };
+
+    DataTable.prototype._syncSelectAllCheckbox = function () {
+        if (!this._selectAllCheckbox) return;
+        if (this.rows.length === 0) {
+            this._selectAllCheckbox.checked = false;
+            this._selectAllCheckbox.indeterminate = false;
+            return;
+        }
+        var self = this;
+        var selectedCount = 0;
+        this.rows.forEach(function (row) {
+            if (self._selectedRowIds.has(row[self._rowIdField])) selectedCount++;
+        });
+        if (selectedCount === 0) {
+            this._selectAllCheckbox.checked = false;
+            this._selectAllCheckbox.indeterminate = false;
+        } else if (selectedCount === this.rows.length) {
+            this._selectAllCheckbox.checked = true;
+            this._selectAllCheckbox.indeterminate = false;
+        } else {
+            this._selectAllCheckbox.checked = false;
+            this._selectAllCheckbox.indeterminate = true;
+        }
+    };
+
+    // ----- Public row access methods -----
+
+    /**
+     * Return all rows currently loaded on the visible page.
+     */
+    DataTable.prototype.getVisibleRows = function () {
+        return this.rows.slice();
+    };
+
+    /**
+     * Return rows whose IDs are in the current selection set.
+     */
+    DataTable.prototype.getSelectedRows = function () {
+        var self = this;
+        return this.rows.filter(function (row) {
+            return self._selectedRowIds.has(row[self._rowIdField]);
+        });
+    };
+
+    /**
+     * Return array of selected row IDs.
+     */
+    DataTable.prototype.getSelectedRowIds = function () {
+        return Array.from(this._selectedRowIds);
+    };
+
+    /**
+     * Clear the selection set.
+     */
+    DataTable.prototype.clearSelection = function () {
+        this._selectedRowIds.clear();
+        this._renderTable();
+        this.onSelectionChange([]);
+    };
+
+    /**
+     * Select all visible rows.
+     */
+    DataTable.prototype.selectAllVisible = function () {
+        this._toggleSelectAll(true);
+    };
+
+    /**
+     * Update a row's data in-place (for optimistic UI after API calls).
+     * Finds the row by rowIdField, merges updates, re-renders.
+     */
+    DataTable.prototype.updateRowData = function (rowId, updates) {
+        var self = this;
+        for (var i = 0; i < this.rows.length; i++) {
+            if (this.rows[i][this._rowIdField] === rowId) {
+                for (var key in updates) {
+                    if (updates.hasOwnProperty(key)) {
+                        this.rows[i][key] = updates[key];
+                    }
+                }
+                break;
+            }
+        }
+        this._renderTable();
+    };
+
+    /**
+     * Bulk update multiple rows in-place. rowUpdates is an array of
+     * { id: rowId, ...fields }. Re-renders once after all updates.
+     */
+    DataTable.prototype.bulkUpdateRowData = function (rowUpdates) {
+        var self = this;
+        var updateMap = {};
+        rowUpdates.forEach(function (u) {
+            updateMap[u[self._rowIdField] || u.id] = u;
+        });
+        for (var i = 0; i < this.rows.length; i++) {
+            var rowId = this.rows[i][this._rowIdField];
+            var upd = updateMap[rowId];
+            if (upd) {
+                for (var key in upd) {
+                    if (upd.hasOwnProperty(key) && key !== self._rowIdField) {
+                        this.rows[i][key] = upd[key];
+                    }
+                }
+            }
+        }
+        this._renderTable();
     };
 
     DataTable.prototype.destroy = function () {

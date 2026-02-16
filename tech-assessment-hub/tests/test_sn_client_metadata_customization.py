@@ -18,7 +18,7 @@ def test_build_metadata_queries_chunks_by_length():
 
     assert len(queries) > 1
     for query in queries:
-        assert "sys_updated_on>2026-02-07 12:00:00" in query
+        assert "sys_updated_on>=2026-02-07 12:00:00" in query
         assert "sys_metadata.sys_class_nameIN" in query
         assert len(query) <= 220
 

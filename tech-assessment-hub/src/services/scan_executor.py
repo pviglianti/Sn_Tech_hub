@@ -459,26 +459,37 @@ def _classify_origin(
     has_metadata_customization: bool,
     has_customer_update: bool = False,
     earliest_version_record: Optional[Dict[str, Any]] = None,
+    changed_baseline_now: bool = False,
 ) -> Tuple[OriginType, HeadOwner]:
-    # 1. Current version history (state=current) source starts with Store or
-    #    Upgrade → OOTB untouched, not a customization.
+    """Classify a record's origin type per the Assessment Guide v3 decision tree.
+
+    Decision tree (from assessment_guide_and_script_v3_pv.md):
+        IF any OOB version exists:
+            IF customer versions exist OR baseline changed → modified_ootb
+            ELSE → ootb_untouched
+        ELSE:
+            IF customer versions exist OR baseline changed → net_new_customer
+            ELSE → unknown_no_history
+    """
+    has_customer_signal = (
+        has_metadata_customization or has_customer_update or changed_baseline_now
+    )
+
+    # 1. Current version is OOB (Store/Upgrade source) → OOB branch.
     if version_record and _is_ootb_reverted_current(version_record):
+        if has_customer_signal:
+            return OriginType.modified_ootb, HeadOwner.store_upgrade
         return OriginType.ootb_untouched, HeadOwner.store_upgrade
 
-    # 2. Has metadata_customization record → OOTB Modified
-    #    (was OOTB, customer changed it)
+    # 2. Has metadata_customization record → was OOTB, customer changed it.
     if has_metadata_customization:
         return OriginType.modified_ootb, HeadOwner.store_upgrade
 
-    # 3. Related customer_update_xml record exists → it's a customization.
-    #    No metadata_customization means it's net-new, not a modified OOTB.
-    if has_customer_update:
+    # 3. Customer update or baseline changed → customization with no OOB current.
+    if has_customer_update or changed_baseline_now:
         return OriginType.net_new_customer, HeadOwner.customer
 
     # 4. Fallback: check the earliest version history record.
-    #    If earliest source is an update_set → customer created it.
-    #    If earliest source is Store or Upgrade → OOTB modified (has history
-    #    but no customer_update_xml — unusual but possible with incomplete data).
     if earliest_version_record:
         if _is_ootb_reverted_current(earliest_version_record):
             return OriginType.modified_ootb, HeadOwner.store_upgrade
@@ -488,7 +499,11 @@ def _classify_origin(
         if "update_set" in str(source_table).lower():
             return OriginType.net_new_customer, HeadOwner.customer
 
-    # 5. Nothing to go on
+    # 5. Has version history but can't classify → unknown.
+    #    No history at all → unknown_no_history.
+    has_any_history = version_record is not None or earliest_version_record is not None
+    if has_any_history:
+        return OriginType.unknown, HeadOwner.unknown
     return OriginType.unknown_no_history, HeadOwner.unknown
 
 
@@ -796,6 +811,7 @@ def execute_scan(
                         has_metadata_customization,
                         has_customer_update=has_customer_update,
                         earliest_version_record=earliest_version_record,
+                        changed_baseline_now=baseline_changed,
                     )
 
                     if allowed_origin_values and origin_type.value not in allowed_origin_values:

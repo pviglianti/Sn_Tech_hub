@@ -5,10 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query as QueryParam, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import case
+from sqlalchemy import case, text
 from sqlmodel import Session, select
 
 from ...database import get_session
@@ -16,7 +16,169 @@ from ...models import ConnectionStatus, DataPullType, Instance, InstanceAppFileT
 from ...services.dictionary_pull_orchestrator import start_dictionary_pull
 from ...services.encryption import decrypt_password, encrypt_password
 from ...services.sn_client import ServiceNowClient, ServiceNowClientError
+from ...services.condition_query_builder import conditions_to_sql_where
 from ...app_file_class_catalog import default_assessment_availability_for_instance_file_type
+from ...artifact_detail_defs import get_class_label
+
+
+# ---------------------------------------------------------------------------
+# App File Options — field schema + data query (module-level, testable)
+# ---------------------------------------------------------------------------
+
+# Static field schema for InstanceAppFileType rows exposed via DataTable.js.
+_APP_FILE_OPTIONS_FIELDS = [
+    {"local_column": "is_available_for_assessment", "column_label": "Available", "kind": "boolean"},
+    {"local_column": "is_default_for_assessment", "column_label": "Default Selected", "kind": "boolean"},
+    {"local_column": "display_label", "column_label": "Display Name", "kind": "string"},
+    {"local_column": "sys_class_name", "column_label": "Technical Name", "kind": "string"},
+    {"local_column": "name", "column_label": "App File Type Name", "kind": "string"},
+    {"local_column": "type", "column_label": "Type", "kind": "string"},
+    {"local_column": "source_table_name", "column_label": "Source Table", "kind": "string"},
+    {"local_column": "source_table", "column_label": "Source Table Sys ID", "kind": "string"},
+    {"local_column": "source_field", "column_label": "Source Field", "kind": "string"},
+    {"local_column": "parent_table_name", "column_label": "Parent Table", "kind": "string"},
+    {"local_column": "parent_table", "column_label": "Parent Table Sys ID", "kind": "string"},
+    {"local_column": "parent_field", "column_label": "Parent Field", "kind": "string"},
+    {"local_column": "use_parent_scope", "column_label": "Use Parent Scope", "kind": "boolean"},
+    {"local_column": "children_provider_class", "column_label": "Children Provider Class", "kind": "string"},
+    {"local_column": "priority", "column_label": "Priority", "kind": "number"},
+    {"local_column": "sn_sys_id", "column_label": "sys_id", "kind": "string"},
+]
+
+# Columns that live on the physical DB table (used for sorting / condition mapping).
+# "display_label" is virtual (computed) — not in the table.
+_VIRTUAL_COLUMNS = {"display_label"}
+
+# Valid DB columns for sorting and condition filters.
+_VALID_DB_COLUMNS = {f["local_column"] for f in _APP_FILE_OPTIONS_FIELDS if f["local_column"] not in _VIRTUAL_COLUMNS}
+
+
+def _app_file_options_field_schema() -> Dict[str, Any]:
+    """Return the static field schema for the app file options DataTable."""
+    return {"fields": list(_APP_FILE_OPTIONS_FIELDS)}
+
+
+def _resolve_display_label(row: InstanceAppFileType) -> str:
+    """Compute a user-friendly display label for an InstanceAppFileType row."""
+    label = (row.label or "").strip()
+    name = (row.name or "").strip()
+    sys_class = (row.sys_class_name or "").strip()
+    if label and label != sys_class:
+        return label
+    if name and name != sys_class:
+        return name
+    if sys_class:
+        return get_class_label(sys_class)
+    return "-"
+
+
+def _safe_sort_column(col_name: Optional[str]) -> Optional[str]:
+    """Validate and return a safe column name for ORDER BY."""
+    if not col_name:
+        return None
+    clean = "".join(ch for ch in col_name if ch.isalnum() or ch == "_")
+    if clean in _VALID_DB_COLUMNS:
+        return clean
+    return None
+
+
+def _row_to_dict(row: InstanceAppFileType) -> Dict[str, Any]:
+    """Serialize an InstanceAppFileType row to a DataTable-compatible dict."""
+    return {
+        "id": row.id,
+        "is_available_for_assessment": bool(row.is_available_for_assessment),
+        "is_default_for_assessment": bool(row.is_default_for_assessment),
+        "display_label": _resolve_display_label(row),
+        "sys_class_name": row.sys_class_name or "",
+        "name": row.name or "",
+        "type": row.type or "",
+        "source_table_name": row.source_table_name or "",
+        "source_table": row.source_table or "",
+        "source_field": row.source_field or "",
+        "parent_table_name": row.parent_table_name or "",
+        "parent_table": row.parent_table or "",
+        "parent_field": row.parent_field or "",
+        "use_parent_scope": row.use_parent_scope,
+        "children_provider_class": row.children_provider_class or "",
+        "priority": row.priority,
+        "sn_sys_id": row.sn_sys_id or "",
+    }
+
+
+def _query_app_file_options_data(
+    session: Session,
+    *,
+    instance_id: int,
+    offset: int = 0,
+    limit: int = 50,
+    sort_field: Optional[str] = None,
+    sort_dir: str = "asc",
+    conditions: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Query InstanceAppFileType rows with pagination, sorting, and condition filtering.
+
+    Returns a dict with ``total`` (int) and ``rows`` (list of dicts) matching
+    the DataTable.js data contract.
+    """
+    # Build base WHERE
+    base_where = '"instance_id" = :instance_id'
+    params: Dict[str, Any] = {"instance_id": instance_id}
+
+    # Apply condition builder filters via raw SQL
+    if conditions:
+        cond_where, cond_params = conditions_to_sql_where(conditions)
+        # conditions_to_sql_where uses ? placeholders — convert to named
+        param_idx = 0
+        named_cond = ""
+        for ch in cond_where:
+            if ch == "?":
+                pname = f"_cp{param_idx}"
+                named_cond += f":{pname}"
+                params[pname] = cond_params[param_idx]
+                param_idx += 1
+            else:
+                named_cond += ch
+        base_where += " AND " + named_cond
+
+    # Use session's connection for raw SQL (works in tests with in-memory DB)
+    conn = session.connection()
+
+    # Count query
+    count_sql = f'SELECT COUNT(*) FROM "instance_app_file_type" WHERE {base_where}'
+    total = conn.execute(text(count_sql), params).scalar() or 0
+
+    # Data query with sorting
+    safe_col = _safe_sort_column(sort_field)
+    if safe_col:
+        direction = "DESC" if sort_dir.lower() == "desc" else "ASC"
+        order_clause = f'ORDER BY "{safe_col}" {direction}'
+    else:
+        order_clause = 'ORDER BY CASE WHEN "priority" IS NULL THEN 1 ELSE 0 END, "priority" ASC, "label" ASC, "sys_class_name" ASC'
+
+    data_sql = f'SELECT "id" FROM "instance_app_file_type" WHERE {base_where} {order_clause} LIMIT :_limit OFFSET :_offset'
+    data_params = dict(params)
+    data_params["_limit"] = limit
+    data_params["_offset"] = offset
+
+    row_ids = [r[0] for r in conn.execute(text(data_sql), data_params).fetchall()]
+
+    if not row_ids:
+        return {"total": total, "rows": []}
+
+    # Fetch full ORM objects in the correct order
+    rows_by_id: Dict[int, InstanceAppFileType] = {}
+    for row in session.exec(
+        select(InstanceAppFileType).where(InstanceAppFileType.id.in_(row_ids))
+    ).all():
+        if row.id is not None:
+            rows_by_id[row.id] = row
+
+    ordered_rows = [rows_by_id[rid] for rid in row_ids if rid in rows_by_id]
+
+    return {
+        "total": total,
+        "rows": [_row_to_dict(r) for r in ordered_rows],
+    }
 
 
 def create_instances_router(
@@ -83,7 +245,12 @@ def create_instances_router(
         # Auto-capture metrics on add (best-effort)
         try:
             instance_password = decrypt_password(instance.password_encrypted)
-            client = ServiceNowClient(instance.url, instance.username, instance_password)
+            client = ServiceNowClient(
+                instance.url,
+                instance.username,
+                instance_password,
+                instance_id=instance.id,
+            )
             test_result = client.test_connection()
             if not test_result.get("success"):
                 raise ServiceNowClientError(test_result.get("message", "Authentication failed"))
@@ -126,7 +293,12 @@ def create_instances_router(
             raise HTTPException(status_code=404, detail="Instance not found")
 
         instance_password = decrypt_password(instance.password_encrypted)
-        client = ServiceNowClient(instance.url, instance.username, instance_password)
+        client = ServiceNowClient(
+            instance.url,
+            instance.username,
+            instance_password,
+            instance_id=instance.id,
+        )
         result = client.test_connection()
 
         if result["success"]:
@@ -250,6 +422,44 @@ def create_instances_router(
                 "auto_sync_status": auto_sync_status,
                 "auto_sync_message": auto_sync_message,
             },
+        )
+
+    @instances_router.get("/api/instances/{instance_id}/assessment-app-file-options/schema")
+    async def api_app_file_options_schema(instance_id: int):
+        """Return field schema for the app file options DataTable."""
+        return _app_file_options_field_schema()
+
+    @instances_router.get("/api/instances/{instance_id}/assessment-app-file-options/data")
+    async def api_app_file_options_data(
+        instance_id: int,
+        offset: int = QueryParam(0),
+        limit: int = QueryParam(50),
+        sort_field: Optional[str] = QueryParam(None),
+        sort_dir: str = QueryParam("asc"),
+        conditions: Optional[str] = QueryParam(None),
+        session: Session = Depends(get_session),
+    ):
+        """Return paginated, sortable, filterable app file options for DataTable.js."""
+        instance = session.get(Instance, instance_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Instance not found")
+
+        parsed_conditions = None
+        if conditions:
+            import json
+            try:
+                parsed_conditions = json.loads(conditions)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        return _query_app_file_options_data(
+            session,
+            instance_id=instance_id,
+            offset=offset,
+            limit=limit,
+            sort_field=sort_field,
+            sort_dir=sort_dir,
+            conditions=parsed_conditions,
         )
 
     @instances_router.post("/api/instances/{instance_id}/assessment-app-file-options/{app_file_type_id}")

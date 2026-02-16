@@ -97,11 +97,6 @@
 <script>
 let recommendedAssessmentIds = [];
 
-function formatResultsDate(value) {
-    if (!value) return '-';
-    return value.replace('T', ' ').slice(0, 16);
-}
-
 function getSelectedValues(selectId) {
     const element = document.getElementById(selectId);
     if (!element) return [];
@@ -160,7 +155,7 @@ function renderResultsRows(rows) {
                 <td>${row.origin_type ? `<span class="origin-badge ${originClass}">${classification}</span>` : '-'}</td>
                 <td>${row.review_status ? row.review_status.replaceAll('_', ' ') : '-'}</td>
                 <td>${row.disposition ? row.disposition.replaceAll('_', ' ') : '-'}</td>
-                <td>${formatResultsDate(row.sys_updated_on)}</td>
+                <td>${formatDate(row.sys_updated_on)}</td>
             </tr>
         `;
     }).join('');

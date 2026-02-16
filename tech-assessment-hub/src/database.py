@@ -45,6 +45,7 @@ def create_db_and_tables():
     )
     SQLModel.metadata.create_all(engine)
     _ensure_instance_columns()
+    _ensure_app_config_instance_scope()
     _ensure_model_table_columns([
         "scan",
         "update_set",
@@ -67,6 +68,7 @@ def create_db_and_tables():
         "csdm_custom_table_request",
         "job_run",
         "job_event",
+        "app_config",
     ])
     _ensure_instance_app_file_type_defaults()
     _ensure_indexes()
@@ -104,6 +106,68 @@ def _ensure_instance_columns():
             if name not in existing:
                 conn.execute(text(f"ALTER TABLE instance ADD COLUMN {name} {col_type}"))
 
+        conn.commit()
+
+
+def _ensure_app_config_instance_scope() -> None:
+    """Migrate app_config to support optional instance-scoped overrides.
+
+    Legacy schema used a globally-unique key. New schema stores:
+    - global defaults with instance_id NULL
+    - per-instance overrides with instance_id set
+    """
+    with engine.connect() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='app_config'")
+        ).first()
+        if not table_exists:
+            return
+
+        rows = conn.execute(text("PRAGMA table_info(app_config)")).fetchall()
+        existing_columns = {row[1] for row in rows}
+
+        has_legacy_unique_key = False
+        index_rows = conn.execute(text("PRAGMA index_list('app_config')")).fetchall()
+        for idx in index_rows:
+            idx_name = idx[1]
+            is_unique = bool(idx[2])
+            if not is_unique:
+                continue
+            idx_cols = conn.execute(text(f"PRAGMA index_info('{idx_name}')")).fetchall()
+            col_names = [c[2] for c in idx_cols]
+            if col_names == ["key"]:
+                has_legacy_unique_key = True
+                break
+
+        if "instance_id" in existing_columns and not has_legacy_unique_key:
+            return
+
+        conn.execute(text("PRAGMA foreign_keys=OFF"))
+        conn.execute(text("DROP TABLE IF EXISTS app_config_new"))
+        conn.execute(text(
+            """
+            CREATE TABLE app_config_new (
+                id INTEGER PRIMARY KEY,
+                instance_id INTEGER,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                description TEXT,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                FOREIGN KEY(instance_id) REFERENCES instance (id)
+            )
+            """
+        ))
+        conn.execute(text(
+            """
+            INSERT INTO app_config_new (id, instance_id, key, value, description, created_at, updated_at)
+            SELECT id, NULL as instance_id, key, value, description, created_at, updated_at
+            FROM app_config
+            """
+        ))
+        conn.execute(text("DROP TABLE app_config"))
+        conn.execute(text("ALTER TABLE app_config_new RENAME TO app_config"))
+        conn.execute(text("PRAGMA foreign_keys=ON"))
         conn.commit()
 
 
@@ -164,6 +228,11 @@ def _ensure_indexes() -> None:
         "CREATE INDEX IF NOT EXISTS ix_job_event_run_created_at ON job_event (run_id, created_at)",
         # Run UID back-reference on per-data-type pull rows.
         "CREATE INDEX IF NOT EXISTS ix_instance_data_pull_run_uid ON instance_data_pull (run_uid)",
+        # AppConfig instance-scoped overrides.
+        "CREATE INDEX IF NOT EXISTS ix_app_config_instance_id ON app_config (instance_id)",
+        "CREATE INDEX IF NOT EXISTS ix_app_config_key ON app_config (key)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_app_config_global_key ON app_config (key) WHERE instance_id IS NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_app_config_instance_key ON app_config (instance_id, key) WHERE instance_id IS NOT NULL",
     ]
     with engine.connect() as conn:
         table_info_rows = conn.execute(text("PRAGMA table_info(instance_app_file_type)")).fetchall()

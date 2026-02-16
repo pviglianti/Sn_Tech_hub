@@ -6,6 +6,7 @@ Moved from src/mcp/server.py during Wave 2 restructure.
 from typing import Any, Dict, Optional, Union
 from sqlmodel import Session
 
+from ..registry import PROMPT_REGISTRY, RESOURCE_REGISTRY
 from ..runtime.router import MCP_RUNTIME_ROUTER
 from .errors import make_error, make_result
 from .schemas import PROTOCOL_VERSION, SERVER_INFO
@@ -16,7 +17,9 @@ def _handle_initialize(request_id: Optional[Union[str, int]]) -> Dict[str, Any]:
         "protocolVersion": PROTOCOL_VERSION,
         "serverInfo": SERVER_INFO,
         "capabilities": {
-            "tools": {}
+            "tools": {},
+            "prompts": {},
+            "resources": {},
         }
     })
 
@@ -69,6 +72,55 @@ def _handle_tools_call(
     })
 
 
+def _handle_prompts_list(request_id: Optional[Union[str, int]]) -> Dict[str, Any]:
+    return make_result(request_id, {
+        "prompts": PROMPT_REGISTRY.list_prompts()
+    })
+
+
+def _handle_prompts_get(
+    request_id: Optional[Union[str, int]],
+    params: Dict[str, Any],
+) -> Dict[str, Any]:
+    name = params.get("name")
+    if not name:
+        return make_error(request_id, -32602, "Missing prompt name")
+
+    try:
+        arguments = params.get("arguments") or {}
+        result = PROMPT_REGISTRY.get_prompt(name, arguments)
+    except KeyError:
+        return make_error(request_id, -32601, f"Prompt not found: {name}")
+    except Exception as exc:
+        return make_error(request_id, -32000, f"Prompt retrieval failed: {exc}")
+
+    return make_result(request_id, result)
+
+
+def _handle_resources_list(request_id: Optional[Union[str, int]]) -> Dict[str, Any]:
+    return make_result(request_id, {
+        "resources": RESOURCE_REGISTRY.list_resources()
+    })
+
+
+def _handle_resources_read(
+    request_id: Optional[Union[str, int]],
+    params: Dict[str, Any],
+) -> Dict[str, Any]:
+    uri = params.get("uri")
+    if not uri:
+        return make_error(request_id, -32602, "Missing resource URI")
+
+    try:
+        result = RESOURCE_REGISTRY.read_resource(uri)
+    except KeyError:
+        return make_error(request_id, -32601, f"Resource not found: {uri}")
+    except Exception as exc:
+        return make_error(request_id, -32000, f"Resource read failed: {exc}")
+
+    return make_result(request_id, result)
+
+
 def handle_request(
     payload: Dict[str, Any],
     session: Session,
@@ -89,5 +141,19 @@ def handle_request(
     if method == "tools/call":
         params = payload.get("params") or {}
         return _handle_tools_call(request_id, params, session, request_context=request_context)
+
+    if method == "prompts/list":
+        return _handle_prompts_list(request_id)
+
+    if method == "prompts/get":
+        params = payload.get("params") or {}
+        return _handle_prompts_get(request_id, params)
+
+    if method == "resources/list":
+        return _handle_resources_list(request_id)
+
+    if method == "resources/read":
+        params = payload.get("params") or {}
+        return _handle_resources_read(request_id, params)
 
     return make_error(request_id, -32601, f"Method not found: {method}")

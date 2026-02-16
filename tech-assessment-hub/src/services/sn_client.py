@@ -37,7 +37,13 @@ class ServiceNowClient:
     METADATA_CUSTOMIZATION_QUERY_MAX_LENGTH = 1500
     METADATA_CUSTOMIZATION_MAX_CLASSES_PER_QUERY = 60
 
-    def __init__(self, instance_url: str, username: str, password: str):
+    def __init__(
+        self,
+        instance_url: str,
+        username: str,
+        password: str,
+        instance_id: Optional[int] = None,
+    ):
         """
         Initialize the ServiceNow client.
 
@@ -45,6 +51,7 @@ class ServiceNowClient:
             instance_url: Full URL like https://dev12345.service-now.com
             username: ServiceNow username
             password: ServiceNow password
+            instance_id: Optional local Instance.id for instance-scoped config overrides
         """
         # Normalize URL (remove trailing slash)
         self.instance_url = instance_url.rstrip('/')
@@ -59,7 +66,7 @@ class ServiceNowClient:
 
         # Load effective fetch config from Integration Properties (AppConfig).
         # Falls back to compile-time defaults if DB is unavailable.
-        self._cfg = get_effective_config()
+        self._cfg = get_effective_config(instance_id=instance_id)
 
     def _build_url(self, endpoint: str) -> str:
         """Build full URL for an API endpoint"""
@@ -258,11 +265,13 @@ class ServiceNowClient:
         self,
         since: Optional[datetime] = None,
         class_names: Optional[List[str]] = None,
+        inclusive: bool = True,
     ) -> int:
         total = 0
         for query in self.build_metadata_customization_queries(
             since=since,
             class_names=class_names,
+            inclusive=inclusive,
         ):
             total += self.get_record_count("sys_metadata_customization", query)
         return total
@@ -271,14 +280,26 @@ class ServiceNowClient:
         cleaned = [part for part in parts if part]
         return "^".join(cleaned) if cleaned else ""
 
+    def _watermark_filter(self, since: datetime, inclusive: bool = True) -> str:
+        """Build sys_updated_on filter for delta queries.
+
+        Args:
+            since: Watermark datetime.
+            inclusive: True for data pulls (>=), False for probes (>).
+        """
+        ts = since.strftime('%Y-%m-%d %H:%M:%S')
+        op = ">=" if inclusive else ">"
+        return f"sys_updated_on{op}{ts}"
+
     def build_update_set_query(
         self,
         since: Optional[datetime] = None,
         scope_filter: Optional[str] = None,
+        inclusive: bool = True,
     ) -> str:
         query_parts = []
         if since:
-            query_parts.append(f"sys_updated_on>{since.strftime('%Y-%m-%d %H:%M:%S')}")
+            query_parts.append(self._watermark_filter(since, inclusive=inclusive))
         if scope_filter == "global":
             global_sys_id = self._get_global_scope_sys_id()
             if global_sys_id:
@@ -293,20 +314,21 @@ class ServiceNowClient:
                 query_parts.append("application.scope!=global")
         return self._build_query(query_parts)
 
-    def build_customer_update_xml_query(self, since: Optional[datetime] = None) -> str:
+    def build_customer_update_xml_query(self, since: Optional[datetime] = None, inclusive: bool = True) -> str:
         query_parts = []
         if since:
-            query_parts.append(f"sys_updated_on>{since.strftime('%Y-%m-%d %H:%M:%S')}")
+            query_parts.append(self._watermark_filter(since, inclusive=inclusive))
         return self._build_query(query_parts)
 
     def build_version_history_query(
         self,
         since: Optional[datetime] = None,
         state_filter: Optional[str] = None,
+        inclusive: bool = True,
     ) -> str:
         query_parts = []
         if since:
-            query_parts.append(f"sys_updated_on>{since.strftime('%Y-%m-%d %H:%M:%S')}")
+            query_parts.append(self._watermark_filter(since, inclusive=inclusive))
         if state_filter:
             query_parts.append(f"state={state_filter}")
         return self._build_query(query_parts)
@@ -315,8 +337,9 @@ class ServiceNowClient:
         self,
         since: Optional[datetime] = None,
         class_names: Optional[List[str]] = None,
+        inclusive: bool = True,
     ) -> str:
-        queries = self.build_metadata_customization_queries(since=since, class_names=class_names)
+        queries = self.build_metadata_customization_queries(since=since, class_names=class_names, inclusive=inclusive)
         return queries[0] if queries else ""
 
     def build_metadata_customization_queries(
@@ -325,10 +348,11 @@ class ServiceNowClient:
         class_names: Optional[List[str]] = None,
         max_query_length: int = METADATA_CUSTOMIZATION_QUERY_MAX_LENGTH,
         max_classes_per_query: int = METADATA_CUSTOMIZATION_MAX_CLASSES_PER_QUERY,
+        inclusive: bool = True,
     ) -> List[str]:
         query_parts = []
         if since:
-            query_parts.append(f"sys_updated_on>{since.strftime('%Y-%m-%d %H:%M:%S')}")
+            query_parts.append(self._watermark_filter(since, inclusive=inclusive))
 
         if not class_names:
             return [self._build_query(query_parts)]
@@ -383,57 +407,58 @@ class ServiceNowClient:
 
         return queries if queries else [self._build_query(query_parts)]
 
-    def build_app_file_types_query(self, since: Optional[datetime] = None) -> str:
+    def build_app_file_types_query(self, since: Optional[datetime] = None, inclusive: bool = True) -> str:
         query_parts = []
         if since:
-            query_parts.append(f"sys_updated_on>{since.strftime('%Y-%m-%d %H:%M:%S')}")
+            query_parts.append(self._watermark_filter(since, inclusive=inclusive))
         return self._build_query(query_parts)
 
-    def build_plugins_query(self, active_only: bool = False, since: Optional[datetime] = None) -> str:
+    def build_plugins_query(self, active_only: bool = False, since: Optional[datetime] = None, inclusive: bool = True) -> str:
         query_parts = []
         if since:
-            query_parts.append(f"sys_updated_on>{since.strftime('%Y-%m-%d %H:%M:%S')}")
+            query_parts.append(self._watermark_filter(since, inclusive=inclusive))
         if active_only:
             query_parts.append("active=true")
         return self._build_query(query_parts)
 
-    def build_scopes_query(self, active_only: bool = False, since: Optional[datetime] = None) -> str:
+    def build_scopes_query(self, active_only: bool = False, since: Optional[datetime] = None, inclusive: bool = True) -> str:
         query_parts = []
         if since:
-            query_parts.append(f"sys_updated_on>{since.strftime('%Y-%m-%d %H:%M:%S')}")
+            query_parts.append(self._watermark_filter(since, inclusive=inclusive))
         if active_only:
             query_parts.append("active=true")
         return self._build_query(query_parts)
 
-    def build_packages_query(self, since: Optional[datetime] = None) -> str:
+    def build_packages_query(self, since: Optional[datetime] = None, inclusive: bool = True) -> str:
         """Build query for sys_package records."""
         parts = []
         if since:
-            parts.append(f"sys_updated_on>{since.strftime('%Y-%m-%d %H:%M:%S')}")
+            parts.append(self._watermark_filter(since, inclusive=inclusive))
         return "^".join(parts)
 
     def build_applications_query(
         self,
         active_only: bool = False,
         since: Optional[datetime] = None,
+        inclusive: bool = True,
     ) -> str:
         query_parts = []
         if since:
-            query_parts.append(f"sys_updated_on>{since.strftime('%Y-%m-%d %H:%M:%S')}")
+            query_parts.append(self._watermark_filter(since, inclusive=inclusive))
         if active_only:
             query_parts.append("active=true")
         return self._build_query(query_parts)
 
-    def build_sys_db_object_query(self, since: Optional[datetime] = None) -> str:
+    def build_sys_db_object_query(self, since: Optional[datetime] = None, inclusive: bool = True) -> str:
         query_parts = []
         if since:
-            query_parts.append(f"sys_updated_on>{since.strftime('%Y-%m-%d %H:%M:%S')}")
+            query_parts.append(self._watermark_filter(since, inclusive=inclusive))
         return self._build_query(query_parts)
 
-    def build_plugin_view_query(self, active_only: bool = False, since: Optional[datetime] = None) -> str:
+    def build_plugin_view_query(self, active_only: bool = False, since: Optional[datetime] = None, inclusive: bool = True) -> str:
         query_parts = []
         if since:
-            query_parts.append(f"sys_updated_on>{since.strftime('%Y-%m-%d %H:%M:%S')}")
+            query_parts.append(self._watermark_filter(since, inclusive=inclusive))
         if active_only:
             query_parts.append("active=true")
         return self._build_query(query_parts)
@@ -1012,7 +1037,7 @@ class ServiceNowClient:
                     f"sys_updated_on>{cursor_updated_on}^ORsys_updated_on={cursor_updated_on}^sys_id>{cursor_sys_id}"
                 )
             elif watermark_str:
-                query_parts.append(f"sys_updated_on>{watermark_str}")
+                query_parts.append(f"sys_updated_on>={watermark_str}")
 
             effective_query = self._build_query(query_parts)
             if "ORDERBYsys_updated_on" not in effective_query:

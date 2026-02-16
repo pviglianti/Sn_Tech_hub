@@ -5,9 +5,12 @@
     var saveBtn = document.getElementById("integrationSave");
     var resetBtn = document.getElementById("integrationResetDefaults");
     var sectionsContainer = document.getElementById("integrationSectionsContainer");
+    var instanceScopeSelect = document.getElementById("integrationInstanceScope");
 
     var properties = Array.isArray(window.INTEGRATION_PROPERTIES) ? window.INTEGRATION_PROPERTIES : [];
     var sectionOrder = Array.isArray(window.INTEGRATION_SECTION_ORDER) ? window.INTEGRATION_SECTION_ORDER : [];
+    var instanceOptions = Array.isArray(window.INTEGRATION_INSTANCE_OPTIONS) ? window.INTEGRATION_INSTANCE_OPTIONS : [];
+    var selectedInstanceId = window.INTEGRATION_SELECTED_INSTANCE_ID;
 
     function adminHeaders() {
         var token = (tokenInput && tokenInput.value || "").trim();
@@ -49,6 +52,19 @@
             .replace(/>/g, "&gt;")
             .replace(/"/g, "&quot;")
             .replace(/'/g, "&#39;");
+    }
+
+    function selectedScopeInstanceId() {
+        if (!instanceScopeSelect || !instanceScopeSelect.value) return null;
+        var parsed = Number(instanceScopeSelect.value);
+        return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+    }
+
+    function withScope(url) {
+        var instanceId = selectedScopeInstanceId();
+        if (!instanceId) return url;
+        var join = url.indexOf("?") >= 0 ? "&" : "?";
+        return url + join + "instance_id=" + encodeURIComponent(String(instanceId));
     }
 
     function groupBySection(props) {
@@ -146,11 +162,29 @@
         statusBox.textContent = JSON.stringify(payload, null, 2);
     }
 
+    function initScopeOptions() {
+        if (!instanceScopeSelect) return;
+
+        var opts = ['<option value="">Global Defaults (all instances)</option>'];
+        instanceOptions.forEach(function (inst) {
+            opts.push(
+                '<option value="' + escapeHtml(String(inst.id)) + '">' +
+                escapeHtml(inst.name) + " (id " + escapeHtml(String(inst.id)) + ")" +
+                '</option>'
+            );
+        });
+        instanceScopeSelect.innerHTML = opts.join("");
+        if (selectedInstanceId != null && selectedInstanceId !== "") {
+            instanceScopeSelect.value = String(selectedInstanceId);
+        }
+    }
+
     async function reloadFromServer() {
         setStatus({ success: true, message: "Loading properties..." });
-        var result = await fetchJson("/api/integration-properties", { method: "GET" }, true);
+        var result = await fetchJson(withScope("/api/integration-properties"), { method: "GET" }, true);
         if (result.ok && result.body && Array.isArray(result.body.properties)) {
             properties = result.body.properties;
+            selectedInstanceId = result.body.instance_id;
             renderProperties();
         }
         setStatus(result.body);
@@ -160,7 +194,7 @@
         var updates = collectUpdates();
         setStatus({ success: true, message: "Saving properties..." });
         var result = await fetchJson(
-            "/api/integration-properties",
+            withScope("/api/integration-properties"),
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -170,6 +204,7 @@
         );
         if (result.ok && result.body && Array.isArray(result.body.properties)) {
             properties = result.body.properties;
+            selectedInstanceId = result.body.instance_id;
             renderProperties();
         }
         setStatus(result.body);
@@ -186,6 +221,12 @@
     if (reloadBtn) reloadBtn.addEventListener("click", reloadFromServer);
     if (saveBtn) saveBtn.addEventListener("click", saveToServer);
     if (resetBtn) resetBtn.addEventListener("click", resetFormDefaults);
+    if (instanceScopeSelect) {
+        instanceScopeSelect.addEventListener("change", function () {
+            reloadFromServer();
+        });
+    }
 
+    initScopeOptions();
     renderProperties();
 })();

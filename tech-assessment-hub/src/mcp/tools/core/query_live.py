@@ -64,7 +64,12 @@ def handle_query_instance_live(params: Dict[str, Any], session: Session) -> Dict
     # --- Build SN client and execute query ---
     try:
         password = decrypt_password(instance.password_encrypted)
-        client = ServiceNowClient(instance.url, instance.username, password)
+        client = ServiceNowClient(
+            instance.url,
+            instance.username,
+            password,
+            instance_id=instance.id,
+        )
         records = client.get_records(
             table=table,
             query=encoded_query,

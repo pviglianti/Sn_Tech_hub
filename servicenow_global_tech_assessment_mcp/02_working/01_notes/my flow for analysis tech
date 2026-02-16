@@ -1,0 +1,18 @@
+After the first two phases are complete and I have my initial results list (the customized records / “app files”), I sort the results by Updated date and work through them in order. I usually go oldest to newest because it helps me see how the solution evolved over time, but newest to oldest works too.
+
+From there, I take the first record and fully understand what it does. If it’s something scriptable (Business Rule, Script Include, Client Script, UI Action, ACL, etc.), I look at what table it targets, when it runs (insert/update/query), what conditions it checks, and then summarize the behavior in plain English. While reading the script/config, I pay close attention to anything it depends on, like custom fields, other scripts, events, flows/workflows, integrations, or utility classes.
+
+When I see dependencies that matter, I go down the rabbit hole. I open the related artifacts (for example: a script include being called, a custom field referenced, an event being queued, a flow being invoked), and if those artifacts are customized or relevant to the assessment, I review and document them the same way. Once I understand the chain well enough, I come back to the original record and finish its write-up.
+
+Then I check the record’s update/version history and identify all the unique update sets that contributed to its current state. This is important because older update sets often include other records that are still “current” (or have current versions), and the update set history usually tells the story of what was built together. As I evaluate the current records tied to those update sets, patterns start to emerge and the groupings/features become clearer.
+
+As I go, I continuously create and refine feature/solution groupings and associate records to them. I treat grouping as something that gets more accurate with each rabbit hole. It’s also normal for one record to support multiple features, so I allow overlap and document that explicitly instead of forcing a single owner.
+
+For records that don’t clearly map to a broader feature, I still write an observation/summary, but I group them under practical “catch-all” buckets so nothing is left floating. Examples are things like generic mandatory/read-only UI policies, standalone ACLs, small form tweaks, one-off notifications, etc. The idea is: even if it doesn’t fit a narrative feature, it still gets described and categorized.
+
+I keep moving down the original sorted list, but in practice the rabbit holes often complete analysis of several other items before I ever click “next” on the list. That’s expected. I iterate through the list (and sometimes do multiple passes) until the groupings and overall story are obvious and stable.
+
+Finally, if I discover artifacts that were missed by the scan or misclassified (which happens when you’re deep in the instance), I validate them in ServiceNow and add them into the results set so the assessment stays complete and the feature groupings don’t end up missing critical dependencies.
+
+
+So after step 2 , 3 is truly number 4 and the AI only needs to go through the artifacts that are deemed to be custom (either OOTB modified or customer created customizations) and even step 5 all occurs i this same step, 

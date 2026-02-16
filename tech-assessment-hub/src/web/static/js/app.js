@@ -192,6 +192,25 @@ function formatDate(dateString) {
  *
  * @param {number} instanceId  The instance whose dictionary pull to monitor
  */
+// ── Global Tab Switcher ──
+// Scopes tab switching to the nearest .tab-container, fires a custom event
+// for lazy-load listeners.  Replaces per-template openTab/openScanTab/openResultTab.
+window.openTab = function openTab(evt, tabName) {
+    var container = evt && evt.currentTarget
+        ? evt.currentTarget.closest('.tab-container') || document
+        : document;
+    container.querySelectorAll('.tab-content').forEach(function (el) {
+        el.classList.remove('active');
+    });
+    container.querySelectorAll('.tab-btn').forEach(function (el) {
+        el.classList.remove('active');
+    });
+    var target = document.getElementById(tabName);
+    if (target) target.classList.add('active');
+    if (evt && evt.currentTarget) evt.currentTarget.classList.add('active');
+    document.dispatchEvent(new CustomEvent('tab:activated', { detail: { tabName: tabName } }));
+};
+
 window.startDictPullMonitor = function startDictPullMonitor(instanceId) {
     const modal       = document.getElementById('dict-pull-modal');
     const statusText  = document.getElementById('dict-pull-status-text');

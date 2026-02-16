@@ -297,7 +297,12 @@ def create_pulls_router(
 
         try:
             instance_password = decrypt_password(instance.password_encrypted)
-            client = ServiceNowClient(instance.url, instance.username, instance_password)
+            client = ServiceNowClient(
+                instance.url,
+                instance.username,
+                instance_password,
+                instance_id=instance.id,
+            )
             remote_count = _estimate_expected_total(session, client, dt, since=None, instance_id=instance_id) or 0
         except Exception as exc:
             return {

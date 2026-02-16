@@ -25,7 +25,7 @@ job_log_router = APIRouter(tags=["job-log"])
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
-_ALLOWED_MODULES = {"all", "csdm", "preflight", "initial_data"}
+_ALLOWED_MODULES = {"all", "csdm", "preflight", "initial_data", "assessment", "postflight"}
 _ALLOWED_PAGE_SIZES = (25, 50, 100, 200)
 _ALLOWED_SORT_FIELDS = {
     "started_at",
@@ -291,6 +291,98 @@ SELECT
 FROM job_run r
 JOIN instance i ON i.id = r.instance_id
 WHERE r.job_type = 'dict_pull'
+
+UNION ALL
+
+SELECT
+    'assessment' AS source_module,
+    'Assessment' AS source_label,
+    r.instance_id AS instance_id,
+    i.name AS instance_name,
+    i.company AS instance_company,
+    CASE
+        WHEN i.company IS NOT NULL AND TRIM(i.company) != '' THEN i.company || ' - ' || i.name
+        ELSE i.name
+    END AS instance_label,
+    'ASMT ' || COALESCE(json_extract(r.metadata_json, '$.assessment_id'), '') AS target_name,
+    COALESCE(r.mode, 'scan_workflow') AS job_type,
+    CASE r.status
+        WHEN 'completed' THEN 'completed'
+        WHEN 'running' THEN 'running'
+        WHEN 'queued' THEN 'pending'
+        WHEN 'failed' THEN 'failed'
+        WHEN 'cancelled' THEN 'cancelled'
+        ELSE 'pending'
+    END AS status_text,
+    CASE r.status
+        WHEN 'completed' THEN 'completed'
+        WHEN 'running' THEN 'running'
+        WHEN 'queued' THEN 'pending'
+        WHEN 'failed' THEN 'failed'
+        WHEN 'cancelled' THEN 'cancelled'
+        ELSE 'pending'
+    END AS status_class,
+    CAST(COALESCE(r.queue_completed, 0) AS INTEGER) AS rows_inserted,
+    CAST(0 AS INTEGER) AS rows_updated,
+    COALESCE(r.started_at, r.created_at) AS started_at,
+    r.completed_at AS completed_at,
+    CASE
+        WHEN COALESCE(r.started_at, r.created_at) IS NULL THEN NULL
+        WHEN r.completed_at IS NOT NULL THEN ROUND((julianday(r.completed_at) - julianday(COALESCE(r.started_at, r.created_at))) * 86400.0, 1)
+        WHEN r.status IN ('running', 'queued') THEN ROUND((julianday('now') - julianday(COALESCE(r.started_at, r.created_at))) * 86400.0, 1)
+        ELSE NULL
+    END AS duration_seconds,
+    COALESCE(r.error_message, '') AS error_message,
+    COALESCE(r.completed_at, COALESCE(r.started_at, r.created_at), r.created_at) AS sort_at
+FROM job_run r
+JOIN instance i ON i.id = r.instance_id
+WHERE r.module = 'assessment' AND r.job_type = 'assessment_scan'
+
+UNION ALL
+
+SELECT
+    'postflight' AS source_module,
+    'Post Flight' AS source_label,
+    r.instance_id AS instance_id,
+    i.name AS instance_name,
+    i.company AS instance_company,
+    CASE
+        WHEN i.company IS NOT NULL AND TRIM(i.company) != '' THEN i.company || ' - ' || i.name
+        ELSE i.name
+    END AS instance_label,
+    COALESCE(r.current_data_type, 'artifact_details') AS target_name,
+    COALESCE(r.mode, 'artifact_pull') AS job_type,
+    CASE r.status
+        WHEN 'completed' THEN 'completed'
+        WHEN 'running' THEN 'running'
+        WHEN 'queued' THEN 'pending'
+        WHEN 'failed' THEN 'failed'
+        WHEN 'cancelled' THEN 'cancelled'
+        ELSE 'pending'
+    END AS status_text,
+    CASE r.status
+        WHEN 'completed' THEN 'completed'
+        WHEN 'running' THEN 'running'
+        WHEN 'queued' THEN 'pending'
+        WHEN 'failed' THEN 'failed'
+        WHEN 'cancelled' THEN 'cancelled'
+        ELSE 'pending'
+    END AS status_class,
+    CAST(COALESCE(r.queue_completed, 0) AS INTEGER) AS rows_inserted,
+    CAST(0 AS INTEGER) AS rows_updated,
+    COALESCE(r.started_at, r.created_at) AS started_at,
+    r.completed_at AS completed_at,
+    CASE
+        WHEN COALESCE(r.started_at, r.created_at) IS NULL THEN NULL
+        WHEN r.completed_at IS NOT NULL THEN ROUND((julianday(r.completed_at) - julianday(COALESCE(r.started_at, r.created_at))) * 86400.0, 1)
+        WHEN r.status IN ('running', 'queued') THEN ROUND((julianday('now') - julianday(COALESCE(r.started_at, r.created_at))) * 86400.0, 1)
+        ELSE NULL
+    END AS duration_seconds,
+    COALESCE(r.error_message, '') AS error_message,
+    COALESCE(r.completed_at, COALESCE(r.started_at, r.created_at), r.created_at) AS sort_at
+FROM job_run r
+JOIN instance i ON i.id = r.instance_id
+WHERE r.module = 'postflight' AND r.job_type = 'artifact_pull'
 """
 
 
@@ -322,7 +414,7 @@ def _bind_positional(sql: str, values: list[Any], params: Dict[str, Any], prefix
 def _initial_condition_tree(module: str, instance_id: Optional[int]) -> Optional[Dict[str, Any]]:
     conditions: list[Dict[str, Any]] = []
 
-    if module in {"csdm", "preflight"}:
+    if module in {"csdm", "preflight", "assessment", "postflight"}:
         conditions.append(
             {
                 "field": "source_module",
@@ -418,7 +510,7 @@ async def api_job_log_records(
     where_parts: list[str] = []
     params: Dict[str, Any] = {}
 
-    if normalized_module in {"csdm", "preflight"}:
+    if normalized_module in {"csdm", "preflight", "assessment", "postflight"}:
         where_parts.append('j."source_module" = :_module')
         params["_module"] = normalized_module
 

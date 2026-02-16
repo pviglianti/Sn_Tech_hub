@@ -123,7 +123,11 @@ def _normalize_runtime_config(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def load_runtime_config(session: Session) -> Dict[str, Any]:
-    row = session.exec(select(AppConfig).where(AppConfig.key == RUNTIME_CONFIG_KEY)).first()
+    row = session.exec(
+        select(AppConfig)
+        .where(AppConfig.key == RUNTIME_CONFIG_KEY)
+        .where(AppConfig.instance_id.is_(None))
+    ).first()
     if not row:
         return _normalize_runtime_config({})
 
@@ -137,7 +141,11 @@ def load_runtime_config(session: Session) -> Dict[str, Any]:
 def save_runtime_config(session: Session, cfg: Dict[str, Any]) -> Dict[str, Any]:
     normalized = _normalize_runtime_config(cfg)
 
-    row = session.exec(select(AppConfig).where(AppConfig.key == RUNTIME_CONFIG_KEY)).first()
+    row = session.exec(
+        select(AppConfig)
+        .where(AppConfig.key == RUNTIME_CONFIG_KEY)
+        .where(AppConfig.instance_id.is_(None))
+    ).first()
     now = datetime.utcnow()
     if row:
         row.value = json.dumps(normalized)
@@ -146,6 +154,7 @@ def save_runtime_config(session: Session, cfg: Dict[str, Any]) -> Dict[str, Any]
         session.add(row)
     else:
         row = AppConfig(
+            instance_id=None,
             key=RUNTIME_CONFIG_KEY,
             value=json.dumps(normalized),
             description="MCP runtime route and retry config",
@@ -298,4 +307,3 @@ class UnifiedRegistry:
 
 
 UNIFIED_REGISTRY = UnifiedRegistry()
-
