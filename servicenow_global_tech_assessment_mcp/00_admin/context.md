@@ -56,5 +56,6 @@ OUT OF SCOPE (current cycle):
   - Deterministic engines as on-demand MCP tools first (simpler), pre-compute later if perf requires
   - Rabbit hole priorities: modular/adjustable (config-driven, not hardcoded)
   - Catch-all labels: table mapping app file class → display label (e.g., `sys_dictionary` → "Form Fields")
+- **VH workflow optimization complete (Claude, 2026-02-16)**: 7 fixes — phantom VH event (read-only lookup), VH 2M full-pull bug (state filter propagation), concurrent preflight (configurable via `PREFLIGHT_CONCURRENT_TYPES`), two-phase proactive VH pull (current-first → event → backfill), sort order for VH pulls (`state,sys_recorded_at`), generic concurrent preflight worker threads. 203 tests passing.
 - Next priorities: (1) End-to-end test with real assessment data using current prompts+tools, (2) deterministic pre-staging engines (update set overlap, temporal clustering, reference graph, table co-location), (3) rabbit hole priority config, (4) catch-all label table.
 - Rehydration guardrails are enforced. Instruction standard is `AGENTS.md` + `CLAUDE.md` + `ACTIVE_PROJECT.md`.

@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 
 from ..models import AppConfig
 
-PropertyType = Literal["int", "float", "select"]
+PropertyType = Literal["int", "float", "select", "multiselect"]
 PROPERTY_SCOPE_APPLICATION = "application_instance"
 
 # ---------------------------------------------------------------------------
@@ -21,15 +21,18 @@ PROPERTY_SCOPE_APPLICATION = "application_instance"
 # ---------------------------------------------------------------------------
 
 SECTION_GENERAL = "General"
+SECTION_PREFLIGHT = "Assessment / Preflight"
 SECTION_FETCH = "Integration / Fetch"
 
-SECTION_ORDER: List[str] = [SECTION_GENERAL, SECTION_FETCH]
+SECTION_ORDER: List[str] = [SECTION_GENERAL, SECTION_PREFLIGHT, SECTION_FETCH]
 
 # ---------------------------------------------------------------------------
 # Property keys
 # ---------------------------------------------------------------------------
 
 GENERAL_DISPLAY_TIMEZONE = "general.display_timezone"
+
+PREFLIGHT_CONCURRENT_TYPES = "preflight.concurrent_types"
 
 FETCH_DEFAULT_BATCH_SIZE = "integration.fetch.default_batch_size"
 FETCH_INTER_BATCH_DELAY = "integration.fetch.inter_batch_delay"
@@ -73,10 +76,24 @@ class IntegrationPropertyDefinition:
     section: str = SECTION_FETCH
     min_value: Optional[float] = None
     max_value: Optional[float] = None
+    max_selections: Optional[int] = None
     options: List[Tuple[str, str]] = field(default_factory=list)
 
 
+PREFLIGHT_CONCURRENT_TYPE_OPTIONS: List[Tuple[str, str]] = [
+    ("version_history", "Version History"),
+    ("customer_update_xml", "Customer Update XML"),
+    ("metadata_customization", "Metadata Customization"),
+    ("update_sets", "Update Sets"),
+    ("app_file_types", "App File Types"),
+    ("plugins", "Plugins"),
+    ("scopes", "Scopes"),
+    ("packages", "Packages"),
+    ("applications", "Applications"),
+]
+
 PROPERTY_DEFAULTS: Dict[str, str] = {
+    PREFLIGHT_CONCURRENT_TYPES: "version_history,customer_update_xml",
     GENERAL_DISPLAY_TIMEZONE: "America/New_York",
     FETCH_DEFAULT_BATCH_SIZE: "200",
     FETCH_INTER_BATCH_DELAY: "0.5",
@@ -85,6 +102,22 @@ PROPERTY_DEFAULTS: Dict[str, str] = {
 }
 
 PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
+    PREFLIGHT_CONCURRENT_TYPES: IntegrationPropertyDefinition(
+        key=PREFLIGHT_CONCURRENT_TYPES,
+        label="Concurrent Preflight Types",
+        description=(
+            "Data types pulled in parallel during assessment preflight. "
+            "Each runs in its own thread. More types = faster preflight, "
+            "but higher load on the ServiceNow instance."
+        ),
+        value_type="multiselect",
+        default=PROPERTY_DEFAULTS[PREFLIGHT_CONCURRENT_TYPES],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="preflight",
+        section=SECTION_PREFLIGHT,
+        max_selections=5,
+        options=PREFLIGHT_CONCURRENT_TYPE_OPTIONS,
+    ),
     GENERAL_DISPLAY_TIMEZONE: IntegrationPropertyDefinition(
         key=GENERAL_DISPLAY_TIMEZONE,
         label="Display Timezone",
@@ -200,6 +233,20 @@ def _parse_typed(raw_value: str, definition: IntegrationPropertyDefinition) -> A
             )
         return raw_value
 
+    if definition.value_type == "multiselect":
+        valid_keys = {opt[0] for opt in definition.options}
+        selections = [s.strip() for s in raw_value.split(",") if s.strip()]
+        invalid = [s for s in selections if s not in valid_keys]
+        if invalid:
+            raise ValueError(
+                f"{definition.key}: invalid selections: {', '.join(invalid)}"
+            )
+        if definition.max_selections and len(selections) > definition.max_selections:
+            raise ValueError(
+                f"{definition.key}: max {definition.max_selections} selections"
+            )
+        return selections
+
     if definition.value_type == "int":
         parsed = int(raw_value)
     else:
@@ -222,6 +269,8 @@ def _normalize_for_storage(value: Any, definition: IntegrationPropertyDefinition
     parsed = _parse_typed(raw, definition)
     if definition.value_type == "select":
         return str(parsed)
+    if definition.value_type == "multiselect":
+        return ",".join(parsed) if isinstance(parsed, list) else str(parsed)
     if definition.value_type == "int":
         return str(int(parsed))
     return f"{float(parsed):g}"
@@ -265,6 +314,7 @@ def list_integration_property_snapshots(
             "instance_id": instance_id,
             "min_value": definition.min_value,
             "max_value": definition.max_value,
+            "max_selections": definition.max_selections,
         }
         if definition.options:
             snap["options"] = [
@@ -345,3 +395,11 @@ def load_display_timezone(session: Session, instance_id: Optional[int] = None) -
     if raw and raw.strip():
         return raw.strip()
     return PROPERTY_DEFAULTS[GENERAL_DISPLAY_TIMEZONE]
+
+
+def load_preflight_concurrent_types(session: Session, instance_id: Optional[int] = None) -> List[str]:
+    """Return the list of data pull types configured for concurrent preflight."""
+    raw = _read_property(session, PREFLIGHT_CONCURRENT_TYPES, instance_id=instance_id)
+    if not raw or not raw.strip():
+        raw = PROPERTY_DEFAULTS[PREFLIGHT_CONCURRENT_TYPES]
+    return [s.strip() for s in raw.split(",") if s.strip()]

@@ -1,6 +1,7 @@
 # 00_admin/todos.md
 
 ## Now — IMMEDIATE (do these first)
+- [ ] [owner:human] **Job Log cancellation validation**: run UI checklist in `03_outputs/human_ui_validation_job_log_cancellation_2026-02-16.md` (per-row cancel + cancel-all-active + filtered cancel-all behavior). ~10 min.
 - [ ] [owner:human] **MCP Prompts + Resources validation**: 8 curl tests against running server. Start app, run curl commands from `03_outputs/human_ui_validation_instance_scoped_config_2026-02-15.md` (bottom section). Verifies the MCP server correctly serves methodology prompts and reference docs to AI clients. ~10 min.
 - [ ] [owner:human] **Instance-scoped Integration Properties validation**: UI walkthrough from same file (top section). Verifies global vs per-instance config scope selector + override behavior. ~10 min.
 
@@ -32,7 +33,15 @@
 - [ ] [owner:codex] Add unit tests for `JobRun`/`JobEvent` state transitions, startup recovery, and ETA calculation (gap noted in Claude review of Phase 1).
 - [ ] [owner:any] Jinja2 server-rendered dates (`.strftime()` in templates like `instances.html`, `assessments.html`) still show raw UTC — add a Jinja2 filter when prioritized.
 
-## Completed (this session — 2026-02-15)
+## Completed (session 2026-02-16)
+- [x] [owner:claude] VH phantom event fix: `_get_or_create_vh_event()` replaced with read-only `_VH_EVENTS.get()` in preflight check + Stage 5. Prevents 1-hour hang when no proactive pull exists.
+- [x] [owner:claude] VH 2M full-pull fix: propagated `version_state_filter` through `_build_assessment_preflight_plan` → `_estimate_expected_total` → `build_version_history_query`. Delta decision now compares apples-to-apples.
+- [x] [owner:claude] VH concurrent with non-VH types: VH runs in separate thread (own Session + Client) during preflight.
+- [x] [owner:claude] Two-phase proactive VH pull: Phase 1 = current-only (sets event), Phase 2 = all states (background backfill).
+- [x] [owner:claude] VH sort order: `pull_version_history` uses `order_by="state,sys_recorded_at"` when pulling all states so current arrives first.
+- [x] [owner:claude] Generic concurrent preflight: refactored to use `PREFLIGHT_CONCURRENT_TYPES` property (default: `version_history,customer_update_xml`). Each concurrent type gets its own thread. 203 tests passing.
+
+## Completed (session 2026-02-15)
 - [x] [owner:claude] #1+#11: Wired `integration_properties` into runtime. Replaced all hardcoded `timeout=30`.
 - [x] [owner:claude] #4: Consolidated duplicate `PREFLIGHT_SN_TABLE_MAP`.
 - [x] [owner:claude] #7 (Phase 4): Migrated preflight Data Browser to DataTable.js + ConditionBuilder.js + ColumnPicker.js.

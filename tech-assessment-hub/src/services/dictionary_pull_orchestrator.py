@@ -339,6 +339,7 @@ class DictionaryPullProgress:
     """In-memory progress tracker for a dictionary pull operation."""
 
     instance_id: int
+    cancel_event: Optional[threading.Event] = None
     run_uid: Optional[str] = None
     total_tables: int = 0
     completed_tables: int = 0
@@ -382,7 +383,11 @@ def start_dictionary_pull(instance_id: int, source_context: str = "preflight") -
 
         cancel_event = threading.Event()
         run_uid = _create_dictionary_pull_run_record(instance_id, source_context=source_context)
-        progress = DictionaryPullProgress(instance_id=instance_id, run_uid=run_uid)
+        progress = DictionaryPullProgress(
+            instance_id=instance_id,
+            run_uid=run_uid,
+            cancel_event=cancel_event,
+        )
         _DICT_PULL_JOBS[instance_id] = progress
 
         def _runner() -> None:
@@ -401,6 +406,20 @@ def start_dictionary_pull(instance_id: int, source_context: str = "preflight") -
         _DICT_PULL_THREADS[instance_id] = thread
         thread.start()
         return True
+
+
+def cancel_dictionary_pull(instance_id: int) -> bool:
+    """Request cancellation for an active dictionary pull on an instance."""
+    requested = False
+    with _DICT_PULL_LOCK:
+        progress = _DICT_PULL_JOBS.get(instance_id)
+        if progress and progress.cancel_event:
+            progress.cancel_event.set()
+            requested = True
+        thread = _DICT_PULL_THREADS.get(instance_id)
+        if thread and thread.is_alive():
+            requested = True
+    return requested
 
 
 def get_dictionary_pull_status(instance_id: int) -> dict:

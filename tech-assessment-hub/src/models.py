@@ -77,6 +77,7 @@ class OriginType(str, Enum):
     net_new_customer = "net_new_customer"     # Customer-created from scratch
     unknown_no_history = "unknown_no_history" # No tracking data available
     unknown = "unknown"
+    pending_classification = "pending_classification"
 
 
 class HeadOwner(str, Enum):
@@ -1007,6 +1008,11 @@ class InstanceDataPull(SQLModel, table=True):
 
     # Origin context — distinguishes initial connection pulls from preflight pulls.
     source_context: Optional[str] = None  # "initial_data" or "preflight"
+
+    # State filter tracking — records when a pull used a subset filter (e.g., "current"
+    # for VH). Lets catchup logic know the local count reflects a filtered pull and
+    # avoids incorrectly deciding "full refresh" due to count mismatch.
+    state_filter_applied: Optional[str] = None
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

@@ -106,6 +106,40 @@
             return html;
         }
 
+        if (prop.value_type === "multiselect" && Array.isArray(prop.options)) {
+            var selected = value ? value.split(",").map(function(s) { return s.trim(); }) : [];
+            var maxSel = prop.max_selections || prop.options.length;
+            var id = "ms-" + escapeHtml(prop.key).replace(/\./g, "-");
+            var html = '<div class="multiselect-dual" data-key="' + escapeHtml(prop.key) + '" data-max="' + maxSel + '">';
+            html += '<input type="hidden" class="integration-prop-input" data-key="' + escapeHtml(prop.key) + '" value="' + escapeHtml(value) + '" />';
+            html += '<div style="display:flex;gap:0.5rem;align-items:flex-start;">';
+            // Available list
+            html += '<div style="flex:1;"><label style="font-size:0.75rem;color:var(--text-muted);">Available</label>';
+            html += '<select id="' + id + '-avail" multiple size="5" style="width:100%;font-size:0.85rem;">';
+            prop.options.forEach(function (opt) {
+                if (selected.indexOf(opt.value) === -1) {
+                    html += '<option value="' + escapeHtml(opt.value) + '">' + escapeHtml(opt.label) + '</option>';
+                }
+            });
+            html += '</select></div>';
+            // Buttons
+            html += '<div style="display:flex;flex-direction:column;gap:0.25rem;padding-top:1.2rem;">';
+            html += '<button type="button" class="btn btn-sm ms-add" data-target="' + id + '" title="Add">&rarr;</button>';
+            html += '<button type="button" class="btn btn-sm ms-remove" data-target="' + id + '" title="Remove">&larr;</button>';
+            html += '</div>';
+            // Selected list
+            html += '<div style="flex:1;"><label style="font-size:0.75rem;color:var(--text-muted);">Selected (max ' + maxSel + ')</label>';
+            html += '<select id="' + id + '-selected" multiple size="5" style="width:100%;font-size:0.85rem;">';
+            selected.forEach(function (val) {
+                var lbl = val;
+                prop.options.forEach(function (opt) { if (opt.value === val) lbl = opt.label; });
+                html += '<option value="' + escapeHtml(val) + '">' + escapeHtml(lbl) + '</option>';
+            });
+            html += '</select></div>';
+            html += '</div></div>';
+            return html;
+        }
+
         return '<input class="form-control integration-prop-input" data-key="' +
             escapeHtml(prop.key) + '" value="' + escapeHtml(value) + '" />';
     }
@@ -224,6 +258,40 @@
     if (instanceScopeSelect) {
         instanceScopeSelect.addEventListener("change", function () {
             reloadFromServer();
+        });
+    }
+
+    // Multiselect dual-list event delegation
+    if (sectionsContainer) {
+        sectionsContainer.addEventListener("click", function (e) {
+            var btn = e.target.closest(".ms-add, .ms-remove");
+            if (!btn) return;
+            var targetId = btn.getAttribute("data-target");
+            if (!targetId) return;
+            var availEl = document.getElementById(targetId + "-avail");
+            var selectedEl = document.getElementById(targetId + "-selected");
+            var wrapper = btn.closest(".multiselect-dual");
+            if (!availEl || !selectedEl || !wrapper) return;
+            var hiddenInput = wrapper.querySelector("input.integration-prop-input");
+            var maxSel = parseInt(wrapper.getAttribute("data-max") || "99", 10);
+
+            if (btn.classList.contains("ms-add")) {
+                var opts = Array.from(availEl.selectedOptions);
+                if (selectedEl.options.length + opts.length > maxSel) {
+                    alert("Max " + maxSel + " selections allowed.");
+                    return;
+                }
+                opts.forEach(function (opt) {
+                    selectedEl.appendChild(opt);
+                });
+            } else {
+                Array.from(selectedEl.selectedOptions).forEach(function (opt) {
+                    availEl.appendChild(opt);
+                });
+            }
+            // Sync hidden input value
+            var vals = Array.from(selectedEl.options).map(function (o) { return o.value; });
+            if (hiddenInput) hiddenInput.value = vals.join(",");
         });
     }
 

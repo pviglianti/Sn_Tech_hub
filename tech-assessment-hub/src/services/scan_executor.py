@@ -664,6 +664,7 @@ def execute_scan(
     enable_version_history: bool = True,
     since: Optional[datetime] = None,
     append_mode: bool = False,
+    skip_classification: bool = False,
 ) -> Scan:
     if _is_scan_cancel_requested(session, scan):
         _cancel_scan(session, scan)
@@ -749,7 +750,12 @@ def execute_scan(
                     related_customer_update_id = None
                     related_update_set_id = None
 
-                    if instance_id and (enable_customization or enable_version_history):
+                    if skip_classification:
+                        # Skip classification — will be done as a separate stage
+                        # after full VH data is available.
+                        origin_type = OriginType.pending_classification
+                        head_owner = HeadOwner.unknown
+                    elif instance_id and (enable_customization or enable_version_history):
                         has_metadata_customization = _has_metadata_customization_local(
                             session=session,
                             instance_id=instance_id,
@@ -795,6 +801,14 @@ def execute_scan(
                                 sys_metadata_sys_id=sys_id,
                             )
                             earliest_version_record = _version_row_to_record(earliest_row)
+
+                        origin_type, head_owner = _classify_origin(
+                            version_record,
+                            has_metadata_customization,
+                            has_customer_update=has_customer_update,
+                            earliest_version_record=earliest_version_record,
+                            changed_baseline_now=baseline_changed,
+                        )
                     else:
                         if enable_customization:
                             has_metadata_customization = _has_metadata_customization(client, sys_id)
@@ -806,13 +820,13 @@ def execute_scan(
                                 current_version_record=version_record,
                             )
 
-                    origin_type, head_owner = _classify_origin(
-                        version_record,
-                        has_metadata_customization,
-                        has_customer_update=has_customer_update,
-                        earliest_version_record=earliest_version_record,
-                        changed_baseline_now=baseline_changed,
-                    )
+                        origin_type, head_owner = _classify_origin(
+                            version_record,
+                            has_metadata_customization,
+                            has_customer_update=has_customer_update,
+                            earliest_version_record=earliest_version_record,
+                            changed_baseline_now=baseline_changed,
+                        )
 
                     if allowed_origin_values and origin_type.value not in allowed_origin_values:
                         continue
@@ -972,6 +986,8 @@ def execute_scan(
 
 def reset_scan_state(session: Session, scan: Scan, clear_results: bool = True) -> None:
     if clear_results:
+        # Delete customization children before scan_result parents to avoid orphans
+        session.exec(text("DELETE FROM customization WHERE scan_id = :scan_id").bindparams(scan_id=scan.id))
         session.exec(text("DELETE FROM scan_result WHERE scan_id = :scan_id").bindparams(scan_id=scan.id))
         scan.records_found = 0
         scan.records_customized = 0
@@ -986,7 +1002,7 @@ def reset_scan_state(session: Session, scan: Scan, clear_results: bool = True) -
     session.add(scan)
 
 
-def run_scans_for_assessment(session: Session, assessment: Assessment, client: ServiceNowClient, mode: str = "full") -> List[Scan]:
+def run_scans_for_assessment(session: Session, assessment: Assessment, client: ServiceNowClient, mode: str = "full", skip_classification: bool = False) -> List[Scan]:
     rules = reload_scan_rules() if mode == "rebuild" else get_scan_rules()
 
     existing_scans = session.exec(select(Scan).where(Scan.assessment_id == assessment.id)).all()
@@ -1057,6 +1073,156 @@ def run_scans_for_assessment(session: Session, assessment: Assessment, client: S
             enable_version_history=enable_version_history,
             since=since,
             append_mode=(mode == "delta"),
+            skip_classification=skip_classification,
         )
 
     return scans
+
+
+def classify_scan_results(session: Session, assessment_id: int) -> Dict[str, int]:
+    """Re-classify all ScanResult records that have origin_type=pending_classification.
+
+    This is the standalone classification stage that runs AFTER full VH data is
+    available. It queries every pending result, performs the same local-DB lookups
+    (version history, metadata customization, customer update XML) that inline
+    classification does, and writes back the resolved origin_type + head_owner.
+
+    Returns a summary dict: {"classified": N, "scans_updated": M}
+    """
+    # Fetch all pending results across all scans for this assessment
+    results = session.exec(
+        select(ScanResult)
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .where(Scan.assessment_id == assessment_id)
+        .where(ScanResult.origin_type == OriginType.pending_classification)
+    ).all()
+
+    if not results:
+        return {"classified": 0, "scans_updated": 0}
+
+    # Resolve instance_id from the assessment
+    assessment = session.get(Assessment, assessment_id)
+    if not assessment:
+        return {"classified": 0, "scans_updated": 0}
+    instance_id = assessment.instance_id
+
+    classified_count = 0
+    scan_ids_touched: set = set()
+
+    for result in results:
+        sys_id = result.sys_id or ""
+        sys_update_name = result.sys_update_name
+
+        has_metadata_customization = _has_metadata_customization_local(
+            session=session,
+            instance_id=instance_id,
+            sys_metadata_sys_id=sys_id,
+            sys_update_name=sys_update_name,
+        )
+
+        version_row = _lookup_version_history_local(
+            session=session,
+            instance_id=instance_id,
+            sys_update_name=sys_update_name,
+            sys_metadata_sys_id=sys_id,
+        )
+        version_record = _version_row_to_record(version_row)
+        baseline_changed = _baseline_changed_from_version_history_local(
+            session=session,
+            instance_id=instance_id,
+            sys_update_name=sys_update_name,
+            sys_metadata_sys_id=sys_id,
+            current_version_record=version_record,
+        )
+
+        customer_update = _lookup_customer_update_local(
+            session=session,
+            instance_id=instance_id,
+            sys_update_name=sys_update_name,
+            version_row=version_row,
+        )
+        has_customer_update = False
+        related_customer_update_id = None
+        related_update_set_id = None
+        if customer_update:
+            has_customer_update = True
+            related_customer_update_id = customer_update.id
+            related_update_set_id = _resolve_update_set_id_local(
+                session=session,
+                instance_id=instance_id,
+                customer_update=customer_update,
+            )
+
+        earliest_version_record = None
+        if not has_customer_update and not has_metadata_customization:
+            earliest_row = _lookup_earliest_version_history_local(
+                session=session,
+                instance_id=instance_id,
+                sys_update_name=sys_update_name,
+                sys_metadata_sys_id=sys_id,
+            )
+            earliest_version_record = _version_row_to_record(earliest_row)
+
+        origin_type, head_owner = _classify_origin(
+            version_record,
+            has_metadata_customization,
+            has_customer_update=has_customer_update,
+            earliest_version_record=earliest_version_record,
+            changed_baseline_now=baseline_changed,
+        )
+
+        result.origin_type = origin_type
+        result.head_owner = head_owner
+        result.changed_baseline_now = baseline_changed
+        result.current_version_source_table = _normalize_version_ref(
+            (version_record or {}).get("source_table")
+        ) or None
+        result.current_version_source = (
+            _normalize_version_ref((version_record or {}).get("source_display"))
+            or _normalize_version_ref((version_record or {}).get("source"))
+            or None
+        )
+        result.current_version_sys_id = (version_record or {}).get("sys_id")
+        result.current_version_recorded_at = _parse_sn_datetime(
+            (version_record or {}).get("sys_recorded_at")
+        )
+        result.customer_update_xml_id = related_customer_update_id
+        result.update_set_id = related_update_set_id
+        session.add(result)
+        classified_count += 1
+        scan_ids_touched.add(result.scan_id)
+
+    # Recompute per-scan classification counts
+    for scan_id in scan_ids_touched:
+        scan = session.get(Scan, scan_id)
+        if not scan:
+            continue
+        all_results = session.exec(
+            select(ScanResult).where(ScanResult.scan_id == scan_id)
+        ).all()
+        ootb_modified = sum(
+            1 for r in all_results if r.origin_type == OriginType.modified_ootb
+        )
+        customer_customized = sum(
+            1 for r in all_results if r.origin_type == OriginType.net_new_customer
+        )
+        scan.records_customized = ootb_modified + customer_customized
+        scan.records_ootb_modified = ootb_modified
+        scan.records_customer_customized = customer_customized
+        session.add(scan)
+
+    session.commit()
+
+    # Sync the customization child table for each scan touched by classification.
+    # bulk_sync_for_scan inserts Customization rows for newly-classified results
+    # that are modified_ootb or net_new_customer.
+    from .customization_sync import bulk_sync_for_scan
+    customization_count = 0
+    for scan_id in scan_ids_touched:
+        customization_count += bulk_sync_for_scan(session, scan_id)
+
+    logger.info(
+        "classify_scan_results assessment_id=%s classified=%s scans_updated=%s customizations_synced=%s",
+        assessment_id, classified_count, len(scan_ids_touched), customization_count,
+    )
+    return {"classified": classified_count, "scans_updated": len(scan_ids_touched)}

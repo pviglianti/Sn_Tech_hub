@@ -48,6 +48,15 @@
 - **Server-rendered dates**: Jinja2 `.strftime()` calls still show raw UTC — Jinja2 filter is a backlog item.
 - **Watermarks are NOT affected**: They're `datetime` objects storing `MAX(sys_updated_on)` from local DB (UTC). Used correctly for delta pull decisions.
 
+### ARCHITECTURE: VH Workflow Optimization (2026-02-16)
+- **Concurrent preflight**: Types in `PREFLIGHT_CONCURRENT_TYPES` property (default: `version_history,customer_update_xml`) each get their own thread with own `Session(engine)` + `ServiceNowClient`. Non-concurrent types run sequentially in main thread. Configurable via integration properties UI.
+- **Two-phase proactive VH pull** (on instance add/test): Phase 1 = `state=current` only (fast, sets event when done). Phase 2 = all states with `order_by=state,sys_recorded_at` (backfill, runs in background after event).
+- **VH sort order**: When pulling all states, `order_by="state,sys_recorded_at"` ensures "current" records arrive before "previous" (alphabetical sort of state values).
+- **VH state filter propagation**: `version_state_filter` flows through `_build_assessment_preflight_plan` → `_estimate_expected_total` → `build_version_history_query` so local/remote counts use same filter for delta decisions.
+- **Read-only VH event access**: Only `_start_proactive_vh_pull` creates `_VH_EVENTS` entries. All other code uses `_VH_EVENTS.get()` (read-only) to avoid phantom events causing hangs.
+- **Classification uses older VH**: `_lookup_earliest_version_history_local` queries ALL states (no filter) for fallback classification. This is intentional — the earliest version may be in any state.
+- **Key files**: `src/server.py` (concurrent preflight, proactive pull, VH event handling), `src/services/data_pull_executor.py` (state filter in expected total), `src/services/sn_client.py` (sort order in `pull_version_history`).
+
 ### Known Refactor Debt (updated 2026-02-15)
 - ~~`data_browser.js` duplicates DataTable.js~~ — RESOLVED (Phase 4 complete)
 - ~~Templates repeat modal/badge/form-group patterns~~ — RESOLVED (Codex #10)

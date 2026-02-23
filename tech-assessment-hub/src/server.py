@@ -30,7 +30,7 @@ from .models import (
 )
 from .services.encryption import encrypt_password, decrypt_password
 from .services.sn_client import ServiceNowClient, ServiceNowClientError
-from .services.scan_executor import run_scans_for_assessment, execute_scan, reset_scan_state
+from .services.scan_executor import run_scans_for_assessment, execute_scan, reset_scan_state, classify_scan_results
 from .services.data_pull_executor import (
     run_data_pulls_for_instance,
     execute_data_pull,
@@ -43,6 +43,7 @@ from .services.data_pull_executor import (
     get_data_pull_storage_tables,
 )
 from .services.integration_sync_runner import resolve_delta_decision
+from .services.integration_properties import load_preflight_concurrent_types
 from .services.dictionary_pull_orchestrator import (
     start_dictionary_pull,
     get_dictionary_pull_status,
@@ -100,6 +101,13 @@ _TERMINAL_PULL_STATUSES = {
     DataPullStatus.failed.value,
     DataPullStatus.cancelled.value,
 }
+
+# ── Proactive VH pull infrastructure ──
+# Per-instance threading.Event that signals when the VH pull completes.
+# Keyed by instance_id.  Created by _start_proactive_vh_pull(), consumed
+# by Stage 5 in _run_scans_background().
+_VH_EVENTS_LOCK = threading.Lock()
+_VH_EVENTS: Dict[int, threading.Event] = {}
 
 
 def _json_dumps(payload: Any) -> Optional[str]:
@@ -840,6 +848,7 @@ def _assessment_data_sync_summary(session: Session, instance_id: int) -> Dict[st
                 "last_remote_count": pull.last_remote_count if pull else None,
                 "last_local_count": pull.last_local_count if pull else None,
                 "error_message": pull.error_message if pull else None,
+                "started_at": pull.started_at.isoformat() if pull and pull.started_at else None,
                 "completed_at": pull.completed_at.isoformat() if pull and pull.completed_at else None,
             }
         )
@@ -1033,6 +1042,97 @@ def _start_data_pull_job(instance_id: int, data_types: List[str], mode: str, sou
         _DATA_PULL_JOBS[instance_id] = job
         thread.start()
         return True
+
+
+def _get_or_create_vh_event(instance_id: int) -> threading.Event:
+    """Get or create a VH completion event for an instance."""
+    with _VH_EVENTS_LOCK:
+        if instance_id not in _VH_EVENTS:
+            _VH_EVENTS[instance_id] = threading.Event()
+        return _VH_EVENTS[instance_id]
+
+
+def _clear_vh_event(instance_id: int) -> None:
+    """Remove the VH event for an instance after consumption."""
+    with _VH_EVENTS_LOCK:
+        _VH_EVENTS.pop(instance_id, None)
+
+
+def _is_vh_pull_active(instance_id: int) -> bool:
+    """Check if a VH pull is currently running for this instance."""
+    with Session(engine) as session:
+        pull = session.exec(
+            select(InstanceDataPull)
+            .where(InstanceDataPull.instance_id == instance_id)
+            .where(InstanceDataPull.data_type == DataPullType.version_history)
+            .where(InstanceDataPull.status == DataPullStatus.running)
+        ).first()
+        return pull is not None
+
+
+def _start_proactive_vh_pull(instance_id: int) -> bool:
+    """Start a proactive VH pull in a background thread.
+
+    Pulls ALL version history states (no filter) so classification has
+    complete data.  Creates a threading.Event that Stage 5 of the
+    assessment workflow can wait on.
+
+    Returns True if a new pull was started, False if one is already
+    running or the instance doesn't exist.
+    """
+    if _is_vh_pull_active(instance_id):
+        # Already running — just ensure an event exists for waiters
+        _get_or_create_vh_event(instance_id)
+        return False
+
+    event = _get_or_create_vh_event(instance_id)
+    event.clear()  # Reset for this pull cycle
+
+    def _vh_pull_worker() -> None:
+        try:
+            with Session(engine) as bg_session:
+                instance = bg_session.get(Instance, instance_id)
+                if not instance:
+                    return
+                password = decrypt_password(instance.password_encrypted)
+                client = ServiceNowClient(
+                    instance.url, instance.username, password,
+                    instance_id=instance.id,
+                )
+                # Phase 1: current-only (fast, unblocks classification)
+                execute_data_pull(
+                    session=bg_session,
+                    instance=instance,
+                    client=client,
+                    data_type=DataPullType.version_history,
+                    mode=DataPullMode.smart.value,
+                    version_state_filter="current",
+                )
+                # Signal that current records are ready — assessment
+                # workflow can proceed with classification.
+                event.set()
+                # Phase 2: backfill remaining states (all, no filter)
+                execute_data_pull(
+                    session=bg_session,
+                    instance=instance,
+                    client=client,
+                    data_type=DataPullType.version_history,
+                    mode=DataPullMode.smart.value,
+                )
+        except Exception as exc:
+            logger.warning("Proactive VH pull failed for instance %s: %s", instance_id, exc)
+        finally:
+            event.set()  # Ensure event fires even on failure
+
+    thread = threading.Thread(
+        target=_vh_pull_worker,
+        daemon=True,
+        name=f"proactive_vh_{instance_id}",
+    )
+    thread.start()
+    logger.info("Started proactive VH pull for instance %s", instance_id)
+    return True
+
 
 DATA_TYPE_LABELS = get_data_type_labels()
 
@@ -1690,33 +1790,46 @@ def _run_scans_background(assessment_id: int, mode: str = "full") -> None:
         if not test_result.get("success"):
             message = test_result.get("message") or "Connection test failed"
             raise RuntimeError(message)
-        optional_data_types = [
-            dt for dt in ASSESSMENT_PREFLIGHT_DATA_TYPES
-            if dt not in ASSESSMENT_PREFLIGHT_REQUIRED_TYPES
-        ]
         _set_assessment_scan_job_state(
             assessment_id,
-            stage="preflight_required_sync",
+            stage="preflight_sync",
             status="running",
-            message="Syncing required preflight datasets...",
+            message="Syncing preflight datasets...",
         )
-        _run_assessment_preflight_data_sync(
+        # If a proactive VH pull is running/complete, exclude VH from the
+        # preflight — it will be handled by Stage 5 (VH wait) instead.
+        # IMPORTANT: Only check for an existing event — don't create one.
+        # _start_proactive_vh_pull is the only creator; if it never ran,
+        # there is no event and VH must stay in the preflight.
+        with _VH_EVENTS_LOCK:
+            vh_event = _VH_EVENTS.get(instance.id)
+        proactive_vh_active = _is_vh_pull_active(instance.id) or (vh_event is not None and vh_event.is_set())
+        all_preflight_types = list(ASSESSMENT_PREFLIGHT_DATA_TYPES)
+        if proactive_vh_active and DataPullType.version_history in all_preflight_types:
+            all_preflight_types.remove(DataPullType.version_history)
+        # Single preflight pass: all types probed + pulled.  Concurrent types
+        # (VH, customer_update_xml) run in background threads; sequential types
+        # complete in the main thread.  The function returns WITHOUT joining
+        # concurrent threads so the pipeline can proceed to scans immediately.
+        preflight_plan = _run_assessment_preflight_data_sync(
             session=bg_session,
             instance=instance,
             client=client,
             stale_minutes=ASSESSMENT_PREFLIGHT_STALE_MINUTES,
-            data_types=ASSESSMENT_PREFLIGHT_REQUIRED_TYPES,
+            data_types=all_preflight_types,
             wait_for_running=True,
             wait_timeout_seconds=ASSESSMENT_PREFLIGHT_WAIT_SECONDS,
             version_history_current_only=True,
         )
+        bg_concurrent_threads = preflight_plan.get("_concurrent_threads", [])
+        bg_concurrent_errors = preflight_plan.get("_concurrent_errors", {})
         _set_assessment_scan_job_state(
             assessment_id,
             stage="running_scans",
             status="running",
             message="Running assessment scans...",
         )
-        run_scans_for_assessment(bg_session, assessment, client, mode=mode)
+        run_scans_for_assessment(bg_session, assessment, client, mode=mode, skip_classification=True)
         # ── Post Flight: pull full artifact details for scan results ──
         _set_assessment_scan_job_state(
             assessment_id,
@@ -1800,21 +1913,40 @@ def _run_scans_background(assessment_id: int, mode: str = "full") -> None:
                         bg_session.commit()
                 except Exception:
                     pass
-        _set_assessment_scan_job_state(
-            assessment_id,
-            stage="preflight_optional_sync",
-            status="running",
-            message="Syncing remaining datasets...",
-        )
-        _run_assessment_preflight_data_sync(
-            session=bg_session,
-            instance=instance,
-            client=client,
-            stale_minutes=ASSESSMENT_PREFLIGHT_STALE_MINUTES,
-            data_types=optional_data_types,
-            wait_for_running=False,
-            version_history_current_only=False,
-        )
+        # ── Stage 5: Wait for concurrent preflight threads + proactive VH ──
+        # Join any background preflight threads (VH, customer_update_xml)
+        # that were still running while scans + artifact pull proceeded.
+        if bg_concurrent_threads:
+            _set_assessment_scan_job_state(
+                assessment_id,
+                stage="waiting_for_concurrent_preflight",
+                status="running",
+                message="Waiting for background data pulls to complete...",
+            )
+            for t in bg_concurrent_threads:
+                t.join(timeout=7200)  # 2hr safety net
+            for dt_name, exc in bg_concurrent_errors.items():
+                if exc:
+                    logger.error("Concurrent preflight pull %s failed: %s", dt_name, exc)
+        # Also wait for proactive VH pull (from instance add/test) if active.
+        with _VH_EVENTS_LOCK:
+            vh_event = _VH_EVENTS.get(instance.id)
+        if vh_event is not None:
+            if not vh_event.is_set():
+                _set_assessment_scan_job_state(
+                    assessment_id,
+                    stage="waiting_for_vh",
+                    status="running",
+                    message="Waiting for version history pull to complete...",
+                )
+                vh_complete = vh_event.wait(timeout=3600)  # 1hr max
+                if not vh_complete:
+                    logger.warning(
+                        "VH pull timed out for instance %s (assessment %s)",
+                        instance.id, assessment_id,
+                    )
+            _clear_vh_event(instance.id)
+
         _set_assessment_scan_job_state(
             assessment_id,
             stage="version_history_catchup",
@@ -1826,6 +1958,14 @@ def _run_scans_background(assessment_id: int, mode: str = "full") -> None:
             instance=instance,
             client=client,
         )
+        # ── Stage 6: Re-classify results now that full VH data is available ──
+        _set_assessment_scan_job_state(
+            assessment_id,
+            stage="classifying_results",
+            status="running",
+            message="Classifying scan results with full version history...",
+        )
+        classify_scan_results(session=bg_session, assessment_id=assessment_id)
 
 
 def _run_single_scan_background(scan_id: int, mode: str = "full") -> None:
@@ -2052,6 +2192,7 @@ def _build_assessment_preflight_plan(
     data_types: Optional[List[DataPullType]] = None,
     now: Optional[datetime] = None,
     client: Optional[ServiceNowClient] = None,
+    version_state_filter: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Plan pre-scan cache sync for assessment execution.
 
@@ -2092,11 +2233,17 @@ def _build_assessment_preflight_plan(
         # No time-based freshness gate — always fall through to
         # resolve_delta_decision which uses count + delta probes.
 
-        local_count = session.exec(
+        # For VH with a state filter, count only matching local records
+        # so the comparison with the remote count is apples-to-apples.
+        vh_filter = version_state_filter if dt == DataPullType.version_history else None
+        local_stmt = (
             select(func.count())
             .select_from(model_class)
             .where(model_class.instance_id == instance_id)
-        ).one()
+        )
+        if vh_filter:
+            local_stmt = local_stmt.where(func.lower(model_class.state) == vh_filter.lower())
+        local_count = session.exec(local_stmt).one()
 
         if local_count == 0:
             full_types.append(dt)
@@ -2114,6 +2261,7 @@ def _build_assessment_preflight_plan(
             try:
                 remote_count = _estimate_expected_total(
                     session, client, dt, since=None, instance_id=instance_id,
+                    version_state_filter=vh_filter,
                 )
             except Exception:
                 remote_count = None
@@ -2121,6 +2269,7 @@ def _build_assessment_preflight_plan(
                 try:
                     delta_probe_count = _estimate_expected_total(
                         session, client, dt, since=watermark, instance_id=instance_id,
+                        version_state_filter=vh_filter,
                     )
                 except Exception:
                     delta_probe_count = None
@@ -2191,12 +2340,14 @@ def _run_assessment_preflight_data_sync(
     version_history_current_only: bool = False,
 ) -> Dict[str, Any]:
     """Sync Data Browser datasets needed for scan-time classification."""
+    vh_state_filter = "current" if version_history_current_only else None
     plan = _build_assessment_preflight_plan(
         session=session,
         instance_id=instance.id,
         stale_minutes=stale_minutes,
         data_types=data_types,
         client=client,
+        version_state_filter=vh_state_filter,
     )
 
     if wait_for_running and plan["skip"]:
@@ -2212,19 +2363,80 @@ def _run_assessment_preflight_data_sync(
             stale_minutes=stale_minutes,
             data_types=data_types,
             client=client,
+            version_state_filter=vh_state_filter,
         )
 
     full_types = list(plan["full"])
     delta_types = list(plan["delta"])
 
-    full_version_types = []
-    delta_version_types = []
-    if version_history_current_only:
-        full_version_types = [dt for dt in full_types if dt == DataPullType.version_history]
-        delta_version_types = [dt for dt in delta_types if dt == DataPullType.version_history]
-        full_types = [dt for dt in full_types if dt != DataPullType.version_history]
-        delta_types = [dt for dt in delta_types if dt != DataPullType.version_history]
+    # ── Concurrent preflight types ─────────────────────────────────────
+    # Types listed in PREFLIGHT_CONCURRENT_TYPES run in their own threads
+    # (own Session + Client each) while remaining types run in main thread.
+    concurrent_type_names = load_preflight_concurrent_types(session, instance.id)
+    concurrent_dt_set = set()
+    for name in concurrent_type_names:
+        try:
+            concurrent_dt_set.add(DataPullType(name))
+        except ValueError:
+            logger.warning("Unknown concurrent preflight type: %s", name)
 
+    # Build per-type work items: (DataPullType, mode_str)
+    concurrent_work: List[Tuple[DataPullType, str]] = []
+    for dt in list(full_types):
+        if dt in concurrent_dt_set:
+            full_types.remove(dt)
+            concurrent_work.append((dt, DataPullMode.full.value))
+    for dt in list(delta_types):
+        if dt in concurrent_dt_set:
+            delta_types.remove(dt)
+            concurrent_work.append((dt, DataPullMode.delta.value))
+
+    # Launch one thread per concurrent type.
+    inst_id = instance.id
+    concurrent_threads: List[threading.Thread] = []
+    concurrent_errors: Dict[str, Optional[Exception]] = {}
+
+    for dt, mode_str in concurrent_work:
+        concurrent_errors[dt.value] = None
+
+        def _concurrent_worker(
+            _dt: DataPullType = dt,
+            _mode: str = mode_str,
+        ) -> None:
+            try:
+                with Session(engine) as bg_session:
+                    bg_inst = bg_session.get(Instance, inst_id)
+                    if not bg_inst:
+                        return
+                    pw = decrypt_password(bg_inst.password_encrypted)
+                    bg_client = ServiceNowClient(
+                        bg_inst.url, bg_inst.username, pw,
+                        instance_id=bg_inst.id,
+                    )
+                    extra_kwargs: Dict[str, Any] = {}
+                    if _dt == DataPullType.version_history and version_history_current_only:
+                        extra_kwargs["version_state_filter"] = "current"
+                    execute_data_pull(
+                        session=bg_session,
+                        instance=bg_inst,
+                        client=bg_client,
+                        data_type=_dt,
+                        mode=_mode,
+                        **extra_kwargs,
+                    )
+            except Exception as exc:
+                concurrent_errors[_dt.value] = exc
+                logger.warning("%s preflight thread failed: %s", _dt.value, exc)
+
+        t = threading.Thread(
+            target=_concurrent_worker,
+            daemon=True,
+            name=f"preflight_{dt.value}_{inst_id}",
+        )
+        t.start()
+        concurrent_threads.append(t)
+
+    # Sequential types run in the main thread (full then delta).
     if full_types:
         run_data_pulls_for_instance(
             session=session,
@@ -2234,16 +2446,6 @@ def _run_assessment_preflight_data_sync(
             mode=DataPullMode.full,
         )
 
-    for _ in full_version_types:
-        execute_data_pull(
-            session=session,
-            instance=instance,
-            client=client,
-            data_type=DataPullType.version_history,
-            mode=DataPullMode.full.value,
-            version_state_filter="current",
-        )
-
     if delta_types:
         run_data_pulls_for_instance(
             session=session,
@@ -2251,16 +2453,6 @@ def _run_assessment_preflight_data_sync(
             client=client,
             data_types=delta_types,
             mode=DataPullMode.delta,
-        )
-
-    for _ in delta_version_types:
-        execute_data_pull(
-            session=session,
-            instance=instance,
-            client=client,
-            data_type=DataPullType.version_history,
-            mode=DataPullMode.delta.value,
-            version_state_filter="current",
         )
 
     # Touch fresh/skip types so they appear in the job log with current timestamps.
@@ -2285,6 +2477,10 @@ def _run_assessment_preflight_data_sync(
                 session.add(pull)
         session.commit()
 
+    # Return concurrent threads to the caller so the pipeline can proceed
+    # to scans without waiting.  Caller joins them before classification.
+    plan["_concurrent_threads"] = concurrent_threads
+    plan["_concurrent_errors"] = concurrent_errors
     return plan
 
 
@@ -2293,7 +2489,52 @@ def _run_assessment_version_history_postscan_catchup(
     instance: Instance,
     client: ServiceNowClient,
 ) -> None:
-    """After scans, fill remaining version-history rows (non-current + older states)."""
+    """After scans, fill remaining version-history rows (non-current + older states).
+
+    If the prior VH pull used a state filter (e.g., state=current), the local count
+    reflects only filtered records. The smart mode would see local(50K) << remote(500K)
+    and decide "full" — re-downloading everything. Instead, we detect the filter and
+    use delta from the watermark, pulling only records updated since the last pull.
+    """
+    # Check if the prior VH pull used a state filter
+    pull = session.exec(
+        select(InstanceDataPull)
+        .where(InstanceDataPull.instance_id == instance.id)
+        .where(InstanceDataPull.data_type == DataPullType.version_history)
+    ).first()
+
+    if pull and pull.state_filter_applied:
+        # Prior pull was filtered (e.g., current-only). Use delta from watermark
+        # instead of count-based smart mode which would incorrectly decide "full".
+        watermark = _get_db_derived_watermark(session, instance.id, DataPullType.version_history)
+        if watermark is None and pull:
+            watermark = pull.last_sys_updated_on
+
+        if watermark:
+            logger.info(
+                "VH catchup: prior pull had state_filter=%s, using delta from watermark %s",
+                pull.state_filter_applied, watermark,
+            )
+            run_data_pulls_for_instance(
+                session=session,
+                instance=instance,
+                client=client,
+                data_types=[DataPullType.version_history],
+                mode=DataPullMode.delta,
+            )
+        else:
+            # No watermark available — fall back to full (rare: first-ever pull was filtered)
+            logger.info("VH catchup: no watermark available despite state_filter=%s, using full", pull.state_filter_applied)
+            run_data_pulls_for_instance(
+                session=session,
+                instance=instance,
+                client=client,
+                data_types=[DataPullType.version_history],
+                mode=DataPullMode.full,
+            )
+        return
+
+    # No state filter on prior pull — use standard smart mode decision
     mode = _determine_smart_mode_for_type(session, instance, client, DataPullType.version_history)
     if mode == "skip":
         return
@@ -2351,6 +2592,7 @@ def _determine_smart_mode_for_type(
             data_type,
             since=last_sys_updated_on,
             instance_id=instance.id,
+            inclusive=False,
         )
 
     decision = resolve_delta_decision(
@@ -2542,6 +2784,7 @@ app.include_router(
         apply_instance_app_file_type_assessment_flags=lambda row, **kwargs: _apply_instance_app_file_type_assessment_flags(
             row, **kwargs
         ),
+        start_proactive_vh_pull=_start_proactive_vh_pull,
     )
 )
 app.include_router(

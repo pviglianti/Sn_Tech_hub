@@ -1179,12 +1179,17 @@ class ServiceNowClient:
 
         query = self.build_version_history_query(since=since, state_filter=state_filter)
 
+        # When pulling all states, sort by state first so "current" records
+        # arrive before "previous" etc.  Within each state group, sort by
+        # sys_recorded_at for consistent pagination.
+        order = "state,sys_recorded_at" if not state_filter else "sys_recorded_at"
+
         for batch in self._iterate_batches(
             table="sys_update_version",
             query=query,
             fields=fields,
             batch_size=batch_size,
-            order_by="sys_recorded_at",
+            order_by=order,
         ):
             yield batch
 

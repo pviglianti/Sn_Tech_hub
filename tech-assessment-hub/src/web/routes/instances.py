@@ -194,6 +194,7 @@ def create_instances_router(
     parse_app_file_type_ids_payload: Callable[[Dict[str, Any]], List[int]],
     set_instance_app_file_type_assessment_flags: Callable[..., Optional[InstanceAppFileType]],
     apply_instance_app_file_type_assessment_flags: Callable[..., None],
+    start_proactive_vh_pull: Callable[[int], bool] = lambda _: False,
 ) -> APIRouter:
     """Create instance router with injected helpers from server module."""
     instances_router = APIRouter(tags=["instances"])
@@ -273,6 +274,10 @@ def create_instances_router(
             # Kick off dictionary pull for all default tables.
             start_dictionary_pull(instance.id, source_context="initial_data")
 
+            # Proactive VH pull — starts pulling all VH states in the background
+            # so it's ready before the first assessment is run.
+            start_proactive_vh_pull(instance.id)
+
             metrics = client.get_instance_metrics()
             apply_instance_metrics(instance, metrics)
             session.add(instance)
@@ -321,6 +326,7 @@ def create_instances_router(
                 source_context="initial_data",
             )
             start_dictionary_pull(instance.id, source_context="initial_data")
+            start_proactive_vh_pull(instance.id)
 
         return result
 

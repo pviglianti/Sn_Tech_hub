@@ -848,17 +848,36 @@ function fmtCount(n) {
     return Number(n || 0).toLocaleString();
 }
 
-function renderPreflightCounts(countEl, local, expected) {
+function renderPreflightCounts(countEl, local, expected, extra) {
     if (!countEl) return;
     local = Number(local || 0);
     expected = Number(expected || 0);
+    const suffix = extra ? ` ${extra}` : '';
     if (expected > 0) {
-        countEl.textContent = `(${fmtCount(local)} / ${fmtCount(expected)})`;
+        countEl.textContent = `(${fmtCount(local)} / ${fmtCount(expected)})${suffix}`;
     } else if (local > 0) {
-        countEl.textContent = `(${fmtCount(local)})`;
+        countEl.textContent = `(${fmtCount(local)})${suffix}`;
     } else {
-        countEl.textContent = '';
+        countEl.textContent = suffix || '';
     }
+}
+
+function _calculateETA(startedAtISO, pulled, expected) {
+    if (!startedAtISO || !pulled || !expected || pulled <= 0 || expected <= 0) return null;
+    const started = new Date(startedAtISO);
+    const now = new Date();
+    const elapsedMs = now - started;
+    if (elapsedMs <= 0) return null;
+    const ratePerMs = pulled / elapsedMs;
+    const remaining = expected - pulled;
+    if (remaining <= 0) return null;
+    const etaMs = remaining / ratePerMs;
+    if (etaMs < 60000) return '< 1m';
+    const mins = Math.ceil(etaMs / 60000);
+    if (mins < 60) return `~${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    return remMins > 0 ? `~${hrs}h ${remMins}m` : `~${hrs}h`;
 }
 
 // Render initial counts from data attributes on page load
@@ -949,6 +968,12 @@ function applyPreflightStatus(dataSync, runStatus) {
         if (countEl) {
             if (status === 'pending') {
                 countEl.textContent = '';
+            } else if (status === 'running') {
+                // For running items, show pulled/expected with ETA
+                const pulled = detail.records_pulled || 0;
+                const expected = detail.expected_total || detail.last_remote_count || 0;
+                const eta = _calculateETA(detail.started_at, pulled, expected);
+                renderPreflightCounts(countEl, pulled, expected, eta);
             } else {
                 const local = detail.local_count || 0;
                 const expected = detail.expected_total || detail.last_remote_count || 0;

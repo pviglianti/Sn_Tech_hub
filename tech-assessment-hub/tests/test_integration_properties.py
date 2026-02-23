@@ -1,11 +1,15 @@
+import pytest
+
 from src.models import AppConfig
 from src.services.integration_properties import (
     FETCH_DEFAULT_BATCH_SIZE,
     FETCH_INTER_BATCH_DELAY,
     FETCH_MAX_BATCHES,
     FETCH_REQUEST_TIMEOUT,
+    PREFLIGHT_CONCURRENT_TYPES,
     list_integration_property_snapshots,
     load_fetch_properties,
+    load_preflight_concurrent_types,
     update_integration_properties,
 )
 
@@ -149,3 +153,66 @@ def test_update_and_snapshot_instance_scope(db_session, sample_instance):
     assert by_key[FETCH_REQUEST_TIMEOUT]["effective_value"] == "95"
     assert by_key[FETCH_REQUEST_TIMEOUT]["effective_source"] == "instance"
     assert by_key[FETCH_REQUEST_TIMEOUT]["instance_id"] == sample_instance.id
+
+
+# ── Multiselect / concurrent types tests ──
+
+
+def test_load_preflight_concurrent_types_defaults(db_session):
+    """Without any config, returns the default concurrent types."""
+    types = load_preflight_concurrent_types(db_session)
+    assert "version_history" in types
+    assert "customer_update_xml" in types
+    assert len(types) == 2
+
+
+def test_load_preflight_concurrent_types_from_config(db_session):
+    """Reads comma-separated values from app_config."""
+    db_session.add(
+        AppConfig(
+            key=PREFLIGHT_CONCURRENT_TYPES,
+            value="version_history,metadata_customization,update_sets",
+            description="test override",
+        )
+    )
+    db_session.commit()
+
+    types = load_preflight_concurrent_types(db_session)
+    assert types == ["version_history", "metadata_customization", "update_sets"]
+
+
+def test_update_multiselect_property(db_session):
+    """Multiselect property can be saved and read back."""
+    rows = update_integration_properties(
+        db_session,
+        {PREFLIGHT_CONCURRENT_TYPES: "version_history,plugins"},
+    )
+    by_key = {row["key"]: row for row in rows}
+    assert by_key[PREFLIGHT_CONCURRENT_TYPES]["effective_value"] == "version_history,plugins"
+
+
+def test_update_multiselect_rejects_invalid_values(db_session):
+    """Multiselect rejects selections not in the options list."""
+    with pytest.raises(ValueError, match="invalid selections"):
+        update_integration_properties(
+            db_session,
+            {PREFLIGHT_CONCURRENT_TYPES: "version_history,not_a_real_type"},
+        )
+
+
+def test_update_multiselect_rejects_too_many_selections(db_session):
+    """Multiselect enforces max_selections."""
+    with pytest.raises(ValueError, match="max 5 selections"):
+        update_integration_properties(
+            db_session,
+            {PREFLIGHT_CONCURRENT_TYPES: "version_history,customer_update_xml,metadata_customization,update_sets,app_file_types,plugins"},
+        )
+
+
+def test_multiselect_snapshot_includes_options_and_max(db_session):
+    """Snapshot for a multiselect property includes options and max_selections."""
+    rows = list_integration_property_snapshots(db_session)
+    prop = next(r for r in rows if r["key"] == PREFLIGHT_CONCURRENT_TYPES)
+    assert prop["value_type"] == "multiselect"
+    assert prop["max_selections"] == 5
+    assert any(opt["value"] == "version_history" for opt in prop["options"])

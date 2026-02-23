@@ -6,6 +6,7 @@
 <div class="page-header">
     <h1>Unified Job Log</h1>
     <div class="button-group">
+        <button type="button" class="btn btn-secondary" id="cancelAllActiveJobsBtn" title="Cancel all active (running/pending) jobs in the current filtered view.">Cancel All Active Jobs</button>
         <a class="btn btn-secondary" href="/job-log">Reset Filters</a>
     </div>
 </div>
@@ -14,9 +15,49 @@
     <strong>Tip:</strong> Filters passed from links are preloaded in the condition builder below.
 </div>
 
-<div class="card mt-1">
-    <div id="jobLogTableContainer"></div>
+<div class="job-log-layout mt-1">
+    <div class="card">
+        <div id="jobLogTableContainer"></div>
+    </div>
+    <div class="card">
+        <h2 class="mb-1">Active Job Actions</h2>
+        <p class="text-muted-plain mb-1">Active jobs in the current table view can be cancelled here.</p>
+        <div id="activeJobActionsContainer"></div>
+    </div>
 </div>
+
+<style>
+.job-log-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 1rem;
+    align-items: start;
+}
+@media (max-width: 1200px) {
+    .job-log-layout {
+        grid-template-columns: 1fr;
+    }
+}
+.job-action-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+.job-action-item {
+    border: 1px solid var(--border-color, #d9dde5);
+    border-radius: 8px;
+    padding: 0.75rem;
+}
+.job-action-title {
+    font-weight: 600;
+}
+.job-action-subtitle {
+    font-size: 0.9rem;
+    color: var(--text-muted, #6b7280);
+    margin-top: 0.25rem;
+    margin-bottom: 0.5rem;
+}
+</style>
 {% endblock %}
 
 {% block scripts %}
@@ -26,7 +67,107 @@
 <script>
 (function () {
     var container = document.getElementById('jobLogTableContainer');
+    var cancelAllBtn = document.getElementById('cancelAllActiveJobsBtn');
+    var activeActionsContainer = document.getElementById('activeJobActionsContainer');
     if (!container || !window.DataTable) return;
+
+    function setBusy(button, busy, busyLabel) {
+        if (!button) return;
+        if (busy) {
+            button.dataset.originalLabel = button.textContent;
+            button.textContent = busyLabel || 'Working...';
+        } else if (button.dataset.originalLabel) {
+            button.textContent = button.dataset.originalLabel;
+        }
+        button.disabled = !!busy;
+    }
+
+    async function cancelSingleRow(row) {
+        var payload = {
+            record_source: row.record_source,
+            instance_id: row.instance_id,
+            target_name: row.target_name,
+            run_uid: row.run_uid,
+            assessment_id: row.assessment_id,
+            status_class: row.status_class,
+            status_text: row.status_text,
+        };
+        var res = await fetch('/api/job-log/cancel', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+            throw new Error('Cancel failed: ' + res.status);
+        }
+        return res.json();
+    }
+
+    function renderActiveJobActions(rows) {
+        if (!activeActionsContainer) return;
+        var activeRows = (rows || []).filter(function (row) {
+            if (!row || row.can_cancel !== true) return false;
+            var statusClass = String(row.status_class || '').toLowerCase();
+            var statusText = String(row.status_text || '').toLowerCase();
+            if (statusClass !== 'running' && statusClass !== 'pending') return false;
+            if (
+                statusText.includes('failed') ||
+                statusText.includes('error') ||
+                statusText.includes('completed') ||
+                statusText.includes('cancelled') ||
+                statusText.includes('canceled')
+            ) {
+                return false;
+            }
+            return true;
+        });
+        if (!activeRows.length) {
+            activeActionsContainer.innerHTML = '<p class="text-muted-plain mb-0">No active jobs on this page.</p>';
+            return;
+        }
+
+        var list = document.createElement('div');
+        list.className = 'job-action-list';
+
+        activeRows.forEach(function (row) {
+            var item = document.createElement('div');
+            item.className = 'job-action-item';
+
+            var title = document.createElement('div');
+            title.className = 'job-action-title';
+            title.textContent = (row.source_label || 'Job') + ' · ' + (row.target_name || 'Unknown target');
+            item.appendChild(title);
+
+            var subtitle = document.createElement('div');
+            subtitle.className = 'job-action-subtitle';
+            subtitle.textContent = (row.instance_label || 'Unknown instance') + ' · ' + (row.status_text || row.status_class || 'active');
+            item.appendChild(subtitle);
+
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-sm btn-secondary';
+            btn.textContent = 'Cancel';
+            btn.title = 'Cancel this active job';
+            btn.addEventListener('click', async function () {
+                if (!confirm('Cancel this active job?')) return;
+                setBusy(btn, true, 'Cancelling...');
+                try {
+                    await cancelSingleRow(row);
+                    await dt.refresh();
+                } catch (err) {
+                    console.error('Failed to cancel job row:', err);
+                    alert('Failed to cancel job. See console for details.');
+                } finally {
+                    setBusy(btn, false);
+                }
+            });
+            item.appendChild(btn);
+            list.appendChild(item);
+        });
+
+        activeActionsContainer.innerHTML = '';
+        activeActionsContainer.appendChild(list);
+    }
 
     var dt = new DataTable(container, {
         dataUrl: '/api/job-log/records',
@@ -34,16 +175,46 @@
         instanceId: 0,
         tableName: 'job_log',
         pageSize: {{ initial_page_size }},
-        storageKey: 'dt_job_log_unified',
+        storageKey: 'dt_job_log_unified_v3',
         includeTableAndInstanceParams: false,
         initialConditions: {{ initial_conditions|tojson }},
         onReferenceClick: function () {},
         onRecordClick: function () {},
     });
 
+    var _baseRefresh = dt.refresh.bind(dt);
+    dt.refresh = async function () {
+        await _baseRefresh();
+        renderActiveJobActions(dt.rows || []);
+    };
+
+    if (cancelAllBtn) {
+        cancelAllBtn.addEventListener('click', async function () {
+            if (!confirm('Cancel all active jobs in the current filtered view?')) return;
+            setBusy(cancelAllBtn, true, 'Cancelling...');
+            try {
+                var url = '/api/job-log/cancel-all-active';
+                if (dt.conditions) {
+                    url += '?conditions=' + encodeURIComponent(JSON.stringify(dt.conditions));
+                }
+                var res = await fetch(url, {method: 'POST'});
+                if (!res.ok) throw new Error('Cancel-all failed: ' + res.status);
+                await dt.refresh();
+            } catch (err) {
+                console.error('Failed to cancel active jobs:', err);
+                alert('Failed to cancel all active jobs. See console for details.');
+            } finally {
+                setBusy(cancelAllBtn, false);
+            }
+        });
+    }
+
     dt.init().catch(function (err) {
         console.error('Job log DataTable init error:', err);
         container.innerHTML = '<div class="empty-state"><h2>Error</h2><p>' + err.message + '</p></div>';
+        if (activeActionsContainer) {
+            activeActionsContainer.innerHTML = '<p class="text-muted-plain mb-0">Unable to load active jobs.</p>';
+        }
     });
 })();
 </script>

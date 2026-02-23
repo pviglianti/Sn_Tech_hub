@@ -231,6 +231,7 @@ def _estimate_expected_total(
     since: Optional[datetime],
     instance_id: Optional[int] = None,
     inclusive: bool = True,
+    version_state_filter: Optional[str] = None,
 ) -> Optional[int]:
     try:
         if data_type == DataPullType.update_sets:
@@ -240,7 +241,7 @@ def _estimate_expected_total(
             query = client.build_customer_update_xml_query(since=since, inclusive=inclusive)
             return client.get_record_count("sys_update_xml", query)
         if data_type == DataPullType.version_history:
-            query = client.build_version_history_query(since=since, inclusive=inclusive)
+            query = client.build_version_history_query(since=since, inclusive=inclusive, state_filter=version_state_filter)
             return client.get_record_count("sys_update_version", query)
         if data_type == DataPullType.metadata_customization:
             class_names = _fetch_app_file_class_names(session, instance_id=instance_id)
@@ -1904,6 +1905,7 @@ def execute_data_pull(
     _start_pull(session, pull, run_uid=run_uid)
     pull.sync_mode = effective_mode
     pull.sync_decision_reason = decision_reason
+    pull.state_filter_applied = version_state_filter if data_type == DataPullType.version_history else None
     if local_count_for_decision is not None:
         pull.last_local_count = local_count_for_decision
     if remote_count_for_decision is not None:
@@ -1917,7 +1919,10 @@ def execute_data_pull(
         logger.info("Skipped pull of %s for instance %s: %s", data_type.value, instance.id, decision_reason)
         return pull
 
-    expected_total = _estimate_expected_total(session, client, data_type, since, instance_id=instance.id)
+    expected_total = _estimate_expected_total(
+        session, client, data_type, since, instance_id=instance.id,
+        version_state_filter=version_state_filter,
+    )
     if expected_total is not None:
         _set_expected_total(session, pull, expected_total)
 
