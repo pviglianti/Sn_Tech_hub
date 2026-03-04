@@ -180,9 +180,11 @@ def build_registry() -> ToolRegistry:
     # --- Level 2 analysis tools (pipeline) ---
     from .tools.pipeline.customization_summary import TOOL_SPEC as customization_summary_tool
     from .tools.pipeline.feature_grouping import TOOL_SPEC as feature_grouping_tool
+    from .tools.pipeline.run_engines import TOOL_SPEC as run_engines_tool
 
     registry.register(customization_summary_tool)
     registry.register(feature_grouping_tool)
+    registry.register(run_engines_tool)
 
     # --- Level 1 write-back tools ---
     from .tools.core.update_result import TOOL_SPEC as update_result_tool

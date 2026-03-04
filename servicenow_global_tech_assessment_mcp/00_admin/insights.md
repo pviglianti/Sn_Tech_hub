@@ -14,6 +14,12 @@
 - Remaining full-app UI modularization opportunities (outside consolidation plan scope) are tracked as backlog in `00_admin/todos.md`, sourced from `02_working/01_notes/codex_full_app_ui_modularization_audit_2026-02-15.md`.
 - MCP plan status: Phase 1 protocol support and Phase 5 write-back/read tools are complete (Codex, 2026-02-15), and Phase 4 classification audit/fixes are complete (Claude, 2026-02-15); remaining work is Phase 2/3 prompt/resource content registration.
 - Config architecture update: `AppConfig` now supports per-instance overrides (`instance_id`) with global fallback and partial unique indexes; global-only config consumers (MCP runtime, bridge, admin token) explicitly query `instance_id IS NULL`.
+- Reasoning Layer Phase 1 baseline is now implemented in-app: deterministic preprocessing engines live in `tech-assessment-hub/src/engines/` (`code_reference_parser`, `structural_mapper`) and are invokable through MCP tool `run_preprocessing_engines`.
+- New reasoning persistence tables (`code_reference`, `update_set_overlap`, `temporal_cluster`, `structural_relationship`) use explicit `instance_id` + `assessment_id` foreign keys so grouping signals remain instance-scoped and assessment-scoped.
+- Temporal clustering design addendum: `temporal_cluster_member` junction table links clusters to `scan_result` rows with FKs, avoiding membership-only JSON blobs and enabling direct relational queries.
+- Update Set Analyzer design decision (2026-03-04): implement artifact-centric linkage (`update_set_artifact_link`) + explainability payloads (`evidence_json`) and two execution modes (`base` deterministic, `enriched` with AI observation context). Default update set is a downgraded signal, not a hard exclusion.
+- Reasoning engine config decision (2026-03-04): engines that consume reasoning thresholds must load properties with `instance_id` so per-instance overrides win over global defaults (`load_reasoning_engine_properties(..., instance_id=assessment.instance_id)`).
+- Reasoning Layer Phase 2 execution status (2026-03-04): all six deterministic engines are wired into `run_preprocessing_engines`, and both agents approved full regression after cross-review.
 
 ### ARCHITECTURE: Dynamic Registry is Canonical for ALL SN Table Mirroring
 - **`SnTableRegistry` + `SnFieldMapping`** (in `models_sn.py`) is the ONE system for mirroring any ServiceNow table — CSDM, preflight, custom, or future modules. Renamed from `Csdm*` prefix on 2026-02-15.

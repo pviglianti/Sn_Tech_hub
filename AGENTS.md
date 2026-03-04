@@ -96,3 +96,4 @@ All agents MUST follow these when writing or modifying code:
 - Use owner tags in todos: `[owner:codex]`, `[owner:claude]`, `[owner:human]`.
 - Keep next action explicit in each run-log row.
 - If information is not in active project files or referenced artifacts, treat it as unknown.
+- **For coordinated multi-agent work:** Follow `00_admin/agent_coordination_protocol.md`. Create a phase-specific coordination + chat file pair for each collaborative effort. Use the standard message tags, status lifecycle, review requirements, and checkpoint pattern defined there.

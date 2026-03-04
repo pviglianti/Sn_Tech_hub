@@ -9,10 +9,9 @@
 - [ ] [owner:human] Visual QA: Data Browser page, template component changes, routed pages (instances, pulls).
 - [ ] [owner:human] Visual QA deep-link flow: preflight → Job Log with preloaded conditions.
 - [ ] [owner:human] Visual QA #2 Phase 2 durable status (dictionary modal, CSDM ingestion bar, scan runtime bar).
-- [ ] [owner:any] Deterministic engine: Update set overlap analysis tool — which customized records share update sets across version history (strongest grouping signal).
-- [ ] [owner:any] Deterministic engine: Temporal clustering tool — records by same author in tight timeframe.
-- [ ] [owner:any] Deterministic engine: Reference graph tool — parse scripts for cross-references between customized records.
-- [ ] [owner:any] Deterministic engine: Table co-location tool — customized records targeting same table.
+- [ ] [owner:human] Reasoning Phase 2 validation: run `run_preprocessing_engines` (all 6 engines) on a real assessment and spot-check generated rows in Data Browser.
+- [ ] [owner:both] Generalize coordination protocol: make `phase2_coordination.md` pattern into a generic, reusable agent-to-agent protocol (per user request).
+- [ ] [owner:human] Reasoning Phase 1 validation: run `run_preprocessing_engines` tool on a real assessment and spot-check generated `code_reference` + `structural_relationship` rows in Data Browser.
 - [ ] [owner:any] Rabbit hole priority config — modular/adjustable rules for which dependency types to follow.
 - [ ] [owner:any] Catch-all label table — mapping app file class → display label (sys_dictionary → "Form Fields", etc.).
 
@@ -32,6 +31,22 @@
 - [ ] [owner:codex] Remove `api_config_summary` + `instance_assessment_app_file_options_page` compatibility shims from `server.py` after test imports updated to router modules.
 - [ ] [owner:codex] Add unit tests for `JobRun`/`JobEvent` state transitions, startup recovery, and ETA calculation (gap noted in Claude review of Phase 1).
 - [ ] [owner:any] Jinja2 server-rendered dates (`.strftime()` in templates like `instances.html`, `assessments.html`) still show raw UTC — add a Jinja2 filter when prioritized.
+
+## Completed (session 2026-03-04)
+- [x] [owner:codex] Reasoning Phase 1 data model foundation: added `GroupingSignalType`, reasoning fields on `Feature`/`ScanResult`, and 4 new reasoning tables (`code_reference`, `update_set_overlap`, `temporal_cluster`, `structural_relationship`) with explicit `instance_id` + `assessment_id` references and result/update-set foreign keys.
+- [x] [owner:codex] Reasoning Phase 1 addendum: added `temporal_cluster_member` junction table (`temporal_cluster` ↔ `scan_result`) for FK-level membership traceability.
+- [x] [owner:codex] Implemented deterministic engine package (`src/engines`) with `code_reference_parser` (regex extraction + persistence + target resolution) and `structural_mapper` (parent/child mapping + persistence).
+- [x] [owner:codex] Added MCP pipeline tool `run_preprocessing_engines` and registry wiring.
+- [x] [owner:codex] Added comprehensive tests: reasoning data model, code parser, structural mapper, and run-engines tool; full suite green (`229 passed`).
+- [x] [owner:claude] Reasoning Phase 2 Task 0: Data model additions — `UpdateSetArtifactLink` table, `signal_type`+`evidence_json` on `UpdateSetOverlap`, `NamingCluster` table, `TableColocationSummary` table. 15 tests in `test_reasoning_data_model.py`.
+- [x] [owner:claude] Reasoning Phase 2 Task 0b: Reasoning property scaffolding — 8 configurable reasoning engine properties under "Reasoning / Engines" section in Integration Properties UI.
+- [x] [owner:codex] Reasoning Phase 2 Task 1: Update Set Analyzer — base+enriched modes, `UpdateSetArtifactLink` persistence, `evidence_json` explainability, default-US downgrade policy, 5 signal types (content, name_similarity, version_history, temporal_sequence, author_sequence). `ReasoningEngineProperties` dataclass + typed property loader. 9 tests.
+- [x] [owner:claude] Reasoning Phase 2 Task 2: Temporal Clusterer — groups ScanResults by developer + time proximity, reads gap/min-size from properties. 5 tests.
+- [x] [owner:claude] Reasoning Phase 2 Task 3: Naming Analyzer — groups ScanResults by shared name prefixes with longest-prefix-first deduplication. 16 tests.
+- [x] [owner:codex] Reasoning Phase 2 cross-review hardening: updated Tasks 2/3 engines to read reasoning properties with instance-scoped fallback (`instance_id`) and added regression tests for instance override behavior.
+- [x] [owner:claude] Reasoning Phase 2 Task 4: Table Co-location — groups ScanResults by `meta_target_table` (2+ members). 8 tests.
+- [x] [owner:claude] Reasoning Phase 2 Task 5: Registry wiring — all 6 engines in `run_preprocessing_engines` MCP tool.
+- [x] [owner:both] Reasoning Phase 2 Task 6: Full regression — 276 tests passing, 0 failures. Claude + Codex approved.
 
 ## Completed (session 2026-02-16)
 - [x] [owner:claude] VH phantom event fix: `_get_or_create_vh_event()` replaced with read-only `_VH_EVENTS.get()` in preflight check + Stage 5. Prevents 1-hour hang when no proactive pull exists.

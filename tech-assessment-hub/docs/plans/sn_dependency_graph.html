@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ServiceNow Tech Assessment — Dependency Graph</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1117; color: #e1e4e8; display: flex; height: 100vh; overflow: hidden; }
+
+/* Sidebar */
+.sidebar { width: 300px; background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; flex-shrink: 0; }
+.sidebar-header { padding: 16px; border-bottom: 1px solid #30363d; }
+.sidebar-header h1 { font-size: 14px; font-weight: 600; color: #58a6ff; margin-bottom: 4px; }
+.sidebar-header p { font-size: 11px; color: #8b949e; }
+
+/* View Switcher */
+.view-switcher { padding: 12px 16px; border-bottom: 1px solid #30363d; }
+.view-switcher label { font-size: 11px; font-weight: 600; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 8px; }
+.view-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.view-tab { padding: 6px 10px; font-size: 12px; border: 1px solid #30363d; background: transparent; color: #c9d1d9; border-radius: 6px; cursor: pointer; transition: all 0.15s; }
+.view-tab:hover { background: #21262d; border-color: #58a6ff; }
+.view-tab.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+
+/* Scope Selector */
+.scope-selector { padding: 12px 16px; border-bottom: 1px solid #30363d; }
+.scope-selector label { font-size: 11px; font-weight: 600; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 8px; }
+.scope-selector select { width: 100%; padding: 6px 8px; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; border-radius: 6px; font-size: 12px; }
+
+/* Filters */
+.filters { padding: 12px 16px; flex: 1; overflow-y: auto; }
+.filters-title { font-size: 11px; font-weight: 600; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+.filter-section { margin-bottom: 16px; }
+.filter-section h3 { font-size: 11px; color: #8b949e; margin-bottom: 6px; font-weight: 500; }
+.filter-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; }
+.filter-item input[type="checkbox"] { accent-color: #58a6ff; cursor: pointer; }
+.filter-item .color-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.filter-item label { font-size: 12px; color: #c9d1d9; cursor: pointer; flex: 1; }
+.filter-item .count { font-size: 11px; color: #8b949e; }
+
+/* Edge Filters */
+.edge-filter-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; }
+.edge-filter-item input[type="checkbox"] { accent-color: #58a6ff; cursor: pointer; }
+.edge-filter-item .edge-line { width: 20px; height: 2px; flex-shrink: 0; }
+.edge-filter-item label { font-size: 12px; color: #c9d1d9; cursor: pointer; flex: 1; }
+
+/* Main Content */
+.main { flex: 1; display: flex; flex-direction: column; position: relative; }
+.toolbar { padding: 8px 16px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 12px; }
+.toolbar .stats { font-size: 12px; color: #8b949e; flex: 1; }
+.toolbar .stats span { color: #58a6ff; font-weight: 600; }
+.btn { padding: 5px 12px; font-size: 12px; border: 1px solid #30363d; background: #21262d; color: #c9d1d9; border-radius: 6px; cursor: pointer; transition: all 0.15s; }
+.btn:hover { background: #30363d; border-color: #58a6ff; }
+.btn.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+#cy { flex: 1; }
+
+/* Detail Panel */
+.detail-panel { position: absolute; top: 48px; right: 0; width: 340px; background: #161b22; border-left: 1px solid #30363d; height: calc(100% - 48px); overflow-y: auto; transform: translateX(100%); transition: transform 0.25s ease; z-index: 10; }
+.detail-panel.open { transform: translateX(0); }
+.detail-header { padding: 14px 16px; border-bottom: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center; }
+.detail-header h2 { font-size: 14px; font-weight: 600; color: #f0f6fc; }
+.detail-close { background: none; border: none; color: #8b949e; font-size: 18px; cursor: pointer; padding: 4px; }
+.detail-close:hover { color: #f0f6fc; }
+.detail-body { padding: 16px; }
+.detail-field { margin-bottom: 12px; }
+.detail-field dt { font-size: 11px; color: #8b949e; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 2px; }
+.detail-field dd { font-size: 13px; color: #e1e4e8; }
+.detail-field dd.code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; background: #0d1117; padding: 8px; border-radius: 6px; border: 1px solid #30363d; white-space: pre-wrap; max-height: 150px; overflow-y: auto; }
+.detail-connections { margin-top: 16px; }
+.detail-connections h3 { font-size: 12px; color: #58a6ff; margin-bottom: 8px; }
+.conn-item { padding: 6px 8px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; margin-bottom: 4px; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+.conn-item:hover { border-color: #58a6ff; background: #161b22; }
+.conn-item .conn-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.conn-item .conn-type { font-size: 10px; color: #8b949e; margin-left: auto; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+.badge-feature { background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb44; }
+.badge-update-set { background: #f0883e22; color: #f0883e; border: 1px solid #f0883e44; }
+
+/* Legend */
+.legend { padding: 12px 16px; border-top: 1px solid #30363d; background: #0d1117; }
+.legend h3 { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.legend-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 11px; color: #8b949e; }
+.legend-line { height: 2px; width: 24px; }
+.legend-line.dashed { background: repeating-linear-gradient(90deg, currentColor 0, currentColor 4px, transparent 4px, transparent 8px); height: 2px; }
+
+/* Search */
+.search-box { padding: 12px 16px; border-bottom: 1px solid #30363d; }
+.search-box input { width: 100%; padding: 6px 10px; background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; border-radius: 6px; font-size: 12px; }
+.search-box input::placeholder { color: #484f58; }
+.search-box input:focus { outline: none; border-color: #58a6ff; }
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div class="sidebar-header">
+    <h1>Dependency Graph</h1>
+    <p>ServiceNow Tech Assessment</p>
+  </div>
+
+  <div class="view-switcher">
+    <label>View Mode</label>
+    <div class="view-tabs">
+      <button class="view-tab active" data-view="assessment">Assessment</button>
+      <button class="view-tab" data-view="feature">Feature</button>
+      <button class="view-tab" data-view="artifact">Artifact</button>
+      <button class="view-tab" data-view="instance">Instance</button>
+    </div>
+  </div>
+
+  <div class="scope-selector">
+    <label>Scope</label>
+    <select id="scopeSelect">
+      <option value="asmt-1">ASMT0000001 — Incident Module</option>
+      <option value="asmt-2">ASMT0000002 — Change Management</option>
+      <option value="instance-1" disabled>── Instance: ACME-PROD ──</option>
+    </select>
+  </div>
+
+  <div class="search-box">
+    <input type="text" id="searchInput" placeholder="Search artifacts by name...">
+  </div>
+
+  <div class="filters">
+    <div class="filters-title">Artifact Types</div>
+    <div id="nodeFilters" class="filter-section"></div>
+
+    <div class="filters-title" style="margin-top:12px;">Relationship Types</div>
+    <div id="edgeFilters" class="filter-section"></div>
+  </div>
+
+  <div class="legend">
+    <h3>Edge Legend</h3>
+    <div class="legend-row"><div class="legend-line" style="background:#f97583;"></div> Code Reference</div>
+    <div class="legend-row"><div class="legend-line" style="background:#56d364;"></div> Structural (Parent/Child)</div>
+    <div class="legend-row"><div class="legend-line" style="background:#d2a8ff;"></div> Update Set Overlap</div>
+    <div class="legend-row"><div class="legend-line" style="background:#79c0ff;"></div> Table Affinity</div>
+    <div class="legend-row"><div class="legend-line dashed" style="color:#8b949e;"></div> Temporal Proximity</div>
+  </div>
+</div>
+
+<div class="main">
+  <div class="toolbar">
+    <div class="stats">
+      <span id="nodeCount">0</span> nodes &middot; <span id="edgeCount">0</span> edges &middot; <span id="featureCount">0</span> features
+    </div>
+    <button class="btn" id="btnCluster" title="Toggle feature clustering">Cluster by Feature</button>
+    <button class="btn" id="btnLayout" title="Re-run layout">Re-layout</button>
+    <button class="btn" id="btnFit" title="Fit to screen">Fit</button>
+    <button class="btn" id="btnLabels" title="Toggle labels">Labels</button>
+  </div>
+  <div id="cy"></div>
+  <div class="detail-panel" id="detailPanel">
+    <div class="detail-header">
+      <h2 id="detailTitle">Artifact Detail</h2>
+      <button class="detail-close" id="detailClose">&times;</button>
+    </div>
+    <div class="detail-body" id="detailBody"></div>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════════════
+// SAMPLE DATA — mirrors your actual data model
+// ════════════════════════════════════════════════════════════════════
+const ARTIFACT_TYPES = {
+  sys_script:           { label: 'Business Rule',       color: '#58a6ff', shape: 'ellipse' },
+  sys_script_include:   { label: 'Script Include',      color: '#56d364', shape: 'diamond' },
+  sys_script_client:    { label: 'Client Script',       color: '#f0883e', shape: 'ellipse' },
+  sys_ui_policy:        { label: 'UI Policy',           color: '#d2a8ff', shape: 'round-rectangle' },
+  sys_ui_policy_action: { label: 'UI Policy Action',    color: '#bc8cff', shape: 'round-rectangle' },
+  sys_ui_action:        { label: 'UI Action',           color: '#f97583', shape: 'hexagon' },
+  sys_dictionary:       { label: 'Dictionary Entry',    color: '#79c0ff', shape: 'round-rectangle' },
+  sys_dictionary_override: { label: 'Dict Override',    color: '#68b5f8', shape: 'round-rectangle' },
+  sys_db_object:        { label: 'Table',               color: '#e3b341', shape: 'barrel' },
+  wf_workflow:          { label: 'Workflow',             color: '#db61a2', shape: 'star' },
+  sys_choice:           { label: 'Choice',              color: '#8b949e', shape: 'tag' },
+  sysevent_email_action:{ label: 'Notification',        color: '#3fb950', shape: 'triangle' },
+  sys_hub_flow:         { label: 'Flow',                color: '#ff7b72', shape: 'star' },
+  sp_widget:            { label: 'SP Widget',           color: '#a5d6ff', shape: 'rectangle' },
+  sys_data_policy2:     { label: 'Data Policy',         color: '#7ee787', shape: 'round-rectangle' },
+  sys_security_acl:     { label: 'ACL',                 color: '#ffa657', shape: 'pentagon' },
+};
+
+const EDGE_TYPES = {
+  code_reference: { label: 'Code Reference', color: '#f97583', style: 'solid' },
+  structural:     { label: 'Structural (Parent/Child)', color: '#56d364', style: 'solid' },
+  update_set:     { label: 'Update Set Overlap', color: '#d2a8ff', style: 'solid' },
+  table_affinity: { label: 'Table Affinity', color: '#79c0ff', style: 'solid' },
+  temporal:       { label: 'Temporal Proximity', color: '#8b949e', style: 'dashed' },
+};
+
+const FEATURES = {
+  f1: { name: 'Custom Approval Workflow', disposition: 'keep_and_refactor', confidence: 9, level: 'high', color: '#1f6feb' },
+  f2: { name: 'VIP Incident Routing', disposition: 'keep_as_is', confidence: 7, level: 'medium', color: '#238636' },
+  f3: { name: 'Custom SLA Management', disposition: 'remove', confidence: 8, level: 'high', color: '#da3633' },
+  f4: { name: 'Portal Self-Service Enhancements', disposition: 'keep_as_is', confidence: 6, level: 'medium', color: '#8957e5' },
+  f5: { name: 'Incident Field Extensions', disposition: 'keep_and_refactor', confidence: 10, level: 'high', color: '#d29922' },
+};
+
+// Sample nodes — realistic SN artifacts
+const sampleNodes = [
+  // Feature 1: Custom Approval Workflow
+  { id: 'n1',  name: 'BR - Approval Check',          type: 'sys_script',         table: 'change_request', feature: 'f1', origin: 'net_new_customer', creator: 'john.doe', updated: '2025-06-15' },
+  { id: 'n2',  name: 'BR - Approval Routing',         type: 'sys_script',         table: 'change_request', feature: 'f1', origin: 'net_new_customer', creator: 'john.doe', updated: '2025-06-15' },
+  { id: 'n3',  name: 'ApprovalHelper',                type: 'sys_script_include', table: null,             feature: 'f1', origin: 'net_new_customer', creator: 'john.doe', updated: '2025-06-16' },
+  { id: 'n4',  name: 'CS - Approval Form Setup',      type: 'sys_script_client',  table: 'change_request', feature: 'f1', origin: 'net_new_customer', creator: 'john.doe', updated: '2025-06-15' },
+  { id: 'n5',  name: 'Approval Needed Notification',   type: 'sysevent_email_action', table: 'change_request', feature: 'f1', origin: 'net_new_customer', creator: 'john.doe', updated: '2025-06-17' },
+  { id: 'n6',  name: 'Custom Approval Flow',          type: 'wf_workflow',        table: 'change_request', feature: 'f1', origin: 'net_new_customer', creator: 'john.doe', updated: '2025-07-01' },
+
+  // Feature 2: VIP Incident Routing
+  { id: 'n7',  name: 'BR - VIP Detection',            type: 'sys_script',         table: 'incident', feature: 'f2', origin: 'net_new_customer', creator: 'jane.smith', updated: '2025-03-10' },
+  { id: 'n8',  name: 'VIPUtils',                      type: 'sys_script_include', table: null,       feature: 'f2', origin: 'net_new_customer', creator: 'jane.smith', updated: '2025-03-10' },
+  { id: 'n9',  name: 'CS - VIP Banner',               type: 'sys_script_client',  table: 'incident', feature: 'f2', origin: 'net_new_customer', creator: 'jane.smith', updated: '2025-03-11' },
+  { id: 'n10', name: 'UI Policy - VIP Fields',        type: 'sys_ui_policy',      table: 'incident', feature: 'f2', origin: 'net_new_customer', creator: 'jane.smith', updated: '2025-03-11' },
+  { id: 'n11', name: 'Action: Show VIP Priority',     type: 'sys_ui_policy_action', table: 'incident', feature: 'f2', origin: 'net_new_customer', creator: 'jane.smith', updated: '2025-03-11' },
+  { id: 'n12', name: 'Action: Make Impact Readonly',  type: 'sys_ui_policy_action', table: 'incident', feature: 'f2', origin: 'net_new_customer', creator: 'jane.smith', updated: '2025-03-11' },
+  { id: 'n13', name: 'VIP Escalation Notification',   type: 'sysevent_email_action', table: 'incident', feature: 'f2', origin: 'net_new_customer', creator: 'jane.smith', updated: '2025-03-12' },
+
+  // Feature 3: Custom SLA Management
+  { id: 'n14', name: 'BR - SLA Custom Timer',         type: 'sys_script',         table: 'incident', feature: 'f3', origin: 'net_new_customer', creator: 'admin', updated: '2023-01-20' },
+  { id: 'n15', name: 'SLAManager',                    type: 'sys_script_include', table: null,       feature: 'f3', origin: 'net_new_customer', creator: 'admin', updated: '2023-01-20' },
+  { id: 'n16', name: 'BR - SLA Breach Alert',         type: 'sys_script',         table: 'incident', feature: 'f3', origin: 'net_new_customer', creator: 'admin', updated: '2023-01-21' },
+  { id: 'n17', name: 'SLA Breach Notification',       type: 'sysevent_email_action', table: 'incident', feature: 'f3', origin: 'net_new_customer', creator: 'admin', updated: '2023-01-22' },
+  { id: 'n18', name: 'Data Policy - SLA Required',    type: 'sys_data_policy2',   table: 'incident', feature: 'f3', origin: 'net_new_customer', creator: 'admin', updated: '2023-02-01' },
+
+  // Feature 4: Portal Self-Service
+  { id: 'n19', name: 'Incident Submit Widget',        type: 'sp_widget',          table: null,       feature: 'f4', origin: 'net_new_customer', creator: 'bob.jones', updated: '2025-09-01' },
+  { id: 'n20', name: 'PortalIncidentUtils',           type: 'sys_script_include', table: null,       feature: 'f4', origin: 'net_new_customer', creator: 'bob.jones', updated: '2025-09-01' },
+  { id: 'n21', name: 'My Tickets Widget',             type: 'sp_widget',          table: null,       feature: 'f4', origin: 'net_new_customer', creator: 'bob.jones', updated: '2025-09-05' },
+  { id: 'n22', name: 'ACL - Portal Read Access',      type: 'sys_security_acl',   table: 'incident', feature: 'f4', origin: 'net_new_customer', creator: 'bob.jones', updated: '2025-09-02' },
+
+  // Feature 5: Incident Field Extensions
+  { id: 'n23', name: 'u_escalation_tier',             type: 'sys_dictionary',     table: 'incident', feature: 'f5', origin: 'net_new_customer', creator: 'john.doe', updated: '2025-01-10' },
+  { id: 'n24', name: 'u_approval_notes',              type: 'sys_dictionary',     table: 'incident', feature: 'f5', origin: 'net_new_customer', creator: 'john.doe', updated: '2025-01-10' },
+  { id: 'n25', name: 'u_vip_flag',                    type: 'sys_dictionary',     table: 'incident', feature: 'f5', origin: 'net_new_customer', creator: 'jane.smith', updated: '2025-03-09' },
+  { id: 'n26', name: 'u_custom_category',             type: 'sys_dictionary',     table: 'incident', feature: 'f5', origin: 'net_new_customer', creator: 'admin', updated: '2024-06-01' },
+  { id: 'n27', name: 'Override: short_desc on incident', type: 'sys_dictionary_override', table: 'incident', feature: 'f5', origin: 'modified_ootb', creator: 'admin', updated: '2024-06-01' },
+  { id: 'n28', name: 'Category Choices',              type: 'sys_choice',         table: 'incident', feature: 'f5', origin: 'net_new_customer', creator: 'admin', updated: '2024-06-01' },
+  { id: 'n29', name: 'UI Policy - Show Escalation',   type: 'sys_ui_policy',      table: 'incident', feature: 'f5', origin: 'net_new_customer', creator: 'john.doe', updated: '2025-01-11' },
+  { id: 'n30', name: 'Action: Set Escalation Visible',type: 'sys_ui_policy_action', table: 'incident', feature: 'f5', origin: 'net_new_customer', creator: 'john.doe', updated: '2025-01-11' },
+
+  // Orphans (no feature yet)
+  { id: 'n31', name: 'BR - Legacy Email Parser',      type: 'sys_script',         table: 'incident', feature: null, origin: 'net_new_customer', creator: 'admin', updated: '2021-05-01' },
+  { id: 'n32', name: 'OldUtils (deprecated)',          type: 'sys_script_include', table: null,       feature: null, origin: 'net_new_customer', creator: 'admin', updated: '2020-11-15' },
+  { id: 'n33', name: 'BR - Set State Modified',       type: 'sys_script',         table: 'incident', feature: null, origin: 'modified_ootb', creator: 'admin', updated: '2024-02-01' },
+];
+
+// Sample edges
+const sampleEdges = [
+  // Code references (red) — scripts calling other scripts
+  { source: 'n1',  target: 'n3',  type: 'code_reference', detail: 'new ApprovalHelper()' },
+  { source: 'n2',  target: 'n3',  type: 'code_reference', detail: 'new ApprovalHelper()' },
+  { source: 'n6',  target: 'n3',  type: 'code_reference', detail: 'ApprovalHelper.runApproval()' },
+  { source: 'n7',  target: 'n8',  type: 'code_reference', detail: 'new VIPUtils()' },
+  { source: 'n9',  target: 'n8',  type: 'code_reference', detail: 'GlideAjax("VIPUtils")' },
+  { source: 'n14', target: 'n15', type: 'code_reference', detail: 'new SLAManager()' },
+  { source: 'n16', target: 'n15', type: 'code_reference', detail: 'SLAManager.checkBreach()' },
+  { source: 'n19', target: 'n20', type: 'code_reference', detail: 'PortalIncidentUtils.validate()' },
+  { source: 'n21', target: 'n20', type: 'code_reference', detail: 'PortalIncidentUtils.getTickets()' },
+  { source: 'n31', target: 'n32', type: 'code_reference', detail: 'new OldUtils()' },
+  // Cross-feature code refs
+  { source: 'n7',  target: 'n25', type: 'code_reference', detail: 'current.u_vip_flag' },
+  { source: 'n9',  target: 'n25', type: 'code_reference', detail: 'g_form.getValue("u_vip_flag")' },
+  { source: 'n4',  target: 'n24', type: 'code_reference', detail: 'g_form.setValue("u_approval_notes")' },
+  { source: 'n1',  target: 'n23', type: 'code_reference', detail: 'current.u_escalation_tier' },
+
+  // Structural (green) — parent/child
+  { source: 'n10', target: 'n11', type: 'structural', detail: 'UI Policy → Action' },
+  { source: 'n10', target: 'n12', type: 'structural', detail: 'UI Policy → Action' },
+  { source: 'n29', target: 'n30', type: 'structural', detail: 'UI Policy → Action' },
+  { source: 'n26', target: 'n28', type: 'structural', detail: 'Field → Choices' },
+  { source: 'n23', target: 'n27', type: 'structural', detail: 'Dict Entry → Override (inherited)' },
+
+  // Update set overlap (purple)
+  { source: 'n1',  target: 'n2',  type: 'update_set', detail: 'US: Approval Workflow v1' },
+  { source: 'n1',  target: 'n4',  type: 'update_set', detail: 'US: Approval Workflow v1' },
+  { source: 'n7',  target: 'n9',  type: 'update_set', detail: 'US: VIP Routing March 2025' },
+  { source: 'n7',  target: 'n10', type: 'update_set', detail: 'US: VIP Routing March 2025' },
+  { source: 'n23', target: 'n24', type: 'update_set', detail: 'US: Incident Fields Jan 2025' },
+  { source: 'n23', target: 'n29', type: 'update_set', detail: 'US: Incident Fields Jan 2025' },
+
+  // Table affinity (blue) — only show for non-obvious same-table
+  { source: 'n14', target: 'n7',  type: 'table_affinity', detail: 'Both target: incident' },
+  { source: 'n33', target: 'n14', type: 'table_affinity', detail: 'Both target: incident' },
+
+  // Temporal proximity (gray dashed)
+  { source: 'n14', target: 'n16', type: 'temporal', detail: 'Same dev, 1 day apart (admin, Jan 2023)' },
+  { source: 'n26', target: 'n27', type: 'temporal', detail: 'Same dev, same day (admin, Jun 2024)' },
+];
+
+// Assessment metadata for instance view
+const ASSESSMENTS = {
+  'asmt-1': { name: 'ASMT0000001 — Incident Module', instance: 'ACME-PROD', nodes: sampleNodes.map(n=>n.id), features: Object.keys(FEATURES) },
+  'asmt-2': { name: 'ASMT0000002 — Change Management', instance: 'ACME-PROD', nodes: ['n1','n2','n3','n4','n5','n6'], features: ['f1'] },
+};
+
+// ════════════════════════════════════════════════════════════════════
+// BUILD CYTOSCAPE ELEMENTS
+// ════════════════════════════════════════════════════════════════════
+function buildElements(nodeList, edgeList) {
+  const nodeIds = new Set(nodeList.map(n => n.id));
+  const elements = [];
+
+  // Feature compound nodes
+  const activeFeatures = new Set(nodeList.filter(n => n.feature).map(n => n.feature));
+  for (const [fid, f] of Object.entries(FEATURES)) {
+    if (activeFeatures.has(fid)) {
+      elements.push({
+        group: 'nodes',
+        data: { id: fid, label: f.name, isFeature: true, disposition: f.disposition, confidence: f.confidence, level: f.level, featureColor: f.color },
+        classes: 'feature-node'
+      });
+    }
+  }
+
+  // Artifact nodes
+  for (const n of nodeList) {
+    const artType = ARTIFACT_TYPES[n.type] || { label: n.type, color: '#8b949e', shape: 'ellipse' };
+    elements.push({
+      group: 'nodes',
+      data: {
+        id: n.id, label: n.name, parent: showClusters && n.feature ? n.feature : undefined,
+        artType: n.type, artLabel: artType.label, artColor: artType.color, artShape: artType.shape,
+        table: n.table || '—', feature: n.feature, featureName: n.feature ? FEATURES[n.feature]?.name : 'Ungrouped',
+        origin: n.origin, creator: n.creator, updated: n.updated,
+        nodeSize: 30
+      },
+    });
+  }
+
+  // Edges
+  for (const e of edgeList) {
+    if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) continue;
+    const et = EDGE_TYPES[e.type] || { color: '#8b949e', style: 'solid' };
+    elements.push({
+      group: 'edges',
+      data: {
+        id: `${e.source}-${e.target}-${e.type}`,
+        source: e.source, target: e.target,
+        edgeType: e.type, edgeLabel: et.label, edgeColor: et.color, edgeStyle: et.style,
+        detail: e.detail,
+      }
+    });
+  }
+  return elements;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// CYTOSCAPE INIT
+// ════════════════════════════════════════════════════════════════════
+let showClusters = false;
+let showLabels = true;
+let currentView = 'assessment';
+let cy;
+
+function initCy(elements) {
+  if (cy) cy.destroy();
+  cy = cytoscape({
+    container: document.getElementById('cy'),
+    elements: elements,
+    style: [
+      // Feature compound nodes
+      { selector: '.feature-node',
+        style: {
+          'background-color': 'data(featureColor)', 'background-opacity': 0.08,
+          'border-color': 'data(featureColor)', 'border-width': 2, 'border-opacity': 0.4,
+          'label': 'data(label)', 'font-size': 14, 'color': '#8b949e',
+          'text-valign': 'top', 'text-halign': 'center', 'text-margin-y': -8,
+          'shape': 'roundrectangle', 'padding': 30,
+        }
+      },
+      // Regular nodes
+      { selector: 'node[!isFeature]',
+        style: {
+          'background-color': 'data(artColor)', 'width': 'data(nodeSize)', 'height': 'data(nodeSize)',
+          'shape': 'data(artShape)',
+          'label': showLabels ? 'data(label)' : '',
+          'font-size': 10, 'color': '#c9d1d9',
+          'text-valign': 'bottom', 'text-halign': 'center', 'text-margin-y': 6,
+          'border-width': 0, 'text-max-width': 120, 'text-wrap': 'ellipsis',
+          'overlay-opacity': 0,
+        }
+      },
+      { selector: 'node[!isFeature]:active', style: { 'overlay-opacity': 0 } },
+      { selector: 'node.highlighted',
+        style: { 'border-width': 3, 'border-color': '#f0f6fc', 'z-index': 999 }
+      },
+      { selector: 'node.faded', style: { 'opacity': 0.15 } },
+      { selector: 'node.search-match',
+        style: { 'border-width': 3, 'border-color': '#f0883e', 'z-index': 999 }
+      },
+      // Edges
+      { selector: 'edge',
+        style: {
+          'line-color': 'data(edgeColor)', 'target-arrow-color': 'data(edgeColor)',
+          'target-arrow-shape': 'triangle', 'arrow-scale': 0.8,
+          'width': 1.5, 'curve-style': 'bezier', 'opacity': 0.6,
+        }
+      },
+      { selector: 'edge[edgeStyle="dashed"]',
+        style: { 'line-style': 'dashed', 'line-dash-pattern': [6, 3] }
+      },
+      { selector: 'edge.highlighted',
+        style: { 'width': 3, 'opacity': 1, 'z-index': 999 }
+      },
+      { selector: 'edge.faded', style: { 'opacity': 0.05 } },
+    ],
+    layout: { name: 'cose', animate: true, animationDuration: 800, nodeRepulsion: () => 8000, idealEdgeLength: () => 120, gravity: 0.3, padding: 40 },
+    wheelSensitivity: 0.3,
+    minZoom: 0.1, maxZoom: 5,
+  });
+
+  // Click handlers
+  cy.on('tap', 'node[!isFeature]', function(evt) {
+    const node = evt.target;
+    highlightNode(node);
+    showDetail(node.data());
+  });
+
+  cy.on('tap', '.feature-node', function(evt) {
+    showFeatureDetail(evt.target.data());
+  });
+
+  cy.on('tap', function(evt) {
+    if (evt.target === cy) { clearHighlight(); closeDetail(); }
+  });
+
+  updateStats();
+  buildFilterUI();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// HIGHLIGHT / DETAIL
+// ════════════════════════════════════════════════════════════════════
+function highlightNode(node) {
+  clearHighlight();
+  const neighborhood = node.neighborhood().add(node);
+  cy.elements().addClass('faded');
+  neighborhood.removeClass('faded');
+  node.addClass('highlighted');
+  neighborhood.edges().addClass('highlighted');
+  neighborhood.nodes('[!isFeature]').addClass('highlighted');
+}
+
+function clearHighlight() {
+  cy.elements().removeClass('faded highlighted search-match');
+}
+
+function showDetail(d) {
+  const panel = document.getElementById('detailPanel');
+  const body = document.getElementById('detailBody');
+  document.getElementById('detailTitle', d.artLabel);
+
+  const artType = ARTIFACT_TYPES[d.artType] || {};
+  const originBadge = d.origin === 'modified_ootb' ? '<span style="color:#f0883e;">Modified OOTB</span>' : d.origin === 'net_new_customer' ? '<span style="color:#f97583;">Customer-Created</span>' : d.origin;
+
+  // Find connections
+  const node = cy.getElementById(d.id);
+  const incomers = node.incomers('edge');
+  const outgoers = node.outgoers('edge');
+
+  let connectionsHTML = '';
+  const allEdges = [...incomers.toArray(), ...outgoers.toArray()];
+
+  if (allEdges.length > 0) {
+    const refs = allEdges.map(edge => {
+      const ed = edge.data();
+      const otherId = ed.source === d.id ? ed.target : ed.source;
+      const otherNode = cy.getElementById(otherId);
+      const od = otherNode.data();
+      const direction = ed.source === d.id ? '→' : '←';
+      const et = EDGE_TYPES[ed.edgeType] || {};
+      return `<div class="conn-item" onclick="cy.getElementById('${otherId}').trigger('tap')">
+        <div class="conn-dot" style="background:${od.artColor || '#8b949e'}"></div>
+        <span>${direction} ${od.label}</span>
+        <span class="conn-type" style="color:${et.color || '#8b949e'}">${ed.edgeType.replace('_',' ')}</span>
+      </div>`;
+    });
+    connectionsHTML = `<div class="detail-connections"><h3>Connections (${allEdges.length})</h3>${refs.join('')}</div>`;
+
+    // Edge detail tooltips
+    const edgeDetails = allEdges.filter(e => e.data().detail).map(e => {
+      const ed = e.data();
+      const et = EDGE_TYPES[ed.edgeType] || {};
+      return `<div style="font-size:11px;color:#8b949e;padding:2px 0;"><span style="color:${et.color}">●</span> ${ed.detail}</div>`;
+    });
+    if (edgeDetails.length > 0) {
+      connectionsHTML += `<div style="margin-top:12px;"><h3 style="font-size:12px;color:#58a6ff;margin-bottom:6px;">Reference Details</h3>${edgeDetails.join('')}</div>`;
+    }
+  }
+
+  body.innerHTML = `
+    <dl>
+      <div class="detail-field"><dt>Type</dt><dd><span style="color:${artType.color || '#8b949e'}">●</span> ${artType.label || d.artType}</dd></div>
+      <div class="detail-field"><dt>Name</dt><dd>${d.label}</dd></div>
+      <div class="detail-field"><dt>Target Table</dt><dd>${d.table}</dd></div>
+      <div class="detail-field"><dt>Feature</dt><dd>${d.feature ? `<span class="badge badge-feature">${d.featureName}</span>` : '<span style="color:#8b949e">Ungrouped</span>'}</dd></div>
+      <div class="detail-field"><dt>Origin</dt><dd>${originBadge}</dd></div>
+      <div class="detail-field"><dt>Creator</dt><dd>${d.creator}</dd></div>
+      <div class="detail-field"><dt>Last Updated</dt><dd>${d.updated}</dd></div>
+    </dl>
+    ${connectionsHTML}
+  `;
+
+  panel.classList.add('open');
+}
+
+function showFeatureDetail(d) {
+  const panel = document.getElementById('detailPanel');
+  const body = document.getElementById('detailBody');
+  const f = Object.entries(FEATURES).find(([k]) => k === d.id);
+  if (!f) return;
+  const [fid, fdata] = f;
+
+  const members = cy.nodes(`[feature="${fid}"]`);
+  const memberList = members.toArray().map(n => {
+    const nd = n.data();
+    const at = ARTIFACT_TYPES[nd.artType] || {};
+    return `<div class="conn-item" onclick="cy.getElementById('${nd.id}').trigger('tap')">
+      <div class="conn-dot" style="background:${at.color}"></div>
+      <span>${nd.label}</span>
+      <span class="conn-type">${at.label}</span>
+    </div>`;
+  });
+
+  const dispColor = { remove: '#da3633', keep_as_is: '#238636', keep_and_refactor: '#d29922', needs_analysis: '#8b949e' };
+
+  body.innerHTML = `
+    <dl>
+      <div class="detail-field"><dt>Feature</dt><dd style="font-size:15px;font-weight:600;">${fdata.name}</dd></div>
+      <div class="detail-field"><dt>Disposition</dt><dd><span style="color:${dispColor[fdata.disposition]};font-weight:600;">${fdata.disposition.replace(/_/g,' ').toUpperCase()}</span></dd></div>
+      <div class="detail-field"><dt>Confidence</dt><dd>${fdata.confidence}/15 — <span style="color:${fdata.level==='high'?'#56d364':fdata.level==='medium'?'#d29922':'#f97583'}">${fdata.level}</span></dd></div>
+      <div class="detail-field"><dt>Members</dt><dd>${members.length} artifacts</dd></div>
+    </dl>
+    <div class="detail-connections"><h3>Member Artifacts</h3>${memberList.join('')}</div>
+  `;
+  panel.classList.add('open');
+}
+
+function closeDetail() {
+  document.getElementById('detailPanel').classList.remove('open');
+}
+
+// ════════════════════════════════════════════════════════════════════
+// FILTERS
+// ════════════════════════════════════════════════════════════════════
+function buildFilterUI() {
+  // Node type filters
+  const typeCounts = {};
+  cy.nodes('[!isFeature]').forEach(n => {
+    const t = n.data('artType');
+    typeCounts[t] = (typeCounts[t] || 0) + 1;
+  });
+
+  const nodeFiltersEl = document.getElementById('nodeFilters');
+  nodeFiltersEl.innerHTML = '';
+  const sortedTypes = Object.entries(typeCounts).sort((a,b) => b[1] - a[1]);
+  for (const [type, count] of sortedTypes) {
+    const at = ARTIFACT_TYPES[type] || { label: type, color: '#8b949e' };
+    const item = document.createElement('div');
+    item.className = 'filter-item';
+    item.innerHTML = `<input type="checkbox" checked data-filter-type="${type}" id="ft_${type}">
+      <div class="color-dot" style="background:${at.color}"></div>
+      <label for="ft_${type}">${at.label}</label>
+      <span class="count">${count}</span>`;
+    nodeFiltersEl.appendChild(item);
+  }
+
+  // Edge type filters
+  const edgeCounts = {};
+  cy.edges().forEach(e => {
+    const t = e.data('edgeType');
+    edgeCounts[t] = (edgeCounts[t] || 0) + 1;
+  });
+
+  const edgeFiltersEl = document.getElementById('edgeFilters');
+  edgeFiltersEl.innerHTML = '';
+  for (const [type, count] of Object.entries(edgeCounts)) {
+    const et = EDGE_TYPES[type] || { label: type, color: '#8b949e' };
+    const item = document.createElement('div');
+    item.className = 'edge-filter-item';
+    item.innerHTML = `<input type="checkbox" checked data-filter-edge="${type}" id="fe_${type}">
+      <div class="edge-line" style="background:${et.color};${et.style==='dashed'?'background:repeating-linear-gradient(90deg,'+et.color+' 0,'+et.color+' 4px,transparent 4px,transparent 8px)':''}"></div>
+      <label for="fe_${type}">${et.label}</label>
+      <span class="count" style="font-size:11px;color:#8b949e;">${count}</span>`;
+    edgeFiltersEl.appendChild(item);
+  }
+
+  // Attach filter handlers
+  nodeFiltersEl.addEventListener('change', applyFilters);
+  edgeFiltersEl.addEventListener('change', applyFilters);
+}
+
+function applyFilters() {
+  const checkedTypes = new Set([...document.querySelectorAll('[data-filter-type]:checked')].map(el => el.dataset.filterType));
+  const checkedEdges = new Set([...document.querySelectorAll('[data-filter-edge]:checked')].map(el => el.dataset.filterEdge));
+
+  cy.batch(() => {
+    cy.nodes('[!isFeature]').forEach(n => {
+      if (checkedTypes.has(n.data('artType'))) { n.style('display', 'element'); }
+      else { n.style('display', 'none'); }
+    });
+    cy.edges().forEach(e => {
+      const srcVis = cy.getElementById(e.data('source')).style('display') !== 'none';
+      const tgtVis = cy.getElementById(e.data('target')).style('display') !== 'none';
+      if (checkedEdges.has(e.data('edgeType')) && srcVis && tgtVis) { e.style('display', 'element'); }
+      else { e.style('display', 'none'); }
+    });
+    // Hide empty feature compounds
+    cy.nodes('.feature-node').forEach(fn => {
+      const children = fn.children().filter(c => c.style('display') !== 'none');
+      fn.style('display', children.length > 0 ? 'element' : 'none');
+    });
+  });
+  updateStats();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// VIEW MODES
+// ════════════════════════════════════════════════════════════════════
+function switchView(view) {
+  currentView = view;
+  document.querySelectorAll('.view-tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
+
+  let nodes, edges;
+
+  if (view === 'instance') {
+    // Show ALL artifacts across ALL assessments for this instance
+    nodes = sampleNodes;
+    edges = sampleEdges;
+  } else if (view === 'assessment') {
+    const asmtId = document.getElementById('scopeSelect').value;
+    const asmt = ASSESSMENTS[asmtId];
+    if (asmt) {
+      const nodeIds = new Set(asmt.nodes);
+      nodes = sampleNodes.filter(n => nodeIds.has(n.id));
+      edges = sampleEdges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
+    } else {
+      nodes = sampleNodes; edges = sampleEdges;
+    }
+  } else if (view === 'feature') {
+    // Show one feature at a time — pick first feature with members
+    const fid = Object.keys(FEATURES)[0];
+    nodes = sampleNodes.filter(n => n.feature === fid);
+    // Also include nodes referenced by edges that cross feature boundary
+    const featureNodeIds = new Set(nodes.map(n => n.id));
+    const relevantEdges = sampleEdges.filter(e => featureNodeIds.has(e.source) || featureNodeIds.has(e.target));
+    const extraNodeIds = new Set();
+    relevantEdges.forEach(e => { extraNodeIds.add(e.source); extraNodeIds.add(e.target); });
+    const extraNodes = sampleNodes.filter(n => extraNodeIds.has(n.id) && !featureNodeIds.has(n.id));
+    nodes = [...nodes, ...extraNodes];
+    edges = relevantEdges;
+  } else if (view === 'artifact') {
+    // Deep dive from a single node — pick the ApprovalHelper as example
+    const rootId = 'n3';
+    const depth2Ids = new Set([rootId]);
+    // Level 1
+    sampleEdges.forEach(e => { if (e.source === rootId) depth2Ids.add(e.target); if (e.target === rootId) depth2Ids.add(e.source); });
+    // Level 2
+    const level1 = new Set(depth2Ids);
+    sampleEdges.forEach(e => { if (level1.has(e.source)) depth2Ids.add(e.target); if (level1.has(e.target)) depth2Ids.add(e.source); });
+    nodes = sampleNodes.filter(n => depth2Ids.has(n.id));
+    edges = sampleEdges.filter(e => depth2Ids.has(e.source) && depth2Ids.has(e.target));
+  }
+
+  const elements = buildElements(nodes, edges);
+  initCy(elements);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// SEARCH
+// ════════════════════════════════════════════════════════════════════
+document.getElementById('searchInput').addEventListener('input', function(e) {
+  const q = e.target.value.toLowerCase().trim();
+  clearHighlight();
+  if (!q) return;
+  cy.nodes('[!isFeature]').forEach(n => {
+    if (n.data('label').toLowerCase().includes(q) || (n.data('artLabel')||'').toLowerCase().includes(q)) {
+      n.addClass('search-match');
+    }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// TOOLBAR BUTTONS
+// ════════════════════════════════════════════════════════════════════
+document.getElementById('btnCluster').addEventListener('click', function() {
+  showClusters = !showClusters;
+  this.classList.toggle('active', showClusters);
+  switchView(currentView);
+});
+
+document.getElementById('btnLayout').addEventListener('click', function() {
+  cy.layout({ name: 'cose', animate: true, animationDuration: 800, nodeRepulsion: () => 8000, idealEdgeLength: () => 120, gravity: 0.3, padding: 40 }).run();
+});
+
+document.getElementById('btnFit').addEventListener('click', function() {
+  cy.fit(cy.elements(), 40);
+});
+
+document.getElementById('btnLabels').addEventListener('click', function() {
+  showLabels = !showLabels;
+  this.classList.toggle('active', showLabels);
+  cy.nodes('[!isFeature]').style('label', showLabels ? 'data(label)' : '');
+});
+
+document.getElementById('detailClose').addEventListener('click', () => { closeDetail(); clearHighlight(); });
+
+// View tabs
+document.querySelectorAll('.view-tab').forEach(tab => {
+  tab.addEventListener('click', () => switchView(tab.dataset.view));
+});
+
+// Scope select
+document.getElementById('scopeSelect').addEventListener('change', () => switchView(currentView));
+
+function updateStats() {
+  const visNodes = cy.nodes('[!isFeature]').filter(n => n.style('display') !== 'none');
+  const visEdges = cy.edges().filter(e => e.style('display') !== 'none');
+  const visFeatures = new Set();
+  visNodes.forEach(n => { if (n.data('feature')) visFeatures.add(n.data('feature')); });
+  document.getElementById('nodeCount').textContent = visNodes.length;
+  document.getElementById('edgeCount').textContent = visEdges.length;
+  document.getElementById('featureCount').textContent = visFeatures.size;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// INIT
+// ════════════════════════════════════════════════════════════════════
+switchView('assessment');
+</script>
+</body>
+</html>

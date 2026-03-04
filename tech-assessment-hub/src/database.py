@@ -48,6 +48,8 @@ def create_db_and_tables():
     _ensure_app_config_instance_scope()
     _ensure_model_table_columns([
         "scan",
+        "scan_result",
+        "feature",
         "update_set",
         "customer_update_xml",
         "version_history",
@@ -69,6 +71,14 @@ def create_db_and_tables():
         "job_run",
         "job_event",
         "app_config",
+        "code_reference",
+        "update_set_overlap",
+        "temporal_cluster",
+        "temporal_cluster_member",
+        "structural_relationship",
+        "update_set_artifact_link",
+        "naming_cluster",
+        "table_colocation_summary",
     ])
     _ensure_instance_app_file_type_defaults()
     _ensure_indexes()

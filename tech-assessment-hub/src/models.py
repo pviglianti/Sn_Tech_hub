@@ -119,6 +119,19 @@ class FindingCategory(str, Enum):
     best_practice = "best_practice"
 
 
+class GroupingSignalType(str, Enum):
+    """Signal types used by the feature grouping algorithm."""
+    update_set = "update_set"
+    table_affinity = "table_affinity"
+    naming_convention = "naming_convention"
+    code_reference = "code_reference"
+    structural_parent_child = "structural_parent_child"
+    temporal_proximity = "temporal_proximity"
+    reference_field = "reference_field"
+    application_package = "application_package"
+    ai_judgment = "ai_judgment"
+
+
 class DataPullType(str, Enum):
     """Types of data that can be pulled from an instance"""
     update_sets = "update_sets"
@@ -505,6 +518,12 @@ class ScanResult(SQLModel, table=True):
     finding_title: Optional[str] = None
     finding_description: Optional[str] = None
 
+    # ---- Reasoning pipeline fields ----
+    ai_summary: Optional[str] = None
+    ai_observations: Optional[str] = None
+    ai_pass_count: int = 0
+    related_result_ids_json: Optional[str] = None
+
     # Raw data storage
     raw_data_json: Optional[str] = None
 
@@ -584,6 +603,16 @@ class Feature(SQLModel, table=True):
     # AI-generated analysis
     ai_summary: Optional[str] = None
 
+    # ---- Reasoning pipeline fields ----
+    confidence_score: Optional[float] = None
+    confidence_level: Optional[str] = None
+    signals_json: Optional[str] = None
+    primary_table: Optional[str] = None
+    primary_developer: Optional[str] = None
+    date_range_start: Optional[datetime] = None
+    date_range_end: Optional[datetime] = None
+    pass_number: Optional[int] = None
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -645,6 +674,138 @@ class FeatureScanResult(SQLModel, table=True):
     # Relationships
     feature: Feature = Relationship(back_populates="scan_result_links")
     scan_result: ScanResult = Relationship(back_populates="feature_links")
+
+
+# ============================================
+# TABLE: CodeReference (cross-references in scripts)
+# Populated by the Code Reference Parser engine
+# ============================================
+
+class CodeReference(SQLModel, table=True):
+    """Cross-reference discovered by parsing script/code fields."""
+    __tablename__ = "code_reference"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    instance_id: int = Field(foreign_key="instance.id", index=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+
+    # Source: scan result containing code
+    source_scan_result_id: int = Field(foreign_key="scan_result.id", index=True)
+    source_table: str
+    source_field: str
+    source_name: str
+
+    # Target: identifier referenced by source code
+    reference_type: str
+    target_identifier: str
+    target_scan_result_id: Optional[int] = Field(default=None, foreign_key="scan_result.id")
+
+    # Context
+    line_number: Optional[int] = None
+    code_snippet: Optional[str] = None
+    confidence: float = 1.0
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============================================
+# TABLE: UpdateSetOverlap (cross-update-set record sharing)
+# Populated by the Update Set Analyzer engine
+# ============================================
+
+class UpdateSetOverlap(SQLModel, table=True):
+    """Records shared between two update sets."""
+    __tablename__ = "update_set_overlap"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    instance_id: int = Field(foreign_key="instance.id", index=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+
+    update_set_a_id: int = Field(foreign_key="update_set.id", index=True)
+    update_set_b_id: int = Field(foreign_key="update_set.id", index=True)
+
+    shared_record_count: int
+    shared_records_json: str
+    overlap_score: float
+
+    # Phase 2 addendum fields
+    signal_type: str = Field(default="content")  # content | name_similarity | version_history | temporal_sequence | author_sequence
+    evidence_json: Optional[str] = None  # explainability payload for this overlap
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============================================
+# TABLE: TemporalCluster (developer activity windows)
+# Populated by the Temporal Clusterer engine
+# ============================================
+
+class TemporalCluster(SQLModel, table=True):
+    """Cluster of records in close time proximity by same developer."""
+    __tablename__ = "temporal_cluster"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    instance_id: int = Field(foreign_key="instance.id", index=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+
+    developer: str
+    cluster_start: datetime
+    cluster_end: datetime
+    record_count: int
+    record_ids_json: str
+    avg_gap_minutes: float
+    tables_involved_json: str
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============================================
+# TABLE: TemporalClusterMember (cluster membership links)
+# Populated by the Temporal Clusterer engine
+# ============================================
+
+class TemporalClusterMember(SQLModel, table=True):
+    """Junction table linking temporal clusters to scan results."""
+    __tablename__ = "temporal_cluster_member"
+    __table_args__ = (
+        UniqueConstraint(
+            "temporal_cluster_id",
+            "scan_result_id",
+            name="uq_temporal_cluster_member_cluster_result",
+        ),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    instance_id: int = Field(foreign_key="instance.id", index=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+
+    temporal_cluster_id: int = Field(foreign_key="temporal_cluster.id", index=True)
+    scan_result_id: int = Field(foreign_key="scan_result.id", index=True)
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============================================
+# TABLE: StructuralRelationship (parent/child metadata links)
+# Populated by the Structural Mapper engine
+# ============================================
+
+class StructuralRelationship(SQLModel, table=True):
+    """Explicit parent/child or structural relationship between artifacts."""
+    __tablename__ = "structural_relationship"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    instance_id: int = Field(foreign_key="instance.id", index=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+
+    parent_scan_result_id: int = Field(foreign_key="scan_result.id", index=True)
+    child_scan_result_id: int = Field(foreign_key="scan_result.id", index=True)
+
+    relationship_type: str
+    parent_field: str
+    confidence: float = 1.0
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 # ============================================
@@ -1355,6 +1516,79 @@ class AppConfig(SQLModel, table=True):
     description: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============================================
+# TABLE: UpdateSetArtifactLink (US ↔ artifact provenance)
+# Populated by the Update Set Analyzer engine
+# ============================================
+
+class UpdateSetArtifactLink(SQLModel, table=True):
+    """Links a scan result to an update set with source provenance."""
+    __tablename__ = "update_set_artifact_link"
+    __table_args__ = (
+        UniqueConstraint(
+            "assessment_id", "scan_result_id", "update_set_id", "link_source",
+            name="uq_us_artifact_link_scope",
+        ),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    instance_id: int = Field(foreign_key="instance.id", index=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+    scan_result_id: int = Field(foreign_key="scan_result.id", index=True)
+    update_set_id: int = Field(foreign_key="update_set.id", index=True)
+
+    link_source: str  # scan_result_current | customer_update_xml | version_history
+    is_current: bool = False
+    confidence: float = 1.0
+    evidence_json: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============================================
+# TABLE: NamingCluster (name-prefix grouping)
+# Populated by the Naming Analyzer engine
+# ============================================
+
+class NamingCluster(SQLModel, table=True):
+    """Cluster of artifacts sharing a naming prefix or pattern."""
+    __tablename__ = "naming_cluster"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    instance_id: int = Field(foreign_key="instance.id", index=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+
+    cluster_label: str  # extracted prefix/stem
+    pattern_type: str  # prefix | suffix | contains
+    member_count: int
+    member_ids_json: str  # JSON array of scan_result IDs
+    tables_involved_json: str  # JSON array of distinct table_names
+    confidence: float = 1.0
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============================================
+# TABLE: TableColocationSummary (table co-location)
+# Populated by the Table Co-location engine
+# ============================================
+
+class TableColocationSummary(SQLModel, table=True):
+    """Summary of artifacts co-located on the same target table."""
+    __tablename__ = "table_colocation_summary"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    instance_id: int = Field(foreign_key="instance.id", index=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+
+    target_table: str  # the SN table being targeted
+    record_count: int
+    record_ids_json: str  # JSON array of scan_result IDs
+    artifact_types_json: str  # JSON array of distinct sys_class_name values
+    developers_json: str  # JSON array of distinct developers
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 # ============================================

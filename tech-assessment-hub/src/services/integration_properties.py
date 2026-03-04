@@ -23,8 +23,9 @@ PROPERTY_SCOPE_APPLICATION = "application_instance"
 SECTION_GENERAL = "General"
 SECTION_PREFLIGHT = "Assessment / Preflight"
 SECTION_FETCH = "Integration / Fetch"
+SECTION_REASONING = "Reasoning / Engines"
 
-SECTION_ORDER: List[str] = [SECTION_GENERAL, SECTION_PREFLIGHT, SECTION_FETCH]
+SECTION_ORDER: List[str] = [SECTION_GENERAL, SECTION_PREFLIGHT, SECTION_FETCH, SECTION_REASONING]
 
 # ---------------------------------------------------------------------------
 # Property keys
@@ -38,6 +39,16 @@ FETCH_DEFAULT_BATCH_SIZE = "integration.fetch.default_batch_size"
 FETCH_INTER_BATCH_DELAY = "integration.fetch.inter_batch_delay"
 FETCH_REQUEST_TIMEOUT = "integration.fetch.request_timeout"
 FETCH_MAX_BATCHES = "integration.fetch.max_batches"
+
+# Reasoning engine keys
+REASONING_US_MIN_SHARED_RECORDS = "reasoning.us.min_shared_records"
+REASONING_US_NAME_SIMILARITY_MIN_TOKENS = "reasoning.us.name_similarity_min_tokens"
+REASONING_US_INCLUDE_DEFAULT_SETS = "reasoning.us.include_default_sets"
+REASONING_US_DEFAULT_SIGNAL_WEIGHT = "reasoning.us.default_signal_weight"
+REASONING_TEMPORAL_GAP_THRESHOLD = "reasoning.temporal.gap_threshold_minutes"
+REASONING_TEMPORAL_MIN_CLUSTER_SIZE = "reasoning.temporal.min_cluster_size"
+REASONING_NAMING_MIN_CLUSTER_SIZE = "reasoning.naming.min_cluster_size"
+REASONING_NAMING_MIN_PREFIX_TOKENS = "reasoning.naming.min_prefix_tokens"
 
 # Common IANA timezone choices for the select dropdown
 TIMEZONE_OPTIONS: List[Tuple[str, str]] = [
@@ -62,6 +73,19 @@ class FetchProperties:
     inter_batch_delay: float = 0.5
     request_timeout: int = 60
     max_batches: int = 5000
+
+
+@dataclass(frozen=True)
+class ReasoningEngineProperties:
+    """Typed reasoning engine thresholds and flags loaded from app_config."""
+    us_min_shared_records: int = 1
+    us_name_similarity_min_tokens: int = 2
+    us_include_default_sets: bool = True
+    us_default_signal_weight: float = 0.3
+    temporal_gap_threshold_minutes: int = 60
+    temporal_min_cluster_size: int = 2
+    naming_min_cluster_size: int = 2
+    naming_min_prefix_tokens: int = 2
 
 
 @dataclass(frozen=True)
@@ -92,6 +116,11 @@ PREFLIGHT_CONCURRENT_TYPE_OPTIONS: List[Tuple[str, str]] = [
     ("applications", "Applications"),
 ]
 
+BOOL_OPTIONS: List[Tuple[str, str]] = [
+    ("true", "Yes"),
+    ("false", "No"),
+]
+
 PROPERTY_DEFAULTS: Dict[str, str] = {
     PREFLIGHT_CONCURRENT_TYPES: "version_history,customer_update_xml",
     GENERAL_DISPLAY_TIMEZONE: "America/New_York",
@@ -99,6 +128,15 @@ PROPERTY_DEFAULTS: Dict[str, str] = {
     FETCH_INTER_BATCH_DELAY: "0.5",
     FETCH_REQUEST_TIMEOUT: "60",
     FETCH_MAX_BATCHES: "5000",
+    # Reasoning engine defaults
+    REASONING_US_MIN_SHARED_RECORDS: "1",
+    REASONING_US_NAME_SIMILARITY_MIN_TOKENS: "2",
+    REASONING_US_INCLUDE_DEFAULT_SETS: "true",
+    REASONING_US_DEFAULT_SIGNAL_WEIGHT: "0.3",
+    REASONING_TEMPORAL_GAP_THRESHOLD: "60",
+    REASONING_TEMPORAL_MIN_CLUSTER_SIZE: "2",
+    REASONING_NAMING_MIN_CLUSTER_SIZE: "2",
+    REASONING_NAMING_MIN_PREFIX_TOKENS: "2",
 }
 
 PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
@@ -191,6 +229,120 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         section=SECTION_FETCH,
         min_value=10,
         max_value=50000,
+    ),
+    # ----- Reasoning engine properties -----
+    REASONING_US_MIN_SHARED_RECORDS: IntegrationPropertyDefinition(
+        key=REASONING_US_MIN_SHARED_RECORDS,
+        label="Min Shared Records (US Overlap)",
+        description=(
+            "Minimum number of shared artifact records between two update sets "
+            "for a content overlap signal to be emitted."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[REASONING_US_MIN_SHARED_RECORDS],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="reasoning",
+        section=SECTION_REASONING,
+        min_value=1,
+        max_value=100,
+    ),
+    REASONING_US_NAME_SIMILARITY_MIN_TOKENS: IntegrationPropertyDefinition(
+        key=REASONING_US_NAME_SIMILARITY_MIN_TOKENS,
+        label="Min Name Tokens (US Similarity)",
+        description=(
+            "Minimum number of matching tokens in update set names "
+            "for a name_similarity signal to be emitted."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[REASONING_US_NAME_SIMILARITY_MIN_TOKENS],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="reasoning",
+        section=SECTION_REASONING,
+        min_value=1,
+        max_value=10,
+    ),
+    REASONING_US_INCLUDE_DEFAULT_SETS: IntegrationPropertyDefinition(
+        key=REASONING_US_INCLUDE_DEFAULT_SETS,
+        label="Include Default Update Sets",
+        description=(
+            "Whether to include Default update set relationships in overlap analysis. "
+            "When enabled, default US signals are emitted with downgraded confidence."
+        ),
+        value_type="select",
+        default=PROPERTY_DEFAULTS[REASONING_US_INCLUDE_DEFAULT_SETS],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="reasoning",
+        section=SECTION_REASONING,
+        options=BOOL_OPTIONS,
+    ),
+    REASONING_US_DEFAULT_SIGNAL_WEIGHT: IntegrationPropertyDefinition(
+        key=REASONING_US_DEFAULT_SIGNAL_WEIGHT,
+        label="Default US Signal Weight",
+        description=(
+            "Confidence multiplier for overlap signals involving Default update sets. "
+            "Lower values reduce their influence on grouping."
+        ),
+        value_type="float",
+        default=PROPERTY_DEFAULTS[REASONING_US_DEFAULT_SIGNAL_WEIGHT],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="reasoning",
+        section=SECTION_REASONING,
+        min_value=0.0,
+        max_value=1.0,
+    ),
+    REASONING_TEMPORAL_GAP_THRESHOLD: IntegrationPropertyDefinition(
+        key=REASONING_TEMPORAL_GAP_THRESHOLD,
+        label="Temporal Gap Threshold (min)",
+        description=(
+            "Maximum gap in minutes between consecutive records by the same developer "
+            "to be considered part of the same temporal cluster."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[REASONING_TEMPORAL_GAP_THRESHOLD],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="reasoning",
+        section=SECTION_REASONING,
+        min_value=5,
+        max_value=1440,
+    ),
+    REASONING_TEMPORAL_MIN_CLUSTER_SIZE: IntegrationPropertyDefinition(
+        key=REASONING_TEMPORAL_MIN_CLUSTER_SIZE,
+        label="Min Cluster Size (Temporal)",
+        description="Minimum number of records to form a temporal cluster.",
+        value_type="int",
+        default=PROPERTY_DEFAULTS[REASONING_TEMPORAL_MIN_CLUSTER_SIZE],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="reasoning",
+        section=SECTION_REASONING,
+        min_value=2,
+        max_value=50,
+    ),
+    REASONING_NAMING_MIN_CLUSTER_SIZE: IntegrationPropertyDefinition(
+        key=REASONING_NAMING_MIN_CLUSTER_SIZE,
+        label="Min Cluster Size (Naming)",
+        description="Minimum number of artifacts sharing a name prefix to form a naming cluster.",
+        value_type="int",
+        default=PROPERTY_DEFAULTS[REASONING_NAMING_MIN_CLUSTER_SIZE],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="reasoning",
+        section=SECTION_REASONING,
+        min_value=2,
+        max_value=50,
+    ),
+    REASONING_NAMING_MIN_PREFIX_TOKENS: IntegrationPropertyDefinition(
+        key=REASONING_NAMING_MIN_PREFIX_TOKENS,
+        label="Min Prefix Tokens (Naming)",
+        description=(
+            "Minimum number of tokens in a shared name prefix "
+            "for the naming analyzer to consider it significant."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[REASONING_NAMING_MIN_PREFIX_TOKENS],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="reasoning",
+        section=SECTION_REASONING,
+        min_value=1,
+        max_value=10,
     ),
 }
 
@@ -403,3 +555,62 @@ def load_preflight_concurrent_types(session: Session, instance_id: Optional[int]
     if not raw or not raw.strip():
         raw = PROPERTY_DEFAULTS[PREFLIGHT_CONCURRENT_TYPES]
     return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+def load_reasoning_engine_properties(
+    session: Session,
+    instance_id: Optional[int] = None,
+) -> ReasoningEngineProperties:
+    """Load typed reasoning-engine properties from app_config with safe defaults."""
+    defaults = ReasoningEngineProperties()
+    include_default_raw = (
+        _read_property(session, REASONING_US_INCLUDE_DEFAULT_SETS, instance_id=instance_id)
+        or PROPERTY_DEFAULTS[REASONING_US_INCLUDE_DEFAULT_SETS]
+    ).strip().lower()
+    include_default_sets = include_default_raw in {"1", "true", "yes", "y", "on"}
+
+    return ReasoningEngineProperties(
+        us_min_shared_records=_get_int(
+            session,
+            REASONING_US_MIN_SHARED_RECORDS,
+            defaults.us_min_shared_records,
+            instance_id=instance_id,
+        ),
+        us_name_similarity_min_tokens=_get_int(
+            session,
+            REASONING_US_NAME_SIMILARITY_MIN_TOKENS,
+            defaults.us_name_similarity_min_tokens,
+            instance_id=instance_id,
+        ),
+        us_include_default_sets=include_default_sets,
+        us_default_signal_weight=_get_float(
+            session,
+            REASONING_US_DEFAULT_SIGNAL_WEIGHT,
+            defaults.us_default_signal_weight,
+            instance_id=instance_id,
+        ),
+        temporal_gap_threshold_minutes=_get_int(
+            session,
+            REASONING_TEMPORAL_GAP_THRESHOLD,
+            defaults.temporal_gap_threshold_minutes,
+            instance_id=instance_id,
+        ),
+        temporal_min_cluster_size=_get_int(
+            session,
+            REASONING_TEMPORAL_MIN_CLUSTER_SIZE,
+            defaults.temporal_min_cluster_size,
+            instance_id=instance_id,
+        ),
+        naming_min_cluster_size=_get_int(
+            session,
+            REASONING_NAMING_MIN_CLUSTER_SIZE,
+            defaults.naming_min_cluster_size,
+            instance_id=instance_id,
+        ),
+        naming_min_prefix_tokens=_get_int(
+            session,
+            REASONING_NAMING_MIN_PREFIX_TOKENS,
+            defaults.naming_min_prefix_tokens,
+            instance_id=instance_id,
+        ),
+    )

@@ -44,6 +44,13 @@ tech-assessment-hub/data/mcp_runtime_audit.jsonl
 # Old git history backup
 .git_backup/
 
+# Other projects on this drive
+CoreSimulator/
+ServiceNow Knowledge Database/
+TracksNTrails-backup/
+field_app_temp/
+iMovie-Library-backup/
+
 # IDE
 .vscode/
 .idea/

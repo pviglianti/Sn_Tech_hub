@@ -3,7 +3,7 @@
 ## Rehydrate Snapshot
 - Active project: `servicenow_global_tech_assessment_mcp/`
 - Primary objective: stabilize and evolve `tech-assessment-hub` as an MCP-first ServiceNow assessment platform.
-- Current execution focus: MCP knowledge layer complete → AI reasoning pipeline + end-to-end validation.
+- Current execution focus: AI reasoning pipeline Phase 2 engines complete (all 6 wired, full tests green) → human validation on real assessment data.
 - Cross-agent model: Codex + Claude share state through `todos.md` and `run_log.md`.
 - Rehydration default: Tier 1 only (`context:Rehydrate Snapshot` + `todos:Now`).
 - Deeper continuity: Tier 2 only when needed (`insights:Active Decisions` + tail of `run_log`).
@@ -38,6 +38,9 @@ OUT OF SCOPE (current cycle):
 - Use explicit file paths for traceability.
 
 ## Current Status (2026-02-15)
+- **Reasoning Layer Phase 1 foundation complete** (Codex, 2026-03-04): added `GroupingSignalType`, reasoning fields on `Feature`/`ScanResult`, and 4 reasoning tables (`code_reference`, `update_set_overlap`, `temporal_cluster`, `structural_relationship`) with explicit `instance_id` + `assessment_id` foreign keys.
+- **Reasoning Layer Phase 1 addendum complete** (Codex, 2026-03-04): added `temporal_cluster_member` junction table to provide FK-level linkages between temporal clusters and scan results.
+- **Deterministic preprocessing engines online** (Codex, 2026-03-04): new `src/engines/` package with `code_reference_parser` + `structural_mapper`, plus MCP tool `run_preprocessing_engines` registered in pipeline tools.
 - **Modularization sprint complete**: server.py decomposed (6 routers), DataPullSpec registry, integration properties wired, DataTable.js migration, template components, Sn* rename. 87 tests passing.
 - **Dynamic Table Browser complete** (Phases 1-4): universal browse/record/index pages, DataTable.js + ConditionBuilder.js + ColumnPicker.js, backed by `SnTableRegistry` + `SnFieldMapping`.
 - **Durable job tracking Phase 1 + Phase 2 complete** (Codex): `job_run` + `job_event` lifecycle persistence now covers data pulls, dictionary pulls, CSDM ingestion, and assessment scan workflows; startup recovery marks stale queued/running runs failed across all job types.
@@ -57,5 +60,7 @@ OUT OF SCOPE (current cycle):
   - Rabbit hole priorities: modular/adjustable (config-driven, not hardcoded)
   - Catch-all labels: table mapping app file class → display label (e.g., `sys_dictionary` → "Form Fields")
 - **VH workflow optimization complete (Claude, 2026-02-16)**: 7 fixes — phantom VH event (read-only lookup), VH 2M full-pull bug (state filter propagation), concurrent preflight (configurable via `PREFLIGHT_CONCURRENT_TYPES`), two-phase proactive VH pull (current-first → event → backfill), sort order for VH pulls (`state,sys_recorded_at`), generic concurrent preflight worker threads. 203 tests passing.
-- Next priorities: (1) End-to-end test with real assessment data using current prompts+tools, (2) deterministic pre-staging engines (update set overlap, temporal clustering, reference graph, table co-location), (3) rabbit hole priority config, (4) catch-all label table.
+- **Reasoning Layer Phase 2 engines complete** (Claude + Codex, 2026-03-04): 4 new engines implemented — `update_set_analyzer` (Codex, base+enriched modes, 5 signal types, artifact links, evidence payloads), `temporal_clusterer` (Claude agent), `naming_analyzer` (Claude agent), `table_colocation` (Claude agent). All wired into `run_preprocessing_engines` registry (6 total engines). 8 configurable reasoning properties added to Integration Properties UI. Phase 2 addendum (A1-A7) fully implemented. Claude approved Checkpoint 4; awaiting Codex final review of Tasks 2-4.
+- **Regression status**: full suite green (`276 passed`, 2026-03-04).
+- Next priorities: (1) End-to-end test with real assessment data using all 6 engines + prompts + tools, (2) rabbit hole priority config, (3) catch-all label table, (4) generalize agent coordination protocol.
 - Rehydration guardrails are enforced. Instruction standard is `AGENTS.md` + `CLAUDE.md` + `ACTIVE_PROJECT.md`.
