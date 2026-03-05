@@ -15,6 +15,15 @@
             </div>
         </div>
         <div class="assessment-actions">
+            <a
+                href="/relationship-graph?result_id={{ result.id }}{% if assessment %}&assessment_id={{ assessment.id }}{% endif %}{% if scan %}&scan_id={{ scan.id }}{% endif %}"
+                class="btn btn-secondary"
+                title="Open dependency graph centered on this artifact."
+                target="_blank"
+                rel="noopener noreferrer"
+            >
+                Relationship Graph
+            </a>
             {% if scan %}
             <a href="/scans/{{ scan.id }}" class="btn btn-secondary">Back to Scan</a>
             {% endif %}

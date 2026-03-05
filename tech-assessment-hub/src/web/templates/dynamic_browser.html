@@ -7,7 +7,18 @@
 
 <div class="browse-header">
     <h1>{{ table_label }}</h1>
-    <span class="table-index-source-badge browse-source-badge source-{{ source }}">{{ source }}</span>
+    <div class="button-group" style="align-items:center;gap:0.5rem;">
+        <span class="table-index-source-badge browse-source-badge source-{{ source }}">{{ source }}</span>
+        <a
+            class="btn btn-sm btn-secondary"
+            href="/relationship-graph?table_name={{ sn_table_name }}&instance_id={{ instance_id }}{% if assessment_id %}&assessment_id={{ assessment_id }}{% endif %}"
+            title="Open relationship graph centered on this app file class."
+            target="_blank"
+            rel="noopener noreferrer"
+        >
+            Relationship Graph
+        </a>
+    </div>
 </div>
 <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1.25rem;">
     <code style="font-size:0.82rem;">{{ sn_table_name }}</code>

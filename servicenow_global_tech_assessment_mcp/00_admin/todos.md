@@ -8,6 +8,8 @@
 
 ## Now — When Available
 - [ ] [owner:codex] **Phase 8A Step 0**: run full regression on combined branch state and commit runtime hardening tranche baseline (telemetry + checkpoints + AI runtime/budget properties) before human QA.
+- [ ] [owner:human] **Relationship Graph validation**: verify `/relationship-graph` launches from result detail, feature hierarchy (feature/member/context links), and table browser; confirm click-centered progressive expansion, custom origin labels (`modified_ootb` vs `net_new_customer`), dictionary/reference/table linkage quality, and development-chain overlays on real assessment data (Codex browser smoke + screenshots completed; exploratory human pass still needed).
+- [ ] [owner:codex] **API-Access Fallback Table Import Utility (next feature)**: implement instance+table-scoped upload/import flow for tables where API pulls are rejected/blocked (CSV/XLS/XLSX/JSON/XML) using plan `servicenow_global_tech_assessment_mcp/03_outputs/plan_api_access_fallback_table_import_utility_2026-03-05.md` (mandatory `sys_updated_on`, `sys_id` warning/fallback matching, dry-run + confirm + upsert/insert report).
 - [ ] [owner:human] **Full pipeline live QA**: Run complete 10-stage pipeline on real assessment with live SN instance after credential reconciliation.
 - [ ] [owner:human] **Assessment Runtime Usage validation**: run one full pipeline and verify `/integration-properties/assessment-runtime-usage` shows mode/provider/model, MCP local/SN/local-DB call counters, token totals, and estimated cost.
 - [ ] [owner:human] **Resume + rehydrate validation**: interrupt an in-progress stage (`observations`, `grouping`, or `recommendations`) and confirm resume picks up from saved checkpoint/index instead of restarting completed work.
@@ -53,6 +55,11 @@
 - [x] [owner:codex] Phase 9 process recommendations UI completed: added assessment-detail Process Recommendations tab with DataTable endpoints (`/api/assessments/{id}/process-recommendations/*`) and filtering/sorting support.
 - [x] [owner:codex] Phase 10 summary dashboard completed: added `/assessments/summary` page for cross-assessment pipeline stage distribution, state distribution, and runtime cost/token/MCP totals.
 - [x] [owner:codex] Added targeted + full regression coverage for Phase 9/10 peer-review cycle: `test_phase9_prompt_integration.py` (ai_refinement enabled/disabled/fallback paths), `test_phase9_exports_and_process_ui.py`, `test_pipeline_prompt_integration.py`; full suite currently green (`532 passed`).
+
+## Completed (session 2026-03-05 — Relationship Graph UX)
+- [x] [owner:codex] Added graph node deep links for result/artifact/table/assessment/feature navigation and introduced center-artifact development-chain visualization (artifact record, customer update XML, update set, metadata customization, version history with grouped overflow) in relationship graph payload/UI.
+- [x] [owner:codex] Added compact development-chain overlap layout in artifact mode and verified live UI rendering via Playwright screenshots on `127.0.0.1:8081` (including link rendering in Selected Node detail panel).
+- [x] [owner:codex] Shifted graph toward sample-style ergonomics: expanded canvas mode (default), panel toggles (Filters/Details), directional pan controls + arrow-key panning, `Pop Out` window action, and staircase layering for development-chain cards with off-node/staggered labels for cleaner readability.
 
 ## Completed (session 2026-03-04)
 - [x] [owner:codex] Reasoning Phase 1 data model foundation: added `GroupingSignalType`, reasoning fields on `Feature`/`ScanResult`, and 4 new reasoning tables (`code_reference`, `update_set_overlap`, `temporal_cluster`, `structural_relationship`) with explicit `instance_id` + `assessment_id` references and result/update-set foreign keys.

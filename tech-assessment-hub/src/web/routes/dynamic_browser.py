@@ -481,6 +481,7 @@ async def dynamic_browse_page(
     request: Request,
     sn_table_name: str,
     instance_id: int = Query(...),
+    assessment_id: Optional[int] = Query(None),
     filter_field: Optional[str] = Query(None),
     filter_value: Optional[str] = Query(None),
     session: Session = Depends(get_session),
@@ -499,6 +500,7 @@ async def dynamic_browse_page(
         "sn_table_name": sn_table_name,
         "table_label": registry.sn_table_label or registry.display_label or sn_table_name,
         "source": registry.source or "unknown",
+        "assessment_id": assessment_id,
         "filter_field": filter_field,
         "filter_value": filter_value,
     })

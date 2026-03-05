@@ -63,9 +63,12 @@
         this.metaId = opts.metaId || null;
         this.badgeId = opts.badgeId || null;
         this.apiUrl = opts.apiUrl;
+        this.scopeAssessmentId = null;
+        this.scopeScanId = null;
         this._data = null;
         this._expandedFeatures = {};  // Track expand state by feature ID
         this._expandedUngrouped = {};  // Track expand state by class
+        this._deriveScopeFromApiUrl();
     }
 
     // ── Public API ──────────────────────────────────────────────
@@ -184,6 +187,7 @@
         html += '<span class="fht-node-icon">&#128230;</span> ';
         html += '<a href="/features/' + feature.id + '" class="fht-node-name" onclick="event.stopPropagation()">';
         html += this._esc(feature.name) + '</a>';
+        html += ' <a href="' + this._esc(this._buildGraphHref({ featureId: feature.id })) + '" onclick="event.stopPropagation()" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem;">Graph</a>';
         html += ' <span class="fht-count">(' + memberCount + ')</span>';
         html += dispositionBadge;
         html += confidenceBadge;
@@ -255,6 +259,7 @@
 
     FeatureHierarchyTree.prototype._renderMemberRow = function (member) {
         var sr = member.scan_result || {};
+        var graphHref = sr.id ? this._buildGraphHref({ resultId: sr.id }) : '#';
         var originClass = sr.origin_type ? 'origin-' + sr.origin_type : '';
         var origin = sr.origin_type
             ? '<span class="origin-badge ' + originClass + '">' +
@@ -270,7 +275,8 @@
 
         return '<tr>' +
             '<td><a href="/results/' + (sr.id || '') + '">' +
-            this._esc(sr.name || '-') + '</a></td>' +
+            this._esc(sr.name || '-') + '</a>' +
+            ' <a href="' + this._esc(graphHref) + '" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem;">Graph</a></td>' +
             '<td><code>' + this._esc(sr.table_name || '-') + '</code></td>' +
             '<td>' + origin + '</td>' +
             '<td>' + sourceBadge + '</td>' +
@@ -280,12 +286,14 @@
 
     FeatureHierarchyTree.prototype._renderContextRow = function (ctx) {
         var sr = ctx.scan_result || {};
+        var graphHref = sr.id ? this._buildGraphHref({ resultId: sr.id }) : '#';
         var confidence = ctx.confidence != null
             ? Math.round(ctx.confidence * 100) + '%'
             : '-';
         return '<tr class="fht-context-row">' +
             '<td><a href="/results/' + (sr.id || '') + '">' +
-            this._esc(sr.name || '-') + '</a></td>' +
+            this._esc(sr.name || '-') + '</a>' +
+            ' <a href="' + this._esc(graphHref) + '" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem;">Graph</a></td>' +
             '<td><code>' + this._esc(sr.table_name || '-') + '</code></td>' +
             '<td>' + this._esc((ctx.context_type || '').replace(/_/g, ' ')) + '</td>' +
             '<td>' + confidence + '</td>' +
@@ -364,6 +372,7 @@
                 html += '</tr></thead><tbody>';
                 for (var it = 0; it < results.length; it++) {
                     var item = results[it];
+                    var graphHref = item.id ? this._buildGraphHref({ resultId: item.id }) : '#';
                     var originClass = item.origin_type ? 'origin-' + item.origin_type : '';
                     var origin = item.origin_type
                         ? '<span class="origin-badge ' + originClass + '">' +
@@ -371,7 +380,8 @@
                         : '-';
                     html += '<tr>' +
                         '<td><a href="/results/' + (item.id || '') + '">' +
-                        this._esc(item.name || '-') + '</a></td>' +
+                        this._esc(item.name || '-') + '</a>' +
+                        ' <a href="' + this._esc(graphHref) + '" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem;">Graph</a></td>' +
                         '<td><code>' + this._esc(item.table_name || '-') + '</code></td>' +
                         '<td>' + origin + '</td>' +
                         '</tr>';
@@ -448,6 +458,27 @@
                 this._setExpandedRecursive(feature.children[i], state);
             }
         }
+    };
+
+    FeatureHierarchyTree.prototype._deriveScopeFromApiUrl = function () {
+        if (!this.apiUrl) return;
+        var assessmentMatch = this.apiUrl.match(/\/api\/assessments\/(\d+)\/feature-hierarchy/);
+        if (assessmentMatch && assessmentMatch[1]) {
+            this.scopeAssessmentId = parseInt(assessmentMatch[1], 10);
+        }
+        var scanMatch = this.apiUrl.match(/\/api\/scans\/(\d+)\/feature-hierarchy/);
+        if (scanMatch && scanMatch[1]) {
+            this.scopeScanId = parseInt(scanMatch[1], 10);
+        }
+    };
+
+    FeatureHierarchyTree.prototype._buildGraphHref = function (opts) {
+        var params = new URLSearchParams();
+        if (opts && opts.resultId) params.set('result_id', String(opts.resultId));
+        if (opts && opts.featureId) params.set('feature_id', String(opts.featureId));
+        if (this.scopeAssessmentId) params.set('assessment_id', String(this.scopeAssessmentId));
+        if (this.scopeScanId) params.set('scan_id', String(this.scopeScanId));
+        return '/relationship-graph?' + params.toString();
     };
 
     FeatureHierarchyTree.prototype._esc = function (str) {

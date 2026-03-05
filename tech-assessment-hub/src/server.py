@@ -1595,19 +1595,18 @@ def _run_assessment_pipeline_stage(
                 # --- Depth-first relationship-driven analysis ---
                 graph = build_relationship_graph(session, assessment_id)
 
-                def dfs_checkpoint_cb(visited_count, total, checkpoint_data):
+                def dfs_checkpoint_cb(sr_id, visited_count, total):
                     checkpoint_phase_progress(
                         session, assessment_id, stage,
                         completed_items=visited_count, total_items=total,
-                        status="running", checkpoint=checkpoint_data, commit=False,
+                        status="running", checkpoint={"last_sr_id": sr_id}, commit=False,
                     )
                     session.commit()
 
-                def dfs_progress_cb(visited_count, total, message):
-                    progress = 15 + int(visited_count / max(total, 1) * 80)
+                def dfs_progress_cb(progress_pct, message):
                     _set_assessment_pipeline_job_state(
                         assessment_id, stage=stage, status="running",
-                        message=message, progress_percent=progress,
+                        message=message, progress_percent=progress_pct,
                     )
 
                 result = run_depth_first_analysis(
