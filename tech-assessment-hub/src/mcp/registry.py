@@ -270,10 +270,13 @@ def _populate_prompt_registry() -> None:
     """Register assessment methodology prompts."""
     from .prompts.tech_assessment import PROMPT_SPECS
     from .prompts.observation_prompt import PROMPT_SPECS as OBSERVATION_PROMPT_SPECS
+    from .prompts.artifact_analyzer import PROMPT_SPECS as ARTIFACT_ANALYZER_SPECS
 
     for spec in PROMPT_SPECS:
         PROMPT_REGISTRY.register(spec)
     for spec in OBSERVATION_PROMPT_SPECS:
+        PROMPT_REGISTRY.register(spec)
+    for spec in ARTIFACT_ANALYZER_SPECS:
         PROMPT_REGISTRY.register(spec)
 
 
