@@ -60,12 +60,40 @@ cross_test_strategy: round_robin  # Dev-K tests Dev-((K % N) + 1)
 
 ```yaml
 architect_model: opus
-pm_model: opus
-dev_model: opus
-reviewer_model: opus
-crosstester_model: opus
-bootstrap_model: sonnet  # cheaper for ACK prompts
-effort: high
+architect_effort: high  # fixed at highest reasoning
+
+pm_model: sonnet
+pm_effort: medium
+
+dev_default_model: sonnet
+dev_default_effort: medium
+dev_simple_model: haiku
+dev_simple_effort: low
+dev_complex_model: opus
+dev_complex_effort: high
+
+reviewer_default_model: sonnet
+reviewer_default_effort: medium
+reviewer_deep_model: opus
+reviewer_deep_effort: high
+
+crosstester_default_model: haiku
+crosstester_default_effort: low
+crosstester_escalation_model: sonnet
+crosstester_escalation_effort: medium
+
+watcher_model: haiku
+watcher_effort: low
+ui_tester_model: sonnet
+ui_tester_effort: low
+bootstrap_model: haiku
+bootstrap_effort: low
+
+escalation_model: opus
+escalation_effort: high
+
+# Valid ad hoc override:
+# - narrow but high-stakes task -> opus + medium
 ```
 
 ## Paths
@@ -75,6 +103,9 @@ branch: feature/<name>
 worktree_root: .worktrees/
 log_dir: orchestration_run/logs/
 run_dir: orchestration_run/
+shared_run_dir: orchestration_run/
+use_streaming_for_all_roles: true
+steer_before_escalate: true
 ```
 
 ## Tool Restrictions Per Role
@@ -83,8 +114,8 @@ run_dir: orchestration_run/
 architect_tools: Read,Write,Edit,Bash,Grep,Glob
 pm_tools: Read,Write,Edit,Bash,Grep,Glob
 dev_tools: Read,Write,Edit,Bash,Grep,Glob
-reviewer_tools: Read,Bash
-crosstester_tools: Read,Bash
+reviewer_tools: Read,Edit,Bash
+crosstester_tools: Read,Edit,Bash
 ui_tester_tools: Read,Bash
 ```
 
@@ -137,8 +168,11 @@ A reusable framework for coordinating multiple Claude Code agents via an outer o
 
 - **Orchestrator (Codex)** is the event loop. It launches, monitors, nudges, and spins down agents.
 - **Agents never poll.** The orchestrator decides when each agent has work and sends the prompt.
-- **Deliver then die.** Workers run, produce deliverable, exit. Arch + PM persist for the session.
+- **Deliver then die.** Every role is a fresh `claude -p` call. Arch + PM persist through memory files and shared docs, not open tabs.
 - **Worktrees** isolate dev work. Reviewer, PM, Architect, Orchestrator all work at root branch.
+- **Shared run docs live at root.** Devs in worktrees edit the ROOT `orchestration_run/plan.md` / `coordination.md` / `findings.md` via absolute paths, never worktree-local copies.
+- **All substantive launches are streamable.** Default to `.jsonl` logs for Architect, PM, devs, reviewer, cross-testers, feedback prompts, and memory writes.
+- **Model/effort is role- and task-dependent.** Architect is always `opus` + high; other roles start at the cheapest likely-success tier and escalate only if the stream shows they need more.
 - **findings.md** is the reviewer's deliverable — includes test output, gaps, non-sprint issues.
 - **Session memory** — Arch + PM write memory files (Phase 6) that carry forward to next session.
 
@@ -178,6 +212,7 @@ IGNORE the following from AGENTS.md / CLAUDE.md:
 FOLLOW these from AGENTS.md:
 - Engineering Principles (Section: "Engineering Principles (Mandatory)")
 - Cross-Agent Collaboration conventions (message tags, owner tags)
+- In orchestrated runs, follow `.claude/orchestration/*` instead of the interactive chat polling loop from `agent_coordination_protocol.md`
 
 ---
 
@@ -190,13 +225,13 @@ FOLLOW these from AGENTS.md:
 [What files to read on launch, or NONE for workers]
 
 ## Tools
-[Full | Read,Bash | etc.]
+[Full | Read,Edit,Bash | etc.]
 
 ## Owned Files
 [Explicit list of files this agent may write to]
 
 ## Communication
-- Post updates to: [specific section in plan MD]
+- Post updates to: [specific section in the ROOT shared `orchestration_run/plan.md` via absolute path]
 - Message format: `[YYYY-MM-DD HH:MM] [AGENT-NAME] [TAG] — message`
 - Standard tags: ACK, STATUS, DONE, REVIEW_REQUEST, REVIEW_PASS, REVIEW_FEEDBACK, CROSS_TEST_PASS, CROSS_TEST_FAIL, FIX, SIGN_OFF
 
@@ -241,7 +276,7 @@ Create `.claude/orchestration/roles/architect.md`. This is the full self-contain
 - Constraint: design for N parallel devs in worktrees — tasks cannot share files
 - Tools: Full
 - Deliverable: Plan MD with task breakdown + architecture notes
-- After plan: stays idle, awaits feedback prompt
+- After plan: exits. Later prompts relaunch it using memory files and shared docs.
 
 Full content: see file write below. The prompt should be ~80-100 lines of focused instructions.
 
@@ -298,7 +333,7 @@ Key specs from design doc Section 4.3 and 11.3:
 - Owned files: from task assignment (max 3-5 — touch nothing else)
 - Test command: from task assignment
 - Done criteria: from PM's acceptance criteria
-- Communication: post ONLY to "Dev-N Notes" section in plan MD
+- Communication: post ONLY to "Dev-N Notes" in the ROOT shared `orchestration_run/plan.md` via absolute path
 - Engineering principles: reuse existing components (list them), properties system for config
 - TDD reminder: write tests first or alongside implementation
 - Tools: Full
@@ -325,11 +360,11 @@ Key specs from design doc Section 4.5:
 
 - Override Notice header
 - Rehydration: NONE
-- Tools: Read + Bash ONLY — cannot edit code
+- Tools: Read + Edit + Bash — cannot edit code, may edit only the shared cross-test thread sections
 - Purpose: test another dev's work in their worktree
-- Read plan MD for the task being tested (done criteria, test commands)
+- Read the ROOT shared plan MD for the task being tested (done criteria, test commands)
 - Run tests in target worktree via absolute paths
-- Post results to "Cross-Test Thread" section
+- Post results to the shared "Cross-Test Thread" section in ROOT `orchestration_run/plan.md`
 - Sign-off: `[CROSS_TEST_PASS]` or `[CROSS_TEST_FAIL]` with specific issues
 - If FAIL: list exact file:line + issue. Wait for author to fix (orchestrator handles re-launch)
 - Deliverable: cross-test results + sign-off tag
@@ -353,10 +388,10 @@ git commit -m "orchestration: add dev cross-tester role prompt"
 Key specs from design doc Section 4.4 and 11.4:
 
 - Override Notice header
-- Tools: Read + Bash ONLY
-- File allowlist: plan MD, coordination MD, dev worktree paths (via absolute paths), stream logs
+- Tools: Read + Edit + Bash
+- File allowlist: ROOT `orchestration_run/plan.md`, `coordination.md`, `findings.md`, dev worktree paths (via absolute paths), stream logs
 - Bash allowlist: `git status --short`, `git diff`, `git log`, `python -m pytest`, `cat`
-- No edits — writes ONLY to "Reviewer Findings" sections in plan MD + `findings.md`
+- No code edits — writes ONLY to "Reviewer Findings" sections in the ROOT shared plan MD + `findings.md`
 - Review checklist: spec compliance, test coverage, no hardcoded config, reuse of existing components, transaction safety, scope isolation
 - Output format: exact file path + 1-line reason per finding
 - Word limits: top 5 findings per task, under 140 words per review
@@ -383,10 +418,10 @@ git commit -m "orchestration: add code reviewer role prompt"
 
 **Step 1: Write architect_feedback.md**
 
-This is a short re-prompt sent to the already-alive Architect after reviewer posts findings. Specs from design Phase 4:
+This is a short re-prompt sent to a freshly re-launched Architect after reviewer posts findings. Specs from design Phase 4:
 
 - Read `orchestration_run/findings.md`
-- Post architecture lessons-learned to plan MD
+- Post architecture lessons-learned to the ROOT shared plan MD
 - Flag systemic issues (coupling, scalability risks)
 - Update roadmap view based on reviewer's non-sprint issues
 - Optionally draft notes for next sprint in `architect_memory.md` under `## Next Sprint Prep`
@@ -423,7 +458,7 @@ Key specs from design Section 11.5:
 - Tools: Read + Bash (Chrome MCP via extension)
 - Chrome MCP capabilities: screenshot, read_page, find, navigate, left_click, form_input, get_page_text, read_console_messages, read_network_requests
 - Prompt must include: URL to test, pages/flows to verify, expected elements, console error tolerance
-- Deliverable: UI test results posted to plan MD + findings if issues found
+- Deliverable: UI test results posted to the ROOT shared plan MD + findings if issues found
 - Optional role — only launched when project involves frontend changes
 
 **Step 2: Commit**
@@ -446,11 +481,11 @@ git commit -m "orchestration: add UI tester role prompt"
 
 **Step 1: Write communication.md**
 
-Extract from design Section 5: channels table, message format, standard tags, section ownership rules, conflict ownership, back-and-forth loop protocol.
+Extract from design Section 5: channels table, message format, standard tags, section ownership rules, shared ROOT doc rule, conflict ownership, back-and-forth loop protocol.
 
 **Step 2: Write plan_format.md**
 
-Extract from design Section 5.3 + 5.4: PM assignment format (build + cross-test + patch per dev), plan MD task format (task header + dev notes + reviewer findings + cross-test thread + sign-offs).
+Extract from design Section 5.3 + 5.4: PM assignment format (build + cross-test + patch per dev), plan MD task format (task header + dev notes + reviewer findings + cross-test thread + sign-offs), and ROOT absolute-path usage for shared docs.
 
 **Step 3: Write cross_testing.md**
 
@@ -462,7 +497,7 @@ Extract from design Section 6: Checkpoints 0-5 with gate/action/unblocks for eac
 
 **Step 5: Write lifecycle.md**
 
-Extract from design Section 8: Phase 1 (PLAN) through Phase 6 (SESSION MEMORY) + Phase 5.5 (INTER-PHASE CLEANUP). Include the full spindown order. Include deliver-then-die pattern and orchestrator-as-event-loop principle.
+Extract from design Section 8: Phase 1 (PLAN) through Phase 6 (SESSION MEMORY) + Phase 5.5 (INTER-PHASE CLEANUP). Include the full spindown order, reviewer launch after first `[DONE]`, relaunch-based Arch/PM lifecycle, and the teardown checklist before `git worktree remove`.
 
 **Step 6: Commit**
 
@@ -502,7 +537,7 @@ Blank fill-in plan MD that architect + PM populate. Follows Section 5.4 format:
 ### Task 1: [Title]
 **Assigned:** Dev-1 | **Status:** Pending
 **Worktree:** .worktrees/dev_1 | **Branch:** dev_1/[feature]
-**Stream:** logs/dev_1_stream.jsonl
+**Stream:** orchestration_run/logs/dev_1_stream.jsonl
 **Cross-tester:** Dev-2
 **Files owned:** [max 3-5]
 **Test command:** [single command]
@@ -524,7 +559,7 @@ Blank fill-in plan MD that architect + PM populate. Follows Section 5.4 format:
 
 **Step 2: Write coordination_template.md**
 
-Task assignment table + checkpoint gates. From design Section 6 + Codex coordination pattern:
+Task assignment table + checkpoint gates + runtime registry. From design Section 6 + Codex coordination pattern:
 
 ```markdown
 # [Project Name] — Coordination
@@ -540,6 +575,15 @@ Task assignment table + checkpoint gates. From design Section 6 + Codex coordina
 | C4: Cross-test | Dev-1↔Dev-2 | pending | C3 | |
 | C5: Feedback | Arch + PM | pending | C4 | |
 | C6: Merge + commit | Orchestrator | pending | C5 | |
+
+## Runtime Registry
+
+| Role | Model | Effort | PID | Log Path | Started At | Stopped At |
+|------|-------|--------|-----|----------|------------|------------|
+| Architect | opus | high | — | orchestration_run/logs/architect_stream.jsonl | — | — |
+| PM | sonnet | medium | — | orchestration_run/logs/pm_stream.jsonl | — | — |
+| Dev-1 | sonnet | medium | — | orchestration_run/logs/dev_1_stream.jsonl | — | — |
+| Dev-2 | opus | high | — | orchestration_run/logs/dev_2_stream.jsonl | — | — |
 
 ## Checkpoints
 <!-- From protocols/checkpoints.md — fill in gate conditions per phase -->
@@ -601,7 +645,8 @@ This is the orchestrator's (Codex) complete reference. Combines:
 - Design Section 12 (Orchestrator Instructions): identity, rehydration, lifecycle rules, event loop, intervention rules, steering via live watch
 - Design Section 13 (CLI Command Reference): launch commands, flags, monitoring, worktree management, process management, merge/commit
 - Design Section 8 (Lifecycle Phases): Phase 1-6 + Phase 5.5 step-by-step with exact commands
-- Design Section 7 (Terminal Lifecycle): deliver-then-die table, spindown order
+- Design Section 7 (Role Lifecycle): deliver-then-die table, spindown order
+- Design Section 4.0 (Model / Reasoning Policy): role-by-role default tiers, escalation tiers, and steer-before-escalate rules
 
 Structure the playbook as:
 
@@ -615,16 +660,22 @@ Structure the playbook as:
 2. Copy config.md → orchestration_run/config_instance.md
 3. Fill in project-specific values
 4. Create orchestration_run/logs/ directory
+5. Establish the absolute project root path used by all worker prompts for shared run docs
+6. Decide starting model/effort per role for this run
 
 ## Phase 1: PLAN
-[exact launch commands for architect, PM]
+[streamed architect + PM launch commands]
+[architect fixed at opus/high, PM default sonnet/medium]
 [checkpoint 0 gate]
 
 ## Phase 2: BUILD
 [worktree creation commands]
 [bootstrap + execution launch commands]
-[reviewer + live watcher launch commands]
+[record model/effort/PID/log in coordination.md]
+[reviewer + live watcher launch commands — reviewer starts only after first `[DONE]`]
+[watcher starts cheap; reviewer is task-dependent]
 [monitoring commands]
+[steer-before-escalate intervention rules]
 
 ## Phase 3: CROSS-TEST
 [checkpoint 2 gate]
@@ -646,12 +697,13 @@ Structure the playbook as:
 
 ## Phase 5.5: CLEANUP
 [worktree removal]
+[PID/shell detachment checklist before removal]
 [log cleanup]
 [archive previous run]
 
 ## Phase 6: SESSION MEMORY
 [memory-write prompts]
-[close terminals]
+[verify no orchestration processes remain]
 
 ## CLI Quick Reference
 [tables from design Section 13]

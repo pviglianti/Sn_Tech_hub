@@ -108,3 +108,4 @@ All agents MUST follow these when writing or modifying code:
 - Keep next action explicit in each run-log row.
 - If information is not in active project files or referenced artifacts, treat it as unknown.
 - **For coordinated multi-agent work:** Follow `00_admin/agent_coordination_protocol.md`. Create a phase-specific coordination + chat file pair for each collaborative effort. Use the standard message tags, status lifecycle, review requirements, and checkpoint pattern defined there.
+- **Exception — orchestrated runs:** When the workspace is using the `.claude/orchestration/` system, the orchestration playbook and role prompts override the interactive chat/polling workflow. In that mode Codex is the event-loop coordinator, workers do not poll, and any shared orchestration files are the explicit source of truth for that run.

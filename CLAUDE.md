@@ -38,6 +38,7 @@ The rehydration contract and rollover rules must stay identical to `AGENTS.md`.
   - `snow-flow_pv/`
   - `tech-assessment-hub/docs/plans/`
 - For `00_admin/*coordination*.md` and `00_admin/*chat*.md`, load only files tied to the active phase; treat others as historical unless asked.
+- If launched through `.claude/orchestration/roles/*.md`, follow the orchestration role prompt as the controlling workflow for that run. In orchestrated mode, do not apply the interactive chat polling loop from `agent_coordination_protocol.md` unless the role prompt explicitly says to.
 
 ## Engineering Principles
 Follow `AGENTS.md` > "Engineering Principles" section in full. Key reminders:

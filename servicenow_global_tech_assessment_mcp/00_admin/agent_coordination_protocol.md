@@ -1,6 +1,8 @@
 # Agent Coordination Protocol
 
 > **Purpose:** Standard protocol for multi-agent collaboration. Any project phase that requires coordinated work between Claude, Codex, or other agents MUST create a phase-specific coordination file that follows this template.
+>
+> **Scope note:** This protocol is for interactive/shared-workspace collaboration. If a run is using the `.claude/orchestration/` event-loop system, that playbook and its role prompts take precedence over the chat-polling model described here.
 
 ---
 
@@ -24,7 +26,7 @@
 ### Where to post
 - **Chat messages** → `<phase_name>_chat.md`
 - **Task status changes** → coordination file's Task Assignments table
-- **Admin updates** → `todos.md`, `context.md` (per AGENTS.md Update Protocol)
+- **Admin updates** → `todos.md`, `insights.md`, `run_log.md`, `context.md` (per AGENTS.md Update Protocol)
 
 ### Message types
 
@@ -113,7 +115,7 @@ Checkpoints are gates that control task unblocking. Each coordinated phase shoul
 
 ### Final checkpoint (always required)
 - **Gate:** Full test suite green, both agents post `APPROVED` in chat.
-- **Action:** Update `todos.md` + `context.md` per AGENTS.md Update Protocol.
+- **Action:** Update `todos.md`, `insights.md`, `run_log.md`, and `context.md` per AGENTS.md Update Protocol.
 
 ---
 
@@ -147,7 +149,7 @@ Checkpoints are gates that control task unblocking. Each coordinated phase shoul
 
 ### Checkpoint N — Final Sign-Off
 - **Gate:** Full test suite green, both agents approve.
-- **Action:** Both post `APPROVED` in chat. Update `todos.md` + `context.md`.
+- **Action:** Both post `APPROVED` in chat. Update `todos.md`, `insights.md`, `run_log.md`, and `context.md`.
 
 ---
 

@@ -1,7 +1,7 @@
 # AI Team Orchestration System — Design Document
 
 **Date:** 2026-03-05
-**Status:** Draft — awaiting approval
+**Status:** Draft — post-review revision (Codex review 2026-03-05)
 **Scope:** Generic reusable template + project-specific instantiation
 **Prior art:** `terminal_worker_orchestration_playbook_2026-03-05.md` (Codex), `phase11c_cleanup_coordination.md` (Codex)
 
@@ -25,15 +25,18 @@ No existing skill or playbook covers this end-to-end.
 |----------|--------|-----------|
 | Outer orchestrator | Codex | Already manages terminal sessions, watches streams |
 | Inner agents | Claude Code via `claude -p` | Each role is a Claude instance with scoped prompt |
-| Communication | Inline in plan MD | Single source of truth, no file sprawl |
+| Communication | Inline in plan MD via **absolute paths** | Single source of truth; devs in worktrees use `$PROJECT_ROOT/orchestration_run/plan.md` |
 | Observability | `.jsonl` stream logs per role | Codex watches via `tail -f`, reviewer reads for findings |
 | Dev isolation | Git worktrees (1 per dev) | Independent workspaces, merge to branch at end |
-| Reviewer access | Read + Bash only | Cannot edit code, only inspect and document |
-| Cross-testing | Devs re-launched as testers (Read + Bash only) | Same isolation as reviewer during test phase |
+| Shared-state access | All shared files live in ROOT `orchestration_run/` | Devs access via absolute `$PROJECT_ROOT/...` path — never worktree-local copies |
+| Reviewer access | Read + Edit + Bash | Can edit designated plan MD sections + findings.md; prompt-constrained to own sections only |
+| Cross-testing | Devs re-launched as testers (Read + Edit + Bash) | Can post pass/fail to Cross-Test Thread sections via Edit |
 | Team size | Configurable N devs | Cross-test matrix generated from config |
 | Commit target | Feature branch only, never main | Codex commits after all sign-offs |
-| Arch/PM lifecycle | Stay alive (terminal open), re-prompted after reviewer findings | Feedback loop without cold-start |
+| Arch/PM lifecycle | Fresh `-p` relaunches with memory files | Each prompt is a new `-p` call; memory files provide continuity; zero cost between prompts |
+| Coordination precedence | Orchestrated runs: `.claude/orchestration/*` overrides `agent_coordination_protocol.md` | Non-orchestrated pair work still uses the chat/coordination protocol |
 | Worker startup | Two-step: bootstrap ACK → execution prompt | Avoids monolithic prompts that stall (from Codex playbook) |
+| Model strategy | Task-dependent model + reasoning selection | Architect stays `opus` + highest reasoning; other roles start cheap when the prompt is prescribed and escalate only if the stream shows it is necessary |
 | Message format | `[YYYY-MM-DD HH:MM] [AGENT] [TAG] — message` | Standardized, parseable (from Codex coordination) |
 
 ---
@@ -54,8 +57,8 @@ No existing skill or playbook covers this end-to-end.
 │   ├── architect_feedback.md       # Re-prompt for architect after reviewer findings
 │   ├── pm_feedback.md              # Re-prompt for PM after reviewer findings
 │   ├── dev.md                      # Implements assigned task in worktree
-│   ├── dev_crosstester.md          # Re-launched dev in read-only mode to test another dev's work
-│   ├── code_reviewer.md            # Read-only watcher, documents findings
+│   ├── dev_crosstester.md          # Re-launched dev in code-read-only mode to test another dev's work
+│   ├── code_reviewer.md            # Constrained reviewer, documents findings in shared review sections
 │   └── _role_template.md           # Blank template for custom roles
 │
 ├── protocols/
@@ -94,43 +97,65 @@ No existing skill or playbook covers this end-to-end.
 
 ## 4. Role Definitions
 
-### 4.1 Architect (runs in root branch — strategic, session-persistent)
+### 4.0 Model / Reasoning Policy
+
+- **Architect is fixed at the top tier:** `opus` + `--effort high` for planning, feedback, roadmap work, and architecture memory.
+- **PM usually starts at:** `sonnet` + `medium`. Escalate only if the planning/refinement prompt is ambiguous or repeatedly misses acceptance criteria.
+- **Dev execution is task-dependent:**
+  - tightly prescribed / low-risk work can start at `haiku` + `low` or `sonnet` + `medium`
+  - normal implementation defaults to `sonnet` + `medium`
+  - risky refactors, migrations, ambiguous bugs, or repeated misses move to `opus` + `high`
+- **Mixed overrides are valid:** For narrow but high-stakes work, Codex can choose `opus` + `medium` instead of jumping straight to `opus` + `high`.
+- **Reviewer is task-dependent:** default `sonnet` + `medium`, escalate to `opus` + `high` for deep architectural, security, or repeated-failure review.
+- **Cross-testers default cheap:** `haiku` + `low` for exact reruns/checklists; escalate to `sonnet` + `medium` or higher when diagnosis is required.
+- **Live watcher stays cheap:** `haiku` + `low`.
+- **Steer before escalate:** Because all substantive launches are streamed, Codex should first tighten scope, add exact repro steps/files, or narrow acceptance criteria before upgrading model or reasoning.
+- **Record launch choices:** Model, effort, PID, and log path for each backgrounded role should be recorded in `orchestration_run/coordination.md`.
+
+### 4.1 Architect (runs in root branch — strategic, re-launched with memory)
 
 **Purpose:** Own the overall app architecture, roadmap, and technical scope. Design the technical approach for the current sprint and break work into independent tasks.
 
-**Rehydration:** On launch, reads:
+**Rehydration:** Each launch reads:
 - Previous session memory: `orchestration_run/architect_memory.md` (if exists from prior run)
 - Admin context: `00_admin/context.md`, `00_admin/insights.md` (Active Decisions)
 - Current scope: `00_admin/todos.md` (to understand the full roadmap)
 
-**Launch:**
+**Launch (streamed so Codex can observe planning):**
 ```bash
 claude -p --verbose --model opus --effort high \
   --dangerously-skip-permissions --disable-slash-commands \
-  "$(cat .claude/orchestration/roles/architect.md)"
+  --output-format stream-json --include-partial-messages \
+  "$(cat .claude/orchestration/roles/architect.md)" > orchestration_run/logs/architect_stream.jsonl 2>&1
 ```
 
 **Tools:** Full (Read, Write, Edit, Bash, Grep, Glob)
 **Runs in:** Root branch (NOT a worktree)
 **Owns:** Overall app architecture, technical roadmap, scope decisions
 **Outputs:** Plan MD with task breakdown, architecture notes, posted to root branch
-**Lifecycle:** Terminal stays open for ENTIRE session — idle between prompts, re-prompted for feedback + memory-write
+**Lifecycle:** Fresh `-p` relaunch for each prompt (planning, feedback, roadmap, memory-write). Memory files provide continuity between relaunches. Zero cost between prompts — no running process.
 
-### 4.2 Project Manager (runs in root branch — strategic, session-persistent)
+### 4.2 Project Manager (runs in root branch — strategic, re-launched with memory)
 
 **Purpose:** Own the project plan, sprint scope, and delivery roadmap. Refine tasks, assign to dev slots, set acceptance criteria.
 
-**Rehydration:** On launch, reads:
+**Rehydration:** Each launch reads:
 - Previous session memory: `orchestration_run/pm_memory.md` (if exists from prior run)
 - Admin context: `00_admin/context.md`, `00_admin/todos.md` (full roadmap — Now/Next/Backlog)
 - Active decisions: `00_admin/insights.md` (to carry forward project decisions)
 
-**Launch:** Same pattern as architect, different prompt.
+**Launch (default starting tier):**
+```bash
+claude -p --verbose --model sonnet --effort medium \
+  --dangerously-skip-permissions --disable-slash-commands \
+  --output-format stream-json --include-partial-messages \
+  "$(cat .claude/orchestration/roles/project_manager.md)" > orchestration_run/logs/pm_stream.jsonl 2>&1
+```
 **Tools:** Full
 **Runs in:** Root branch (NOT a worktree)
 **Owns:** Sprint scope, task assignments, acceptance criteria, delivery plan, backlog management
 **Outputs:** Updated plan MD with assignments, done criteria, coordination table
-**Lifecycle:** Terminal stays open for ENTIRE session — idle between prompts, re-prompted for feedback + memory-write
+**Lifecycle:** Fresh `-p` relaunch for each prompt (planning, feedback, roadmap, memory-write). Memory files provide continuity between relaunches. Zero cost between prompts — no running process.
 
 ### 4.3 Dev (Build Phase — runs in worktree)
 
@@ -140,63 +165,73 @@ claude -p --verbose --model opus --effort high \
 
 Step 1 — Bootstrap (short, fast):
 ```bash
-claude -p --verbose --model opus --effort high \
+claude -p --verbose --model haiku --effort low \
   --dangerously-skip-permissions --disable-slash-commands \
-  "Role: Dev-N. Read plan at orchestration_run/plan.md. Read your task (Task N). Post [ACK] to your Dev-N Notes section. Exit."
+  --output-format stream-json --include-partial-messages \
+  "Role: Dev-N. Read shared plan at $PROJECT_ROOT/orchestration_run/plan.md. Read your task (Task N). Post [ACK] to the shared root plan via that absolute path. Exit." \
+  > orchestration_run/logs/dev_N_bootstrap.jsonl 2>&1
 ```
 
 Step 2 — Execution (streamed):
 ```bash
-claude -p --verbose --model opus --effort high \
+claude -p --verbose --model "$DEV_MODEL" --effort "$DEV_EFFORT" \
   --dangerously-skip-permissions --disable-slash-commands \
   --output-format stream-json --include-partial-messages \
-  "$(cat /tmp/dev_N_prompt.txt)" > logs/dev_N_stream.jsonl 2>&1
+  "$(cat /tmp/dev_N_prompt.txt)" > orchestration_run/logs/dev_N_stream.jsonl 2>&1
 ```
+
+**Default tier:** `sonnet` + `medium`
+**Escalation tier:** `opus` + `high` for ambiguous/risky work
+**Cheap tier:** `haiku` + `low` only for tightly prescribed, low-risk tasks with easy-to-spot failures
 
 **Tools:** Full (Read, Write, Edit, Bash, Grep, Glob)
 **Worktree:** `.worktrees/dev_N/`
 **Rehydration:** NONE — devs are single-shot workers. They receive their task inline in the prompt. No session memory, no admin files.
-**Outputs:** Implemented code + tests in worktree, inline status in plan MD
+**Outputs:** Implemented code + tests in worktree, inline status in the shared ROOT `orchestration_run/plan.md` via absolute path
 **Exits after:** Implementation complete, tests passing, status posted
 
-### 4.4 Code Reviewer (runs in root branch, read-only)
+### 4.4 Code Reviewer (runs in root branch, constrained-write)
 
-**Purpose:** Continuous read-only watcher. Inspects dev work via stream logs and bash commands. Documents findings.
+**Purpose:** Continuous constrained reviewer. Inspects dev work via stream logs and bash commands and writes findings only to designated shared review sections.
 
 **Launch:**
 ```bash
-claude -p --verbose --model opus --effort high \
+claude -p --verbose --model "$REVIEWER_MODEL" --effort "$REVIEWER_EFFORT" \
   --dangerously-skip-permissions --disable-slash-commands \
-  --tools Read,Bash \
+  --tools Read,Edit,Bash \
   --output-format stream-json --include-partial-messages \
-  "$(cat /tmp/reviewer_prompt.txt)" > logs/reviewer_stream.jsonl 2>&1
+  "$(cat /tmp/reviewer_prompt.txt)" > orchestration_run/logs/reviewer_stream.jsonl 2>&1
 ```
 
-**Tools:** Read + Bash ONLY
+**Tools:** Read + Edit + Bash
 **Runs in:** Root branch — reads worktree files via absolute paths
 **Hard constraints (prompt-enforced):**
-- Explicit file allowlist (plan, coordination, dev worktree paths, stream logs)
+- Explicit file allowlist (ROOT `orchestration_run/plan.md`, `coordination.md`, `findings.md`, dev worktree paths, stream logs)
 - Allowed bash: `git status --short`, `git diff`, `git log`, test commands
-- **No edits** — writes ONLY to Reviewer Findings sections in plan MD and findings.md
+- **No code edits** — may edit ONLY Reviewer Findings sections in the shared ROOT plan MD and `findings.md`
 - Structured output: exact file path + 1-line reason per finding
-**Starts:** After first dev completes a task
+**Default tier:** `sonnet` + `medium`
+**Escalation tier:** `opus` + `high` for deep/risky review
+**Starts:** After the first dev posts `[DONE]`
 **Exits after:** All tasks reviewed, final summary posted
 
-### 4.5 Dev (Cross-Test Phase — read-only)
+### 4.5 Dev (Cross-Test Phase — constrained-write)
 
-**Purpose:** Test another dev's work. Read-only, documents results.
+**Purpose:** Test another dev's work. Read-only against code, constrained-write against the shared review thread.
 
 **Launch:**
 ```bash
-claude -p --verbose --model opus --effort high \
+claude -p --verbose --model "$CROSSTEST_MODEL" --effort "$CROSSTEST_EFFORT" \
   --dangerously-skip-permissions --disable-slash-commands \
-  --tools Read,Bash \
+  --tools Read,Edit,Bash \
   --output-format stream-json --include-partial-messages \
-  "$(cat /tmp/dev_N_crosstest_prompt.txt)" > logs/dev_N_crosstest.jsonl 2>&1
+  "$(cat /tmp/dev_N_crosstest_prompt.txt)" > orchestration_run/logs/dev_N_crosstest.jsonl 2>&1
 ```
 
-**Tools:** Read + Bash ONLY
-**Outputs:** Cross-test results inline in plan MD under the task being tested
+**Tools:** Read + Edit + Bash
+**Default tier:** `haiku` + `low`
+**Escalation tier:** `sonnet` + `medium` or higher when diagnosis is needed
+**Outputs:** Cross-test results inline in the shared ROOT plan MD under the task being tested
 **Sign-off:** Posts `[CROSS_TEST_PASS]` or `[CROSS_TEST_FAIL]` with issues
 
 ---
@@ -207,10 +242,12 @@ claude -p --verbose --model opus --effort high \
 
 | Channel | Purpose | Who writes | Who reads | How |
 |---------|---------|------------|-----------|-----|
-| `.jsonl` stream logs | Real-time observability | Each role (automatic) | Codex (`tail -f`), Reviewer | `tail -f logs/*_stream.jsonl` |
-| Plan MD (inline sections) | Structured status, findings, sign-offs | Each role (own section only) | Everyone | Read file |
-| Coordination MD | Task table, checkpoints, gates | PM (initial), Codex (status updates) | Everyone | Read file |
+| `.jsonl` stream logs | Real-time observability | Each role (automatic) | Codex (`tail -f`), Reviewer | `tail -f orchestration_run/logs/*_stream.jsonl` |
+| Plan MD (inline sections) | Structured status, findings, sign-offs | Architect, PM, Devs, Reviewer, Cross-testers (own section only) | Everyone | Edit/read the single ROOT copy via absolute path |
+| Coordination MD | Task table, checkpoints, gates, runtime registry | PM (initial), Codex (status + PID/process updates) | Everyone | Edit/read the single ROOT copy via absolute path |
 | findings.md | Reviewer summary for arch/PM feedback | Reviewer only | Architect, PM, Codex | Read file |
+
+**Shared-state rule:** The authoritative orchestration docs live only in the ROOT `orchestration_run/` directory. Devs in worktrees MUST edit those files via absolute `$PROJECT_ROOT/...` paths and MUST NOT edit worktree-local copies.
 
 ### 5.2 Message Format Standard
 
@@ -243,6 +280,7 @@ The PM assigns each dev THREE responsibilities upfront:
 - **Files owned:** [explicit list — max 3-5 files]
 - **Test command:** [single command]
 - **Done criteria:** [measurable acceptance criteria]
+- **Shared plan path:** `$PROJECT_ROOT/orchestration_run/plan.md`
 
 ### B. Cross-Test Assignment
 - **Test:** Dev-M's Task M
@@ -264,7 +302,7 @@ The PM assigns each dev THREE responsibilities upfront:
 ### Task N: [Title]
 **Assigned:** Dev-N | **Status:** [Pending | In Progress | Done | Testing | Agreed | Signed Off]
 **Worktree:** .worktrees/dev_N | **Branch:** dev_N/[feature]
-**Stream:** logs/dev_N_stream.jsonl
+**Stream:** orchestration_run/logs/dev_N_stream.jsonl
 **Cross-tester:** Dev-M
 **Files owned:** [explicit list — max 3-5 files]
 **Test command:** [single command]
@@ -328,11 +366,12 @@ Dev-N: [SIGN_OFF] — Agreed. ✅
 - A task is only `Agreed` when BOTH author and cross-tester have explicitly signed off
 - Reviewer sign-off is independent of cross-test sign-off (both required)
 - No one edits another party's messages — only append new messages
+- All shared-thread updates go to the single ROOT `orchestration_run/plan.md` copy via absolute path
 
 ### 5.6 Section Ownership Rules
 
-- **Devs** write ONLY to their own "Dev-N Notes" and the "Cross-Test Thread" for tasks they're involved in
-- **Reviewer** writes ONLY to "Reviewer Findings" sections and findings.md
+- **Devs** write ONLY to their own "Dev-N Notes" and the "Cross-Test Thread" for tasks they're involved in, and only in the ROOT shared plan
+- **Reviewer** writes ONLY to "Reviewer Findings" sections and findings.md in the ROOT shared docs
 - **No one** edits or overwrites another role's messages
 - **Codex** updates top-level Status fields and Sign-off checkboxes based on thread state
 
@@ -356,7 +395,7 @@ Formal phase transitions (from Codex coordination pattern):
 
 ### Checkpoint 1 — Devs Launched
 - **Gate:** All worktrees created, dev bootstrap ACKs received
-- **Action:** Codex sends execution prompts, launches reviewer
+- **Action:** Codex sends execution prompts. Reviewer and live watcher launch only after the first dev posts `[DONE]`.
 - **Unblocks:** Build phase
 
 ### Checkpoint 2 — Implementation Complete
@@ -376,19 +415,19 @@ Formal phase transitions (from Codex coordination pattern):
 
 ---
 
-## 7. Terminal Lifecycle — What Stays Alive
+## 7. Role Lifecycle — Relaunch Model
 
 | Role | Launches When | Deliverable | Spun Down After | Re-prompted? |
 |------|--------------|-------------|-----------------|--------------|
-| **Architect** | Phase 1 start | Plan MD, feedback, memory | Session end | YES — multiple prompts across session |
-| **PM** | After architect posts plan | Assignments, feedback, memory | Session end | YES — multiple prompts across session |
+| **Architect** | Phase 1 start | Plan MD, feedback, memory | Each `-p` prompt exits after deliverable | YES — multiple prompts across session via memory files |
+| **PM** | After architect posts plan | Assignments, feedback, memory | Each `-p` prompt exits after deliverable | YES — multiple prompts across session via memory files |
 | **Dev-N (build)** | Checkpoint 1 | Code + tests in worktree | Deliverable posted (`[DONE]`) | New `-p` call as cross-tester or patcher |
 | **Dev-N (cross-test)** | After build reviewed | Cross-test results | Deliverable posted (`[CROSS_TEST_PASS/FAIL]`) | New `-p` call if re-verify needed |
 | **Dev-N (patch)** | When cross-tester finds issues | Fix in worktree | Deliverable posted (`[FIX]`) | New `-p` call if fix rejected |
 | **Code Reviewer** | After first dev `[DONE]` | `findings.md` | Deliverable delivered (findings.md complete) | No — single run, exits when done |
 | **Live Watcher** | With reviewer | Actionable items for orchestrator | Phase 4 (workers spindown) | No — single run |
 
-**Pattern: deliver then die.** Every worker runs, produces its deliverable, and is spun down by the orchestrator. No agent stays alive waiting. Arch + PM are the exception — they're re-prompted across the session but idle (zero cost) between prompts.
+**Pattern: deliver then die.** Every role runs as a fresh `-p` call, produces its deliverable, and exits. Architect + PM are persistent ROLES, not persistent PROCESSES: continuity lives in memory files and shared root docs, not in open terminals.
 
 **Exception: cross-test conversations.** When Dev-N and Dev-M are in a back-and-forth (cross-test thread), the orchestrator keeps re-launching them for each exchange round:
 1. Dev-M posts `[CROSS_TEST_FAIL]` → orchestrator re-launches Dev-N with fix prompt
@@ -397,13 +436,13 @@ Formal phase transitions (from Codex coordination pattern):
 Each round is a fresh `-p` call, but the orchestrator mediates the conversation rapidly. Devs communicate through their shared Cross-Test Thread section in the plan MD.
 
 **Spindown order (explicit):**
-1. Phase 4 step 2: Kill devs, cross-testers, live watcher → only Arch + PM + Reviewer remain
-2. Phase 4 step 5: Kill Reviewer after findings.md complete → only Arch + PM remain
-3. Phase 5: Arch + PM stay alive (idle) while orchestrator merges, tests, commits
-4. Post-Phase 5: Orchestrator sends memory-write prompts to Arch + PM
-5. Session end: Orchestrator closes Arch + PM terminals last
+1. Phase 4 step 2: Kill devs, cross-testers, live watcher; confirm their recorded PIDs are gone before cleanup
+2. Phase 4 step 5: Let Reviewer finish `findings.md`, then kill Reviewer
+3. Phase 5: No worker process remains alive while Codex merges, tests, commits
+4. Post-Phase 5: Codex re-launches Architect + PM for memory-write prompts if needed
+5. Session end: Verify no orchestration process remains running and no worktree shell/tab is still attached
 
-**Arch + PM persist the entire session.** They are idle between prompts but their terminal context is preserved. This avoids cold-start on re-prompt and lets them accumulate session knowledge.
+**Arch + PM persist through files, not tabs.** Their memory files and the shared run docs are the durable context between prompts.
 
 **Orchestrator (Codex) decision: when to re-launch a dev:**
 - Dev posts `[DONE]` → orchestrator waits for reviewer `[REVIEW_PASS]` → then re-launches dev as cross-tester
@@ -415,46 +454,46 @@ Each round is a fresh `-p` call, but the orchestrator mediates the conversation 
 
 ## 8. Lifecycle Phases
 
-### Phase 1: PLAN (root branch, terminals stay open)
+### Phase 1: PLAN (root branch, fresh relaunches)
 1. Codex launches Architect in root → `architect_stream.jsonl`
-2. Architect produces plan MD with task breakdown, **stays alive (terminal open)**
+2. Architect produces plan MD with task breakdown, then exits
 3. Codex launches PM in root → `pm_stream.jsonl`
-4. PM refines tasks, assigns devs, writes coordination table, **stays alive**
+4. PM refines tasks, assigns devs, writes coordination table, then exits
 5. Codex commits plan to feature branch
 6. **Checkpoint 0 gate: plan exists, coordination table populated**
 
 ### Phase 2: BUILD (worktrees + root for reviewer)
 1. Codex creates worktrees (1 per dev) from feature branch
 2. Codex generates per-dev prompts (keep small: 1 role, 1 task ID, 3-5 files, 1 test command)
-3. Codex runs bootstrap prompt for each dev (ACK + rehydrate)
+3. Codex runs bootstrap prompt for each dev (ACK only)
 4. **Checkpoint 1 gate: all ACKs received**
 5. Codex launches dev execution prompts in parallel → `dev_N_stream.jsonl`
-6. Codex launches Reviewer in root (Read+Bash) → `reviewer_stream.jsonl`
-7. Codex watches ALL streams via `tail -f`
-8. Reviewer reads dev streams, runs `git diff` / `cat` on worktree files
-9. Reviewer posts findings to plan MD (Reviewer Findings sections)
+6. After the first dev posts `[DONE]`, Codex launches Reviewer in root (`Read,Edit,Bash`) → `reviewer_stream.jsonl`
+7. Codex launches the live watcher alongside Reviewer
+8. Codex watches ALL streams via `tail -f`
+9. Reviewer reads dev streams, runs `git diff` / `cat` on worktree files, and writes findings to the shared ROOT plan/finding docs via absolute path
 10. Codex can intervene: kill + relaunch any dev with corrected prompt
 
-### Phase 3: CROSS-TEST (worktrees, read-only)
+### Phase 3: CROSS-TEST (worktrees, code read-only)
 1. **Checkpoint 2 gate: all devs [DONE], reviewer has reviewed**
-2. Codex re-launches each dev as cross-tester (Read+Bash only)
+2. Codex re-launches each dev as cross-tester (`Read,Edit,Bash`)
 3. Cross-test matrix from config (Dev-1→tests Dev-2, Dev-2→tests Dev-1, etc.)
-4. Testers run tests in target worktree, post results inline in plan MD
+4. Testers run tests in target worktree, post results inline in the shared ROOT plan MD
 5. If `[CROSS_TEST_FAIL]`: original dev re-launched to fix → re-tested
 6. Loop until author + cross-tester both sign off per task
 
 ### Phase 4: SPINDOWN WORKERS + FEEDBACK (root branch — re-prompt Architect + PM)
 1. **Checkpoint 3 gate: all sign-offs complete**
-2. **Codex kills ALL worker terminals** — devs, cross-testers, live watcher
-3. **Codex keeps ONLY Architect + PM + Reviewer alive**
+2. **Codex kills ALL worker processes** — devs, cross-testers, live watcher — and verifies their PIDs are gone
+3. Reviewer remains only long enough to complete the final summary
 4. Reviewer writes final summary to `findings.md` (includes test output, gaps, non-sprint issues — see 11.4)
 5. **Codex kills Reviewer** after findings.md is complete
 6. **Codex notifies Architect + PM:** "Reviewer findings are ready at `orchestration_run/findings.md`. Review now."
-7. Codex sends feedback prompt to Architect: read findings.md, post architecture lessons-learned, flag systemic issues, update roadmap view
-8. Codex sends feedback prompt to PM: read findings.md, refine process notes, update backlog with non-sprint issues, update roadmap view
+7. Codex re-launches Architect: read findings.md, post architecture lessons-learned, flag systemic issues, update roadmap view
+8. Codex re-launches PM: read findings.md, refine process notes, update backlog with non-sprint issues, update roadmap view
 9. **Checkpoint 4 gate: both feedback posted**
 
-### Phase 4.5: ROADMAP + NEXT-SPRINT PREP (Arch + PM idle time is productive time)
+### Phase 4.5: ROADMAP + NEXT-SPRINT PREP (on-demand relaunches)
 1. After feedback posted, Codex sends **roadmap prompt** to Architect:
    - Re-read `00_admin/todos.md` (Now/Next/Backlog) + reviewer's non-sprint issues
    - Draft architecture notes for NEXT sprint's likely work
@@ -467,13 +506,13 @@ Each round is a fresh `-p` call, but the orchestrator mediates the conversation 
    - Post to `orchestration_run/pm_memory.md` under `## Next Sprint Prep`
 3. This step is **optional but recommended** — orchestrator can skip if session needs to close quickly
 
-**Key principle:** Arch + PM are alive anyway — use their idle time between phases to get ahead on planning. The orchestrator can re-prompt them at ANY point during Phases 4-6 for roadmap work, not just at the end.
+**Key principle:** Arch + PM are cheap to re-launch — use memory files and shared docs to resume them at any point during Phases 4-6.
 
-### Phase 5: FINALIZE (Arch + PM still alive, idle)
+### Phase 5: FINALIZE (Codex only unless a feedback re-prompt is needed)
 1. Codex merges all worktrees to feature branch (NOT main)
 2. Codex runs full test suite from merged branch
 3. Codex commits with structured message referencing all tasks
-4. Codex cleans up worktrees
+4. Codex cleans up worktrees only after the teardown checklist passes
 5. Codex archives `orchestration_run/` logs
 
 ### Phase 5.5: INTER-PHASE CLEANUP (orchestrator responsibility)
@@ -481,8 +520,13 @@ Each round is a fresh `-p` call, but the orchestrator mediates the conversation 
 After each orchestration run completes (Phase 5 finalize), orchestrator cleans up:
 
 **Delete (not gitignore):**
-- Dev worktrees: `git worktree remove .worktrees/dev_N` (already merged)
+- Dev worktrees: `git worktree remove .worktrees/dev_N` only after:
+  - recorded dev/cross-test PIDs are no longer running
+  - no terminal or shell still has its cwd inside the worktree
+  - the worktree branch is merged and the worktree is clean
+  - Codex has captured any needed diff/test output
 - Stream logs: `orchestration_run/logs/*.jsonl` (ephemeral, not needed after merge)
+- Optionally delete merged dev branches after worktree removal: `git branch -d dev_N/<feature>`
 
 **Keep (committed to branch):**
 - `orchestration_run/plan.md` — the executed plan (historical record)
@@ -516,7 +560,7 @@ orchestration_run/logs/*.jsonl
    - Log session summary to `00_admin/run_log.md`
    - Optionally write to role-specific memory: `orchestration_run/pm_memory.md`
 3. **Checkpoint 5 gate: memory files updated**
-4. Codex closes Architect + PM terminals
+4. Codex verifies no orchestration process remains running
 5. **All terminals now down — session complete**
 
 ---
@@ -543,11 +587,11 @@ Avoid in prompts:
 ### Monitoring Checklist (Codex watches)
 
 During run:
-1. `tail -f logs/*_stream.jsonl` — real-time stream activity
+1. `tail -f orchestration_run/logs/*_stream.jsonl` — real-time stream activity
 2. `tail -f orchestration_run/findings.md` — reviewer findings as they're written
 3. `ps` — verify processes exist
 4. `git status --short` in each worktree — track file changes
-5. Check plan MD for new inline updates
+5. Check the ROOT shared plan MD and coordination MD for new inline updates/status
 
 **Live watch prompt for reviewer steering:**
 Codex launches a separate read-only watcher (the live watch prompt pattern) that:
@@ -559,11 +603,11 @@ Codex launches a separate read-only watcher (the live watch prompt pattern) that
 
 ```bash
 # Live watch — Codex steers from this
-claude -p --verbose --model opus --effort high \
+claude -p --verbose --model haiku --effort low \
   --dangerously-skip-permissions --disable-slash-commands \
   --tools Read,Bash \
   --output-format stream-json --include-partial-messages \
-  "$(cat /tmp/live_watch_prompt.txt)" > logs/live_watch_stream.jsonl 2>&1
+  "$(cat /tmp/live_watch_prompt.txt)" > orchestration_run/logs/live_watch_stream.jsonl 2>&1
 ```
 
 This creates the feedback loop: Reviewer writes findings → Codex sees them live → Codex steers devs.
@@ -580,14 +624,15 @@ If stalled:
 | Architect stream idle, plan MD exists | Launch PM |
 | PM stream idle, tasks assigned | **WAIT — do NOT launch workers until plan is committed to branch** → Checkpoint 0 |
 | Checkpoint 0 passed | Create worktrees → bootstrap devs |
-| All dev ACKs received | Checkpoint 1 → launch execution prompts + reviewer + live watcher |
+| All dev ACKs received | Checkpoint 1 → launch execution prompts |
+| First dev posts `[DONE]` | Launch reviewer + live watcher |
 | Reviewer flags critical issue in stream | Kill affected dev, relaunch with fix instructions |
 | All devs `[DONE]` + reviewer reviewed | Checkpoint 2 → relaunch devs as cross-testers |
 | Cross-tester flags `[CROSS_TEST_FAIL]` | **Orchestrator handles:** relaunch original dev to fix → wait for fix → relaunch cross-tester to verify → repeat until `[CROSS_TEST_PASS]` |
-| All sign-offs complete | Checkpoint 3 → **kill all workers** (devs, watcher) → reviewer writes findings → **kill reviewer** → send feedback prompts to arch+PM |
-| Arch+PM posted lessons | Checkpoint 4 → merge → test → commit → cleanup (arch+PM stay alive) |
+| All sign-offs complete | Checkpoint 3 → **kill all workers** (devs, watcher) → reviewer writes findings → **kill reviewer** → re-launch feedback prompts to arch+PM |
+| Arch+PM posted lessons | Checkpoint 4 → merge → test → commit → cleanup |
 | Merge + tests pass, commit done | Phase 6 → send memory-write prompts to arch+PM |
-| Memory files updated | Checkpoint 5 → close arch+PM terminals → session complete |
+| Memory files updated | Checkpoint 5 → verify no orchestration process remains → session complete |
 
 ### Anti-Patterns (from Codex playbook + additions)
 
@@ -607,17 +652,44 @@ If stalled:
 ```yaml
 # config.md
 num_devs: 2
-model: opus
-effort: high
+architect_model: opus
+architect_effort: high
+pm_model: sonnet
+pm_effort: medium
+dev_default_model: sonnet
+dev_default_effort: medium
+dev_simple_model: haiku
+dev_simple_effort: low
+dev_complex_model: opus
+dev_complex_effort: high
+reviewer_default_model: sonnet
+reviewer_default_effort: medium
+reviewer_deep_model: opus
+reviewer_deep_effort: high
+crosstester_default_model: haiku
+crosstester_default_effort: low
+crosstester_escalation_model: sonnet
+crosstester_escalation_effort: medium
+watcher_model: haiku
+watcher_effort: low
+ui_tester_model: sonnet
+ui_tester_effort: low
+bootstrap_model: haiku
+bootstrap_effort: low
+escalation_model: opus
+escalation_effort: high
 branch: feature/<name>
 worktree_root: .worktrees/
 log_dir: orchestration_run/logs/
+shared_run_dir: orchestration_run/
 commit_target: branch  # never main
+use_streaming_for_all_roles: true
+steer_before_escalate: true
 
 # Tool restrictions per role
 dev_tools: Read,Write,Edit,Bash,Grep,Glob
-reviewer_tools: Read,Bash
-crosstester_tools: Read,Bash
+reviewer_tools: Read,Edit,Bash
+crosstester_tools: Read,Edit,Bash
 architect_tools: Read,Write,Edit,Bash,Grep,Glob
 pm_tools: Read,Write,Edit,Bash,Grep,Glob
 
@@ -657,6 +729,7 @@ IGNORE the following from AGENTS.md / CLAUDE.md:
 FOLLOW these from AGENTS.md:
 - Engineering Principles (Section: "Engineering Principles (Mandatory)")
 - Cross-Agent Collaboration conventions (message tags, owner tags)
+- In orchestrated runs, follow `.claude/orchestration/*` instead of the interactive chat-polling loop from `agent_coordination_protocol.md`
 ```
 
 **Orchestrator references role files explicitly:**
@@ -664,7 +737,7 @@ FOLLOW these from AGENTS.md:
 claude -p ... "$(cat .claude/orchestration/roles/dev.md)
 
 TASK ASSIGNMENT:
-$(cat /tmp/dev_N_task.txt)" > logs/dev_N_stream.jsonl 2>&1
+$(cat /tmp/dev_N_task.txt)" > orchestration_run/logs/dev_N_stream.jsonl 2>&1
 ```
 
 ### 11.1 Architect Prompt Should Include
@@ -695,13 +768,14 @@ $(cat /tmp/dev_N_task.txt)" > logs/dev_N_stream.jsonl 2>&1
 - **Owned files list:** Explicit, max 3-5 files — touch nothing else
 - **Test command:** Single command to verify their work
 - **Done criteria:** From PM's acceptance criteria
-- **Communication rules:** Where to post updates (their section in plan MD only)
+- **Communication rules:** Post updates only to the shared ROOT `orchestration_run/plan.md` via absolute path; never edit a worktree-local copy of shared docs
 - **Engineering principles:** Reuse existing components (list them), use properties system for config values
 - **TDD reminder:** Write tests first or alongside implementation
 
 ### 11.4 Code Reviewer Prompt Should Include
 
 - **File allowlist:** Explicit list of files they can read
+- **Edit allowlist:** ONLY Reviewer Findings sections in the shared ROOT `orchestration_run/plan.md` and `orchestration_run/findings.md`
 - **Bash allowlist:** Explicit list of commands they can run
 - **Review checklist:** Spec compliance, test coverage, no hardcoded config, reuse of existing components, transaction safety, scope isolation
 - **Output format:** Exact file path + 1-line reason per finding, structured tags
@@ -738,11 +812,11 @@ This structured format ensures Architect and PM receive actionable feedback when
 
 **Launch:**
 ```bash
-claude -p --verbose --model opus --effort high \
+claude -p --verbose --model sonnet --effort low \
   --dangerously-skip-permissions --disable-slash-commands \
   --tools Read,Bash \
   --output-format stream-json --include-partial-messages \
-  "$(cat /tmp/ui_tester_prompt.txt)" > logs/ui_tester_stream.jsonl 2>&1
+  "$(cat /tmp/ui_tester_prompt.txt)" > orchestration_run/logs/ui_tester_stream.jsonl 2>&1
 ```
 
 **Tools:** Read + Bash (uses Chrome MCP via the Claude in Chrome extension)
@@ -793,13 +867,16 @@ This gives you the full project state before spinning up the team.
 1. NEVER launch devs or reviewer before architect + PM are done and plan is committed
 2. ALWAYS create worktrees AFTER plan is committed to branch
 3. ALWAYS bootstrap devs (ACK prompt) before sending execution prompts
-4. ALWAYS launch reviewer AFTER at least one dev has completed work
+4. ALWAYS launch reviewer only after the first dev posts `[DONE]`; launch the live watcher alongside reviewer
 5. ALWAYS notify architect + PM when reviewer findings.md is ready — they review it
 6. ALWAYS send feedback prompts to architect + PM AFTER reviewer posts findings
 7. NEVER commit to main — only to feature branch
 8. ALWAYS run full test suite before final commit
 9. USE arch + PM idle time productively — send roadmap/planning prompts between phases
-8. ALWAYS spin down ALL terminals after finalize phase
+10. ALWAYS verify worker PIDs are gone and worktree shells/tabs are detached before `git worktree remove`
+11. ALWAYS stream substantive launches to `.jsonl` logs so you can steer from live output
+12. ALWAYS steer with a tighter prompt before escalating model or reasoning
+13. ALWAYS spin down ALL orchestration processes after finalize phase
 
 ## Orchestrator as Event Loop (No Polling by Agents)
 
@@ -809,7 +886,7 @@ This gives you the full project state before spinning up the team.
 - YOU send the prompt/nudge to the agent at the right moment
 - Agents do their work, post output, and stop
 
-**Nudge pattern for session-persistent roles (Arch + PM):**
+**Nudge pattern for relaunch-based strategic roles (Arch + PM):**
 - These agents are re-prompted (new `-p` call with context) when their turn comes
 - Between prompts they are IDLE — no running process, zero credit cost
 - Orchestrator triggers them: "Reviewer findings ready → prompt Architect", "Cross-test done → prompt PM"
@@ -823,13 +900,14 @@ This gives you the full project state before spinning up the team.
 **Key: Never include "wait for X" or "poll for Y" in any agent prompt.** If an agent needs to react to something, the orchestrator watches for that event and re-launches the agent with the new context.
 
 ## Monitoring Loop (Orchestrator Only)
-- Watch all streams via `tail -f logs/*_stream.jsonl`
+- Watch all streams via `tail -f orchestration_run/logs/*_stream.jsonl`
 - Watch reviewer findings via `tail -f orchestration_run/findings.md`
 - Check process health via `ps aux | grep claude`
 - Check worktree changes via `git -C .worktrees/dev_N status --short`
+- Check the shared ROOT docs, not worktree-local copies, for orchestration status and sign-offs
 
 ## Intervention Rules
-- If reviewer flags CRITICAL issue → kill affected dev → relaunch with fix prompt
+- If reviewer flags CRITICAL issue → first tighten the dev prompt with exact files/repro/acceptance criteria; escalate model/effort only if the streamed retry still misses
 - If dev is stalled (no stream output for 5+ min) → kill → relaunch with narrower prompt
 - If cross-test fails → relaunch original dev to fix → relaunch cross-tester after fix
 - If checkpoint gate not met → do NOT proceed to next phase
@@ -849,46 +927,52 @@ This gives you the full project state before spinning up the team.
 
 | Command | Purpose | When to Use |
 |---------|---------|-------------|
-| `claude -p "prompt"` | Single-shot non-interactive | Architect, PM, bootstrap ACK prompts |
-| `claude -p --output-format stream-json --include-partial-messages "prompt" > file.jsonl 2>&1` | Streamed with log capture | Dev execution, reviewer, cross-tester, live watch |
-| `claude -p --tools Read,Bash "prompt"` | Restricted toolset | Reviewer, cross-tester, UI tester, live watch |
-| `claude -p --model sonnet "prompt"` | Cheaper/faster model | Quick checks, simple tasks, bootstrap ACKs |
-| `claude -p --model opus --effort high "prompt"` | Full power | Complex implementation, architecture, review |
+| `claude -p "prompt"` | Single-shot non-interactive | Tiny one-off nudges or local dry-runs when stream capture is unnecessary |
+| `claude -p --output-format stream-json --include-partial-messages "prompt" > file.jsonl 2>&1` | Streamed with log capture | Architect, PM, dev execution, reviewer, cross-tester, live watch, feedback, memory writes |
+| `claude -p --tools Read,Edit,Bash "prompt"` | Restricted toolset with doc-write access | Reviewer, cross-tester |
+| `claude -p --tools Read,Bash "prompt"` | Restricted read-only toolset | UI tester, live watch |
+| `claude -p --model haiku --effort low "prompt"` | Cheapest tier | ACKs, watcher, exact reruns, simple cross-tests |
+| `claude -p --model sonnet --effort medium "prompt"` | Balanced default | PM, most dev work, standard review |
+| `claude -p --model opus --effort high "prompt"` | Highest reasoning | Architect, risky implementation, deep review, escalations |
 
 ### Common Flags
 
 | Flag | Purpose | Always Use? |
 |------|---------|-------------|
 | `--verbose` | Show tool calls in output | Yes — needed for stream observability |
-| `--model opus` | Best model for complex work | Yes for devs, architect, reviewer |
-| `--model sonnet` | Faster/cheaper | For bootstrap ACKs, simple prompts |
-| `--effort high` | Maximum reasoning | Yes for implementation and review |
+| `--model opus` | Best model for complex work | Architect always; other roles only when the task or stream quality warrants it |
+| `--model sonnet` | Balanced default | PM, most dev work, standard review |
+| `--model haiku` | Cheapest fast tier | ACKs, watcher, exact checklist reruns |
+| `--effort high` | Maximum reasoning | Architect always; escalations for risky work |
+| `--effort medium` | Normal reasoning | Default for most non-architect work |
+| `--effort low` | Cheapest reasoning | Deterministic/repetitive prompts |
 | `--dangerously-skip-permissions` | No permission prompts | Yes — agents run unattended |
 | `--disable-slash-commands` | Prevent slash command injection | Yes — agents shouldn't use slash commands |
 | `--output-format stream-json` | JSON stream output | When you need to capture or watch the stream |
 | `--include-partial-messages` | Include in-progress tokens | Pair with stream-json for real-time visibility |
-| `--tools Read,Bash` | Restrict available tools | For read-only roles (reviewer, cross-tester, watcher) |
+| `--tools Read,Bash` | Restrict available tools | For fully read-only roles (UI tester, live watch) |
 
 ### Monitoring Commands
 
 | Command | Purpose | When to Use |
 |---------|---------|-------------|
-| `tail -f logs/dev_N_stream.jsonl` | Watch a dev's stream live | During build phase |
-| `tail -f logs/reviewer_stream.jsonl` | Watch reviewer in real-time | During review phase |
+| `tail -f orchestration_run/logs/dev_N_stream.jsonl` | Watch a dev's stream live | During build phase |
+| `tail -f orchestration_run/logs/reviewer_stream.jsonl` | Watch reviewer in real-time | During review phase |
 | `tail -f orchestration_run/findings.md` | Watch findings as they're written | Continuous during build+review |
 | `ps aux \| grep claude` | Check which agents are alive | Periodic health check |
 | `git -C .worktrees/dev_N status --short` | Check dev worktree changes | After stream goes quiet |
 | `git -C .worktrees/dev_N diff --stat` | Summary of what dev changed | Before merge phase |
-| `git -C .worktrees/dev_N log --oneline -5` | Recent commits in worktree | Verify dev committed work |
-| `wc -l logs/*.jsonl` | Stream size per agent | Detect stalled agents (no growth) |
+| `wc -l orchestration_run/logs/*.jsonl` | Stream size per agent | Detect stalled agents (no growth) |
+| `lsof +D .worktrees/dev_N` | Check no shell/process is still attached to a worktree | Before removal |
 
 ### Worktree Management
 
 | Command | Purpose | When to Use |
 |---------|---------|-------------|
-| `git worktree add .worktrees/dev_N -b dev_N/feature` | Create dev worktree | After plan committed (Checkpoint 0) |
+| `git worktree add .worktrees/dev_N -b dev_N/<feature> <feature-branch>` | Create dev worktree | After plan committed (Checkpoint 0) |
 | `git worktree list` | See all active worktrees | Health check |
-| `git worktree remove .worktrees/dev_N` | Clean up after merge | Finalize phase |
+| `git worktree remove .worktrees/dev_N` | Clean up after merge | Finalize phase, after PID/attachment checks pass |
+| `git branch -d dev_N/<feature>` | Delete merged dev branch | After worktree removal |
 
 ### Process Management
 
@@ -897,13 +981,14 @@ This gives you the full project state before spinning up the team.
 | `kill PID` | Stop a stalled or misbehaving agent | When intervention needed |
 | `kill -9 PID` | Force kill unresponsive agent | Last resort |
 | `pkill -f "claude.*dev_N"` | Kill by prompt pattern | When PID unknown |
+| `ps -p <pid>` | Verify a recorded orchestration PID is gone | Before worktree cleanup |
 
 ### Merge and Commit
 
 | Command | Purpose | When to Use |
 |---------|---------|-------------|
-| `git -C .worktrees/dev_N diff main..HEAD` | See all dev changes vs main | Before merge |
-| `git merge .worktrees/dev_N` | Merge worktree branch | Finalize phase, after all sign-offs |
+| `git diff --stat <feature-branch>...dev_N/<feature>` | See all dev changes vs the feature branch | Before merge |
+| `git merge dev_N/<feature>` | Merge worktree branch | Finalize phase, after all sign-offs |
 | `python -m pytest tests/ -v` | Full regression suite | After merge, before commit |
 | `git add -A && git commit -m "message"` | Commit merged work | After tests pass |
 
@@ -914,6 +999,7 @@ This gives you the full project state before spinning up the team.
 - **Does not replace Codex** — Codex is the outer orchestrator; this provides prompts, protocols, and templates
 - **Does not push to main** — only commits to feature branch
 - **Does not auto-merge on failure** — all sign-offs required before merge
-- **Does not give reviewer write access** — findings go in designated MD sections only
-- **Does not kill architect/PM until session end** — they stay alive for feedback, memory-write, and potential re-prompt
+- **Does not use worktree-local copies of shared run docs** — plan/coordination/findings live only in ROOT `orchestration_run/`
+- **Does not give reviewer code write access** — reviewer can edit only designated shared review sections
+- **Does not require open Architect/PM tabs between prompts** — continuity is file-based, not process-based
 - **Does not launch devs before plan is locked** — Checkpoint 0 must pass first

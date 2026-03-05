@@ -11,6 +11,7 @@
 - Classification quality must follow Assessment Guide logic, including fallback linkage behavior.
 - Large historical narratives belong in archive, not active admin files.
 - Shared instruction baseline is now unified across agents: `AGENTS.md` is canonical, `CLAUDE.md` is extension-only, and routing starts from `ACTIVE_PROJECT.md`.
+- Orchestrated multi-agent runs use the `.claude/orchestration/` event-loop system instead of chat polling: shared run docs live only in ROOT `orchestration_run/`, substantive launches should stream to `.jsonl`, reviewer starts after the first dev `[DONE]`, Architect stays on `opus` + high, and other roles use task-based model/effort selection with steer-before-escalate defaults.
 - UI consolidation Group 1 + Group 2 are complete; Group 3A (Jinja filter-card macros) is deferred to backlog as low-value relative to current roadmap.
 - Remaining full-app UI modularization opportunities (outside consolidation plan scope) are tracked as backlog in `00_admin/todos.md`, sourced from `02_working/01_notes/codex_full_app_ui_modularization_audit_2026-02-15.md`.
 - MCP plan status: Phase 1 protocol support and Phase 5 write-back/read tools are complete (Codex, 2026-02-15), and Phase 4 classification audit/fixes are complete (Claude, 2026-02-15); remaining work is Phase 2/3 prompt/resource content registration.
