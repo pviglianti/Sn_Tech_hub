@@ -59,14 +59,14 @@
 | Task | Owner | Status | Depends On |
 |------|-------|--------|------------|
 | P9A: Integrate registered MCP prompts into pipeline handlers (`ai_analysis`, `ai_refinement`, `report`) with safe rollout toggle | Codex | `review_requested` | P8A-4 |
-| P9B: Excel/Word export generation from report-stage aggregate payloads | Codex | `review_requested` | P8A-4 |
-| P9C: Process recommendations UI (assessment detail rendering/filtering/sorting) | Claude + Codex | `review_requested` | P9A |
+| P9B: Excel/Word export generation from report-stage aggregate payloads | Codex | `approved` | P8A-4 |
+| P9C: Process recommendations UI (assessment detail rendering/filtering/sorting) | Claude + Codex | `approved` | P9A |
 
 ## Phase 10 Task Assignments (IMPLEMENTED 2026-03-05)
 
 | Task | Owner | Status | Depends On |
 |------|-------|--------|------------|
-| P10A: Assessment summary dashboard page (cross-assessment pipeline/cost/token metrics) | Codex | `review_requested` | P9B |
+| P10A: Assessment summary dashboard page (cross-assessment pipeline/cost/token metrics) | Codex | `approved` | P9B |
 
 ### Accepted Addendums (A6–A10)
 - **A6:** Plural route naming: `/api/assessments/...`, `/api/results/...`

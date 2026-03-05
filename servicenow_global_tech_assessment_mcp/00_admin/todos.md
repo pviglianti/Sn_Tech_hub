@@ -11,8 +11,8 @@
 - [ ] [owner:human] **Full pipeline live QA**: Run complete 10-stage pipeline on real assessment with live SN instance after credential reconciliation.
 - [ ] [owner:human] **Assessment Runtime Usage validation**: run one full pipeline and verify `/integration-properties/assessment-runtime-usage` shows mode/provider/model, MCP local/SN/local-DB call counters, token totals, and estimated cost.
 - [ ] [owner:human] **Resume + rehydrate validation**: interrupt an in-progress stage (`observations`, `grouping`, or `recommendations`) and confirm resume picks up from saved checkpoint/index instead of restarting completed work.
-- [ ] [owner:human] **Phase 9/10 feature validation**: verify prompt-toggle behavior (`pipeline.use_registered_prompts`), assessment exports (`/assessments/{id}/export/excel`, `/assessments/{id}/export/word`), process recommendations tab DataTable, and `/assessments/summary` dashboard metrics on real assessment data.
-- [ ] [owner:claude] **Phase 9/10 peer review pass**: review each deliverable checkpoint in `phase3_planning_chat.md` (prompt integration, exports, process recommendations UI/API, summary dashboard) and return `REVIEW_PASS` or actionable `REVIEW_FEEDBACK`.
+- [ ] [owner:human] **Phase 9/10 feature validation**: verify prompt-toggle behavior (`pipeline.use_registered_prompts`), assessment exports (`/api/assessments/{id}/export/xlsx`, `/api/assessments/{id}/export/docx`), process recommendations tab DataTable, and `/assessments/summary` dashboard metrics on real assessment data.
+- [ ] [owner:claude] **Phase 9/10 peer review closeout**: post final `REVIEW_PASS` for prompt integration (P9A) after Codex remediation; exports/process recommendations/summary are already reviewed and marked approved.
 - [ ] [owner:human] Visual QA: Data Browser page, template component changes, routed pages (instances, pulls).
 - [ ] [owner:human] Visual QA deep-link flow: preflight → Job Log with preloaded conditions.
 - [ ] [owner:human] Visual QA #2 Phase 2 durable status (dictionary modal, CSDM ingestion bar, scan runtime bar).
@@ -49,10 +49,10 @@
 
 ## Completed (session 2026-03-05 — Phase 9/10 Delivery)
 - [x] [owner:codex] Phase 9 prompt integration completed: added safe rollout helper + prompt extraction path for `artifact_analyzer` (`ai_analysis`), `relationship_tracer` + `technical_architect` (`ai_refinement`), and `report_writer` (`report`) behind `pipeline.use_registered_prompts`.
-- [x] [owner:codex] Phase 9 exports completed: added download routes for Excel/Word report exports (`/assessments/{id}/export/excel`, `/assessments/{id}/export/word`) from latest `assessment_report` payload.
+- [x] [owner:codex] Phase 9 exports completed: canonical export API route is `/api/assessments/{id}/export/{format}` (`xlsx`/`docx`) via `report_export` service; duplicate in-page export action block removed during peer-review cleanup.
 - [x] [owner:codex] Phase 9 process recommendations UI completed: added assessment-detail Process Recommendations tab with DataTable endpoints (`/api/assessments/{id}/process-recommendations/*`) and filtering/sorting support.
 - [x] [owner:codex] Phase 10 summary dashboard completed: added `/assessments/summary` page for cross-assessment pipeline stage distribution, state distribution, and runtime cost/token/MCP totals.
-- [x] [owner:codex] Added targeted regression coverage for Phase 9/10 (`13 passed`): `test_phase9_prompt_integration.py`, `test_phase9_exports_and_process_ui.py`, and prompt-property additions in `test_integration_properties.py`.
+- [x] [owner:codex] Added targeted + full regression coverage for Phase 9/10 peer-review cycle: `test_phase9_prompt_integration.py` (ai_refinement enabled/disabled/fallback paths), `test_phase9_exports_and_process_ui.py`, `test_pipeline_prompt_integration.py`; full suite currently green (`532 passed`).
 
 ## Completed (session 2026-03-04)
 - [x] [owner:codex] Reasoning Phase 1 data model foundation: added `GroupingSignalType`, reasoning fields on `Feature`/`ScanResult`, and 4 new reasoning tables (`code_reference`, `update_set_overlap`, `temporal_cluster`, `structural_relationship`) with explicit `instance_id` + `assessment_id` references and result/update-set foreign keys.

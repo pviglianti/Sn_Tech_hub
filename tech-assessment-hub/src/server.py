@@ -1962,6 +1962,23 @@ def _run_assessment_pipeline_stage(
                     session.add(feat)
                     complex_features.append((feat, member_count))
 
+            checkpoint_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                total_items=3,
+                completed_items=1,
+                status="running",
+                checkpoint={
+                    "substep": "complex_features",
+                    "complex_features_analyzed": len(complex_features),
+                    "feature_count": len(features),
+                },
+                commit=False,
+            )
+            # Persist sub-step 1 so resume does not lose completed feature analysis work.
+            session.commit()
+
             # ---- Sub-step 2: Mode A — review flagged artifacts ----
             _set_assessment_pipeline_job_state(
                 assessment_id,
@@ -2024,6 +2041,23 @@ def _run_assessment_pipeline_stage(
                 sr.ai_observations = json.dumps(existing_obs, sort_keys=True)
                 session.add(sr)
                 mode_a_count += 1
+
+            checkpoint_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                total_items=3,
+                completed_items=2,
+                status="running",
+                checkpoint={
+                    "substep": "artifact_review",
+                    "artifacts_reviewed_mode_a": mode_a_count,
+                    "flagged_artifacts_total": len(flagged_artifacts),
+                },
+                commit=False,
+            )
+            # Persist sub-step 2 to improve resumability on downstream failures.
+            session.commit()
 
             # ---- Sub-step 3: Mode B — assessment-wide roll-up ----
             _set_assessment_pipeline_job_state(

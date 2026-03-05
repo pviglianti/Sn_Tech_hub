@@ -200,17 +200,6 @@
 </div>
 {% endif %}
 
-<div class="card mt-1">
-    <h3>Report Exports</h3>
-    <p class="text-muted-plain mb-05">
-        Export the latest <code>assessment_report</code> payload generated in Stage 9 (Report).
-    </p>
-    <div class="button-group">
-        <a href="/assessments/{{ assessment.id }}/export/excel" class="btn btn-secondary">Export Excel</a>
-        <a href="/assessments/{{ assessment.id }}/export/word" class="btn btn-secondary">Export Word</a>
-    </div>
-</div>
-
 <div class="card" id="syncCard">
     <h2 id="syncCardTitle">Preflight Sync Plan</h2>
     <p class="preflight-subtitle" id="syncCardSubtitle">

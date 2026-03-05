@@ -60,6 +60,40 @@ def _seed_base_assessment(
     return inst, asmt, scan
 
 
+def _seed_refinement_feature_with_members(db_session, *, asmt: Assessment, scan: Scan):
+    feature = Feature(
+        assessment_id=asmt.id,
+        name="Prompt Feature",
+        description="feature for prompt integration test",
+    )
+    db_session.add(feature)
+    db_session.flush()
+
+    members = []
+    for idx in range(5):
+        sr = ScanResult(
+            scan_id=scan.id,
+            sys_id=f"prompt_refine_sr_{idx}",
+            table_name="sys_script_include",
+            name=f"Refine Artifact {idx}",
+            origin_type=OriginType.modified_ootb,
+            ai_observations=json.dumps({"seeded": True}),
+        )
+        db_session.add(sr)
+        db_session.flush()
+        members.append(sr)
+        db_session.add(
+            FeatureScanResult(
+                feature_id=feature.id,
+                scan_result_id=sr.id,
+                is_primary=(idx == 0),
+                assignment_source="engine",
+            )
+        )
+    db_session.commit()
+    return feature, members
+
+
 def test_ai_analysis_uses_registered_prompt_when_enabled(db_session, db_engine):
     _, asmt, scan = _seed_base_assessment(
         db_session,
@@ -115,36 +149,11 @@ def test_ai_refinement_uses_registered_prompts_when_enabled(db_session, db_engin
         stage=PipelineStage.ai_refinement.value,
         number="ASMTP90012",
     )
-    feature = Feature(
-        assessment_id=asmt.id,
-        name="Prompt Feature",
-        description="feature for prompt integration test",
+    feature, members = _seed_refinement_feature_with_members(
+        db_session,
+        asmt=asmt,
+        scan=scan,
     )
-    db_session.add(feature)
-    db_session.flush()
-
-    members = []
-    for idx in range(5):
-        sr = ScanResult(
-            scan_id=scan.id,
-            sys_id=f"prompt_refine_sr_{idx}",
-            table_name="sys_script_include",
-            name=f"Refine Artifact {idx}",
-            origin_type=OriginType.modified_ootb,
-            ai_observations=json.dumps({"seeded": True}),
-        )
-        db_session.add(sr)
-        db_session.flush()
-        members.append(sr)
-        db_session.add(
-            FeatureScanResult(
-                feature_id=feature.id,
-                scan_result_id=sr.id,
-                is_primary=(idx == 0),
-                assignment_source="engine",
-            )
-        )
-    db_session.commit()
 
     def _prompt_side_effect(name, arguments, session=None):
         if name == "relationship_tracer":
@@ -189,6 +198,100 @@ def test_ai_refinement_uses_registered_prompts_when_enabled(db_session, db_engin
     rollup_data = json.loads(rollup.description or "{}")
     assert rollup_data.get("registered_prompt") == "technical_architect"
     assert "mode B" in rollup_data.get("prompt_context", "")
+
+
+def test_ai_refinement_skips_registered_prompts_when_disabled(db_session, db_engine):
+    _, asmt, scan = _seed_base_assessment(
+        db_session,
+        stage=PipelineStage.ai_refinement.value,
+        number="ASMTP90014",
+    )
+    feature, members = _seed_refinement_feature_with_members(
+        db_session,
+        asmt=asmt,
+        scan=scan,
+    )
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine), \
+        patch("src.server._set_assessment_pipeline_job_state"), \
+        patch("src.server._set_assessment_pipeline_stage"), \
+        patch(
+            "src.server.load_pipeline_prompt_properties",
+            return_value=PipelinePromptProperties(use_registered_prompts=False),
+        ), \
+        patch("src.server.PROMPT_REGISTRY.get_prompt") as mock_get_prompt:
+        _run_assessment_pipeline_stage(asmt.id, target_stage="ai_refinement")
+
+    mock_get_prompt.assert_not_called()
+
+    db_session.refresh(feature)
+    feature_summary = json.loads(feature.ai_summary or "{}")
+    assert "registered_prompt" not in feature_summary
+    assert "registered_prompt_error" not in feature_summary
+
+    first_member = db_session.get(ScanResult, members[0].id)
+    first_obs = json.loads(first_member.ai_observations or "{}")
+    technical_review = first_obs.get("technical_review") or {}
+    assert "registered_prompt" not in technical_review
+    assert "registered_prompt_error" not in technical_review
+
+    rollup = db_session.exec(
+        select(GeneralRecommendation)
+        .where(GeneralRecommendation.assessment_id == asmt.id)
+        .where(GeneralRecommendation.category == "technical_findings")
+    ).first()
+    assert rollup is not None
+    rollup_data = json.loads(rollup.description or "{}")
+    assert "registered_prompt" not in rollup_data
+    assert "registered_prompt_error" not in rollup_data
+
+
+def test_ai_refinement_records_prompt_errors_when_not_registered(db_session, db_engine):
+    _, asmt, scan = _seed_base_assessment(
+        db_session,
+        stage=PipelineStage.ai_refinement.value,
+        number="ASMTP90015",
+    )
+    feature, members = _seed_refinement_feature_with_members(
+        db_session,
+        asmt=asmt,
+        scan=scan,
+    )
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine), \
+        patch("src.server._set_assessment_pipeline_job_state"), \
+        patch("src.server._set_assessment_pipeline_stage"), \
+        patch(
+            "src.server.load_pipeline_prompt_properties",
+            return_value=PipelinePromptProperties(use_registered_prompts=True),
+        ), \
+        patch("src.server.PROMPT_REGISTRY.has_prompt", return_value=False), \
+        patch("src.server.PROMPT_REGISTRY.get_prompt") as mock_get_prompt:
+        _run_assessment_pipeline_stage(asmt.id, target_stage="ai_refinement")
+
+    mock_get_prompt.assert_not_called()
+
+    db_session.refresh(feature)
+    feature_summary = json.loads(feature.ai_summary or "{}")
+    assert feature_summary.get("registered_prompt_error") == "Prompt not registered: relationship_tracer"
+
+    first_member = db_session.get(ScanResult, members[0].id)
+    first_obs = json.loads(first_member.ai_observations or "{}")
+    technical_review = first_obs.get("technical_review") or {}
+    assert technical_review.get("registered_prompt_error") == "Prompt not registered: technical_architect"
+
+    rollup = db_session.exec(
+        select(GeneralRecommendation)
+        .where(GeneralRecommendation.assessment_id == asmt.id)
+        .where(GeneralRecommendation.category == "technical_findings")
+    ).first()
+    assert rollup is not None
+    rollup_data = json.loads(rollup.description or "{}")
+    assert rollup_data.get("registered_prompt_error") == "Prompt not registered: technical_architect"
 
 
 def test_report_stage_uses_registered_prompt_when_enabled(db_session, db_engine):
