@@ -30,11 +30,14 @@ class AssessmentState(str, Enum):
 class PipelineStage(str, Enum):
     """Assessment reasoning pipeline stages after scans complete."""
     scans = "scans"
+    ai_analysis = "ai_analysis"
     engines = "engines"
     observations = "observations"
     review = "review"
     grouping = "grouping"
+    ai_refinement = "ai_refinement"
     recommendations = "recommendations"
+    report = "report"
     complete = "complete"
 
 
