@@ -46,7 +46,8 @@ from .services.data_pull_executor import (
     get_data_pull_storage_tables,
 )
 from .services.integration_sync_runner import resolve_delta_decision
-from .services.integration_properties import load_preflight_concurrent_types
+from .services.integration_properties import load_preflight_concurrent_types, load_ai_analysis_properties
+from .services.contextual_lookup import gather_artifact_context
 from .services.dictionary_pull_orchestrator import (
     start_dictionary_pull,
     get_dictionary_pull_status,
@@ -1397,7 +1398,78 @@ def _run_assessment_pipeline_stage(
 
         success_message = f"{stage} stage completed."
 
-        if stage == PipelineStage.engines.value:
+        if stage == PipelineStage.ai_analysis.value:
+            # --- AI Analysis: gather contextual enrichment for customized artifacts ---
+            ai_props = load_ai_analysis_properties(session, instance_id=assessment.instance_id)
+            instance_id = assessment.instance_id
+
+            # Query customized ScanResults via Scan -> ScanResult join
+            customized = session.exec(
+                select(ScanResult)
+                .join(Scan, ScanResult.scan_id == Scan.id)
+                .where(Scan.assessment_id == assessment_id)
+                .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
+            ).all()
+
+            total = len(customized)
+            if total == 0:
+                success_message = "AI Analysis stage completed (0 customized artifacts found)."
+            else:
+                # Determine batch processing
+                batch_size = ai_props.batch_size if ai_props.batch_size > 0 else total
+                analyzed_count = 0
+
+                for i, sr in enumerate(customized):
+                    # Gather context via the contextual lookup service
+                    ctx = gather_artifact_context(
+                        session, instance_id, sr.id, ai_props.context_enrichment
+                    )
+
+                    # Build analysis result dict
+                    references = ctx.get("references") or []
+                    human_ctx = ctx.get("human_context") or {}
+                    artifact_info = ctx.get("artifact") or {}
+
+                    human_context_present = bool(
+                        human_ctx.get("observations")
+                        or human_ctx.get("disposition")
+                        or human_ctx.get("features")
+                    )
+
+                    analysis_result = {
+                        "artifact_name": artifact_info.get("name") or sr.name,
+                        "artifact_table": artifact_info.get("table_name") or sr.table_name,
+                        "context_enrichment_mode": ai_props.context_enrichment,
+                        "references_found": sum(1 for r in references if r.get("resolved")),
+                        "has_local_data": ctx.get("has_local_table_data", False),
+                        "human_context_present": human_context_present,
+                        "update_sets_count": len(ctx.get("update_sets") or []),
+                    }
+
+                    sr.ai_observations = json.dumps(analysis_result, sort_keys=True)
+                    session.add(sr)
+                    analyzed_count += 1
+
+                    # Commit in batches
+                    if analyzed_count % batch_size == 0:
+                        session.commit()
+
+                    # Update progress
+                    progress = 15 + int((i + 1) / total * 80)
+                    _set_assessment_pipeline_job_state(
+                        assessment_id,
+                        stage=stage,
+                        status="running",
+                        message=f"Analyzing artifact {i + 1}/{total}...",
+                        progress_percent=progress,
+                    )
+
+                session.commit()
+                success_message = (
+                    f"AI Analysis stage completed ({analyzed_count}/{total} customized artifacts analyzed)."
+                )
+
+        elif stage == PipelineStage.engines.value:
             result = run_preprocessing_engines_handle({"assessment_id": assessment_id}, session)
             if not result.get("success"):
                 errors = result.get("errors") or []

@@ -264,3 +264,285 @@ def test_load_ai_analysis_properties_defaults(db_session):
     assert isinstance(props, AIAnalysisProperties)
     assert props.batch_size == 0
     assert props.context_enrichment == "auto"
+
+
+# ---------------------------------------------------------------------------
+# Task 6 tests: AI Analysis pipeline stage handler
+# ---------------------------------------------------------------------------
+
+import json
+from unittest.mock import MagicMock
+
+from src.models import (
+    Scan,
+    ScanResult,
+    ScanStatus,
+    ScanType,
+    OriginType,
+)
+from src.services.integration_properties import AIAnalysisProperties
+
+
+def _seed_assessment_with_scan_results(db_session, *, num_customized=2, num_ootb=1):
+    """Seed an Instance, Assessment, Scan, and ScanResults for ai_analysis tests.
+
+    Returns (assessment, list_of_customized_scan_results).
+    """
+    inst = Instance(
+        name="ai-test-inst",
+        url="https://ai-test.service-now.com",
+        username="admin",
+        password_encrypted="encrypted",
+    )
+    db_session.add(inst)
+    db_session.flush()
+
+    asmt = Assessment(
+        instance_id=inst.id,
+        name="AI Analysis Test",
+        number="ASMT0099900",
+        assessment_type=AssessmentType.global_app,
+        state=AssessmentState.in_progress,
+        pipeline_stage=PipelineStage.ai_analysis.value,
+    )
+    db_session.add(asmt)
+    db_session.flush()
+
+    scan = Scan(
+        assessment_id=asmt.id,
+        scan_type=ScanType.metadata,
+        name="test-scan",
+        status=ScanStatus.completed,
+    )
+    db_session.add(scan)
+    db_session.flush()
+
+    customized_results = []
+    for i in range(num_customized):
+        sr = ScanResult(
+            scan_id=scan.id,
+            sys_id=f"sys_custom_{i}",
+            table_name="sys_script_include",
+            name=f"CustomScript{i}",
+            origin_type=OriginType.modified_ootb,
+        )
+        db_session.add(sr)
+        customized_results.append(sr)
+
+    for i in range(num_ootb):
+        sr = ScanResult(
+            scan_id=scan.id,
+            sys_id=f"sys_ootb_{i}",
+            table_name="sys_script_include",
+            name=f"OotbScript{i}",
+            origin_type=OriginType.ootb_untouched,
+        )
+        db_session.add(sr)
+
+    db_session.commit()
+    for sr in customized_results:
+        db_session.refresh(sr)
+    db_session.refresh(asmt)
+    return asmt, customized_results
+
+
+def _make_mock_context(sr_name="TestArtifact", sr_table="sys_script_include"):
+    """Return a fake gather_artifact_context response."""
+    return {
+        "artifact": {"id": 1, "name": sr_name, "table_name": sr_table},
+        "update_sets": [{"id": 10, "name": "US1"}],
+        "human_context": {
+            "observations": None,
+            "ai_observations": None,
+            "disposition": None,
+            "review_status": "pending_review",
+            "recommendation": None,
+            "features": [],
+        },
+        "references": [
+            {"type": "incident", "number": "INC0012345", "table": "incident", "resolved": True, "data": {}, "source": "local"},
+        ],
+        "has_local_table_data": True,
+    }
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+@patch("src.server.gather_artifact_context")
+def test_ai_analysis_handler_populates_ai_observations(
+    mock_gather, mock_set_stage, mock_set_job, db_session, db_engine
+):
+    """ai_analysis handler should populate ai_observations JSON for customized results."""
+    asmt, customized = _seed_assessment_with_scan_results(db_session, num_customized=2, num_ootb=1)
+
+    mock_gather.return_value = _make_mock_context()
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="ai_analysis")
+
+    # Refresh to get updated values
+    for sr in customized:
+        db_session.refresh(sr)
+
+    for sr in customized:
+        assert sr.ai_observations is not None, f"ai_observations should be populated for {sr.name}"
+        parsed = json.loads(sr.ai_observations)
+        assert "artifact_name" in parsed
+        assert "artifact_table" in parsed
+        assert "context_enrichment_mode" in parsed
+        assert "references_found" in parsed
+        assert "has_local_data" in parsed
+        assert "human_context_present" in parsed
+        assert "update_sets_count" in parsed
+
+    assert mock_gather.call_count == 2, "gather_artifact_context should be called once per customized result"
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+@patch("src.server.gather_artifact_context")
+def test_ai_analysis_handler_batch_size_zero_processes_all(
+    mock_gather, mock_set_stage, mock_set_job, db_session, db_engine
+):
+    """batch_size=0 should process all customized artifacts at once."""
+    asmt, customized = _seed_assessment_with_scan_results(db_session, num_customized=5, num_ootb=0)
+
+    mock_gather.return_value = _make_mock_context()
+
+    # Default AIAnalysisProperties has batch_size=0
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="ai_analysis")
+
+    assert mock_gather.call_count == 5, "All 5 customized artifacts should be processed"
+
+    for sr in customized:
+        db_session.refresh(sr)
+        assert sr.ai_observations is not None
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+@patch("src.server.gather_artifact_context")
+@patch("src.server.load_ai_analysis_properties")
+def test_ai_analysis_handler_passes_enrichment_mode(
+    mock_load_props, mock_gather, mock_set_stage, mock_set_job, db_session, db_engine
+):
+    """The enrichment_mode from properties should be passed to gather_artifact_context."""
+    asmt, customized = _seed_assessment_with_scan_results(db_session, num_customized=1, num_ootb=0)
+
+    mock_load_props.return_value = AIAnalysisProperties(batch_size=0, context_enrichment="never")
+    mock_gather.return_value = _make_mock_context()
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="ai_analysis")
+
+    # Verify enrichment_mode was passed through
+    assert mock_gather.call_count == 1
+    call_args = mock_gather.call_args
+    assert call_args[0][3] == "never", "enrichment_mode should be 'never'"
+
+    db_session.refresh(customized[0])
+    parsed = json.loads(customized[0].ai_observations)
+    assert parsed["context_enrichment_mode"] == "never"
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+@patch("src.server.gather_artifact_context")
+def test_ai_analysis_handler_skips_ootb_results(
+    mock_gather, mock_set_stage, mock_set_job, db_session, db_engine
+):
+    """Only customized (modified_ootb, net_new_customer) results should be analyzed."""
+    asmt, _ = _seed_assessment_with_scan_results(db_session, num_customized=0, num_ootb=3)
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="ai_analysis")
+
+    assert mock_gather.call_count == 0, "OOTB results should not be analyzed"
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+@patch("src.server.gather_artifact_context")
+def test_ai_analysis_handler_human_context_flag(
+    mock_gather, mock_set_stage, mock_set_job, db_session, db_engine
+):
+    """human_context_present should be True when observations or disposition exist."""
+    asmt, customized = _seed_assessment_with_scan_results(db_session, num_customized=1, num_ootb=0)
+
+    ctx = _make_mock_context()
+    ctx["human_context"]["observations"] = "Human wrote this note"
+    ctx["human_context"]["disposition"] = "keep"
+    mock_gather.return_value = ctx
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="ai_analysis")
+
+    db_session.refresh(customized[0])
+    parsed = json.loads(customized[0].ai_observations)
+    assert parsed["human_context_present"] is True
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+@patch("src.server.gather_artifact_context")
+def test_ai_analysis_handler_references_count(
+    mock_gather, mock_set_stage, mock_set_job, db_session, db_engine
+):
+    """references_found should count only resolved references."""
+    asmt, customized = _seed_assessment_with_scan_results(db_session, num_customized=1, num_ootb=0)
+
+    ctx = _make_mock_context()
+    ctx["references"] = [
+        {"type": "incident", "number": "INC001", "resolved": True, "data": {}, "source": "local"},
+        {"type": "change_request", "number": "CHG001", "resolved": False, "data": None, "source": None},
+        {"type": "problem", "number": "PRB001", "resolved": True, "data": {}, "source": "remote"},
+    ]
+    mock_gather.return_value = ctx
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="ai_analysis")
+
+    db_session.refresh(customized[0])
+    parsed = json.loads(customized[0].ai_observations)
+    assert parsed["references_found"] == 2, "Only resolved references should be counted"
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+@patch("src.server.gather_artifact_context")
+def test_ai_analysis_handler_progress_updates(
+    mock_gather, mock_set_stage, mock_set_job, db_session, db_engine
+):
+    """Handler should update progress via _set_assessment_pipeline_job_state for each artifact."""
+    asmt, customized = _seed_assessment_with_scan_results(db_session, num_customized=3, num_ootb=0)
+
+    mock_gather.return_value = _make_mock_context()
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="ai_analysis")
+
+    # The function calls _set_assessment_pipeline_job_state:
+    # 1x at start (from _run_assessment_pipeline_stage itself, before the handler)
+    # 3x for progress (one per artifact)
+    # 1x at completion
+    # Total = 5 calls
+    progress_calls = [
+        c for c in mock_set_job.call_args_list
+        if c.kwargs.get("message", "").startswith("Analyzing artifact")
+    ]
+    assert len(progress_calls) == 3, f"Expected 3 progress calls, got {len(progress_calls)}"
