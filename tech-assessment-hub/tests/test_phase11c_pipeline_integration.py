@@ -323,11 +323,10 @@ class TestDepthFirstTelemetry:
         details = last_call[1].get("details") or (last_call[0][4] if len(last_call[0]) > 4 else {})
 
         # The telemetry_details dict is passed in the details kwarg of the final refresh call
-        # Look for ai_analysis key in the details
-        if "ai_analysis" in details:
-            ai_telemetry = details["ai_analysis"]
-            assert ai_telemetry["mode"] == "depth_first"
-            assert ai_telemetry["customized_total"] == 5
-            assert ai_telemetry["analyzed_count"] == 5
-            assert ai_telemetry["features_created"] == 2
-            assert ai_telemetry["features_updated"] == 1
+        assert "ai_analysis" in details, f"Expected ai_analysis telemetry key, got: {details}"
+        ai_telemetry = details["ai_analysis"]
+        assert ai_telemetry["mode"] == "depth_first"
+        assert ai_telemetry["customized_total"] == 5
+        assert ai_telemetry["analyzed_count"] == 5
+        assert ai_telemetry["features_created"] == 2
+        assert ai_telemetry["features_updated"] == 1
