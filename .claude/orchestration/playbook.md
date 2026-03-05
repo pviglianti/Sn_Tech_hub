@@ -16,6 +16,8 @@ This is your copy-paste reference. Follow phases in order. Do NOT skip checkpoin
 10. **Flexible Arch/PM usage:** Between phases, you can repurpose Architect for code review, testing assistance, or stepping in to help. They are your most capable agents — use them.
 11. **Record launch decisions.** For every backgrounded role, record the chosen model, effort, PID, and log file in `orchestration_run/coordination.md` before moving on.
 12. **Monitor loop is mandatory during Build/Cross-Test.** Run a persistent orchestrator heartbeat loop and treat stale heartbeat as a process failure.
+13. **Orchestrator leaves an audit trail.** Course corrections, gate misses, and model/reasoning escalations are written to `orchestration_run/coordination.md`, not `findings.md`.
+14. **Technical course corrections need ratification.** If orchestrator changes task boundaries, scope, or tiering assumptions, log it and trigger an Architect heartbeat snapshot.
 
 ## Model / Effort Triage
 
@@ -322,10 +324,26 @@ Watcher re-launch policy (snapshot runs):
 - Relaunch when stall is suspected (no stream growth, no status updates)
 - Relaunch every 10 minutes while dev execution is active
 
+Architect heartbeat triggers (one-shot snapshots):
+- First reviewer finding
+- First critical finding
+- Dependency unblock
+- Repeated dev miss after prompt tightening
+- Before merge
+- Before memory write
+
+PM heartbeat triggers (one-shot snapshots):
+- First `[DONE]`
+- Missed gate or handoff
+- Stalled task
+- Cross-test fail
+- Phase transition
+
 First `[DONE]` response gate (time-boxed to 2 minutes):
 - Launch reviewer (if not already running)
 - Launch watcher snapshot
 - Launch optional scribe snapshot (if enabled)
+- Launch PM heartbeat snapshot
 - If any tester is idle, launch a rolling cross-test lane immediately (do NOT wait for all devs)
 - Verify `orchestration_run/logs/orchestrator_heartbeat.log` received a fresh heartbeat within 2x poll interval
 
@@ -335,6 +353,12 @@ First `[DONE]` response gate (time-boxed to 2 minutes):
 - Stream size not growing → check `wc -l orchestration_run/logs/*.jsonl`
 - Crosstester posts `[CROSS_TEST_BLOCKED]` → relaunch crosstester from correct target worktree/branch
 - Heartbeat stale (no new heartbeat for >2x poll interval) → restart monitor loop immediately, then re-check active launches
+
+Every orchestrator intervention is appended to `coordination.md` under `## Orchestrator Intervention Log`:
+- `[COURSE_CORRECT]` for prompt/flow correction
+- `[MODEL_ESCALATION]` for tier/model/effort changes
+- `[GATE_MISS]` for late launches or missed handoffs
+- `[ARCH_RATIFY_REQUIRED]` when a technical correction needs Architect confirmation
 
 Guardrail:
 - During Build phase, do not do unrelated housekeeping updates (for example todo journaling). Stay on monitoring, gating, nudges, and checkpoint progression.
@@ -350,6 +374,36 @@ When some devs are done and at least one dev is still implementing, start valida
 5. Relaunch crosstester for re-verify
 
 This runs in parallel with remaining implementation work and reduces end-of-phase pileups.
+
+### Step 9c: Launch Heartbeat Snapshots (one-shot, orchestrator-triggered)
+
+Do not keep Architect or PM open as polling agents. Re-launch only the snapshot whose trigger fired.
+
+```bash
+# PM heartbeat snapshot (launch when a PM trigger fires)
+PM_HB_MODEL=sonnet
+PM_HB_EFFORT=low
+PM_HB_TS=$(date +%Y%m%d_%H%M%S)
+
+claude -p --verbose --model "$PM_HB_MODEL" --effort "$PM_HB_EFFORT" \
+  --dangerously-skip-permissions --disable-slash-commands \
+  --tools Read,Edit,Bash \
+  --output-format stream-json --include-partial-messages \
+  "$(cat .claude/orchestration/roles/pm_heartbeat.md)" \
+  > "orchestration_run/logs/pm_heartbeat_${PM_HB_TS}.jsonl" 2>&1 &
+
+# Architect heartbeat snapshot (launch when an Architect trigger fires)
+ARCH_HB_MODEL=opus
+ARCH_HB_EFFORT=medium
+ARCH_HB_TS=$(date +%Y%m%d_%H%M%S)
+
+claude -p --verbose --model "$ARCH_HB_MODEL" --effort "$ARCH_HB_EFFORT" \
+  --dangerously-skip-permissions --disable-slash-commands \
+  --tools Read,Edit,Bash \
+  --output-format stream-json --include-partial-messages \
+  "$(cat .claude/orchestration/roles/architect_heartbeat.md)" \
+  > "orchestration_run/logs/architect_heartbeat_${ARCH_HB_TS}.jsonl" 2>&1 &
+```
 
 ### CHECKPOINT 1.5 — First `[DONE]` Response
 - [ ] Reviewer launched within 2 minutes of first `[DONE]`
@@ -681,9 +735,34 @@ claude -p --verbose --model sonnet --effort medium \
   > orchestration_run/logs/pm_memory_stream.jsonl 2>&1
 ```
 
+### Step 21b: Architect final synthesis digest
+
+Architect reconciles technical memory after PM writes process memory. PM remains source-of-truth for process/backlog meaning.
+
+```bash
+claude -p --verbose --model opus --effort medium \
+  --dangerously-skip-permissions --disable-slash-commands \
+  --output-format stream-json --include-partial-messages \
+  "You are the Architect. Read:
+1. orchestration_run/architect_memory.md
+2. orchestration_run/pm_memory.md
+3. orchestration_run/findings.md
+4. orchestration_run/coordination.md
+
+Write a short deduped technical digest to orchestration_run/architect_digest.md.
+Include only:
+- durable technical decisions
+- design debt worth carrying forward
+- architectural implications for next sprint
+
+Do NOT rewrite PM's operational meaning. Keep under ~120 lines." \
+  > orchestration_run/logs/architect_digest_stream.jsonl 2>&1
+```
+
 ### CHECKPOINT 5 — Session Memory Written
 - [ ] `orchestration_run/architect_memory.md` exists
 - [ ] `orchestration_run/pm_memory.md` exists
+- [ ] `orchestration_run/architect_digest.md` exists
 - [ ] Admin files updated
 
 ### Step 22: Verify all orchestration processes are down
@@ -707,11 +786,14 @@ ps aux | grep claude
 | Dev bootstrap | haiku | Yes (`.jsonl`) | Full | Root branch |
 | Dev execution | task-dependent: haiku/sonnet/opus | Yes (`.jsonl`) | Full | `.worktrees/dev_N` |
 | Code Reviewer | task-dependent: sonnet/opus | Yes (`.jsonl`) | Read,Edit,Bash | Root branch |
+| Architect Heartbeat | opus | Yes (`.jsonl`) | Read,Edit,Bash | Root branch |
+| PM Heartbeat | sonnet | Yes (`.jsonl`) | Read,Edit,Bash | Root branch |
 | Cross-tester | task-dependent: haiku/sonnet/opus | Yes (`.jsonl`) | Read,Edit,Bash | Root branch (reads worktree) |
 | Live Watcher | haiku | Yes (`.jsonl`) | Read,Bash | Root branch |
 | Feedback (Arch) | opus | Yes (`.jsonl`) | Full | Root branch |
 | Feedback (PM) | sonnet | Yes (`.jsonl`) | Full | Root branch |
 | Memory write | task-dependent: opus/sonnet | Yes (`.jsonl`) | Full | Root branch |
+| Architect Digest | opus | Yes (`.jsonl`) | Full | Root branch |
 
 Record the chosen model, effort, PID, and log path for each launch in `orchestration_run/coordination.md`.
 

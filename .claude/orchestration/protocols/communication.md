@@ -25,6 +25,11 @@ All inline updates in plan MD use:
 | `[SIGN_OFF]` | Final approval | Anyone signing off |
 | `[FEEDBACK]` | Post-review feedback | Architect, PM |
 | `[ORCH_HEARTBEAT]` | Orchestrator monitor-loop heartbeat line | Orchestrator monitor loop |
+| `[COURSE_CORRECT]` | Orchestrator changed prompts/flow to recover the run | Orchestrator |
+| `[MODEL_ESCALATION]` | Orchestrator raised model or effort tier | Orchestrator |
+| `[GATE_MISS]` | Required launch/checkpoint/handoff was missed | Orchestrator, PM heartbeat |
+| `[ARCH_RATIFY_REQUIRED]` | Technical course correction needs Architect confirmation | Orchestrator, Architect heartbeat |
+| `[DELIVERY_NOTE]` | Delivery/process note from orchestrator or PM heartbeat | Orchestrator, PM heartbeat |
 
 ## Channels
 
@@ -32,7 +37,7 @@ All inline updates in plan MD use:
 |---------|---------|------------|-----------|
 | `.jsonl` stream logs | Real-time observability | Each role (auto) | Orchestrator (`tail -f`), Reviewer |
 | Plan MD (inline sections) | Status, findings, sign-offs | Architect, PM, Devs, Reviewer, Cross-testers (own section only) | Everyone |
-| Coordination MD | Task table, checkpoints, runtime registry | PM (initial), Orchestrator (updates) | Everyone |
+| Coordination MD | Task table, checkpoints, runtime registry, orchestrator intervention log, heartbeat snapshots, ratification queue | PM (initial), Orchestrator (updates), heartbeat snapshots | Everyone |
 | `findings.md` | Reviewer summary | Reviewer only | Architect, PM, Orchestrator |
 
 ## Shared Root Rule
@@ -44,8 +49,9 @@ Devs in worktrees must edit those files via absolute `$PROJECT_ROOT/...` paths a
 
 - **Devs** write ONLY to their `Dev-N Notes` and `Cross-Test Thread` sections in the ROOT shared plan
 - **Reviewer** writes ONLY to `Reviewer Findings` sections and `findings.md` in the ROOT shared docs
+- **Heartbeat snapshots** write ONLY to `Heartbeat Snapshots` and `Ratification Queue` sections in ROOT `coordination.md`
 - **No one** edits or overwrites another role's messages — append only
-- **Orchestrator** updates top-level Status fields and Sign-off checkboxes
+- **Orchestrator** updates top-level Status fields, Sign-off checkboxes, and the `Orchestrator Intervention Log` in ROOT `coordination.md`
 
 ## Back-and-Forth Protocol
 

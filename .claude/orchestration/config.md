@@ -20,6 +20,27 @@ architect_effort: high  # always highest reasoning for architecture work
 pm_model: sonnet
 pm_effort: medium
 
+architect_heartbeat_model: opus
+architect_heartbeat_effort: medium
+architect_heartbeat_mode: one_shot
+architect_heartbeat_triggers:
+  - first_reviewer_finding
+  - critical_finding
+  - dependency_unblock
+  - repeated_dev_miss
+  - before_merge
+  - before_memory_write
+
+pm_heartbeat_model: sonnet
+pm_heartbeat_effort: low
+pm_heartbeat_mode: one_shot
+pm_heartbeat_triggers:
+  - first_done
+  - gate_miss
+  - stalled_task
+  - cross_test_fail
+  - phase_transition
+
 dev_default_model: sonnet
 dev_default_effort: medium
 dev_simple_model: haiku
@@ -71,6 +92,10 @@ bootstrap_ack_gate_script: .claude/orchestration/scripts/require_bootstrap_ack.s
 
 escalation_model: opus
 escalation_effort: high
+
+architect_reconciliation_owner: technical
+pm_reconciliation_owner: delivery_process
+architect_final_digest_file: orchestration_run/architect_digest.md
 ```
 
 ## Paths

@@ -6,13 +6,13 @@ Full workflow from start to finish.
 
 ```
 Phase 1: PLAN        → Architect + PM produce plan (root branch)
-Phase 2: BUILD       → Devs implement in worktrees, reviewer+watcher start after first [DONE], rolling cross-test/fix lanes may start immediately
+Phase 2: BUILD       → Devs implement in worktrees, reviewer+watcher start after first [DONE], rolling cross-test/fix lanes may start immediately, Arch/PM heartbeat snapshots launch on triggers
 Phase 3: CROSS-TEST  → Complete remaining cross-tests/sign-offs not closed during rolling lanes
 Phase 4: FEEDBACK    → Kill workers, reviewer summary, Arch+PM re-launched for findings review
 Phase 4.5: ROADMAP   → Arch+PM prep for next sprint (optional)
 Phase 5: FINALIZE    → Merge worktrees, full test suite, commit
 Phase 5.5: CLEANUP   → Archive run, delete ephemeral artifacts
-Phase 6: MEMORY      → Arch+PM write session memory, verify all orchestration processes are down
+Phase 6: MEMORY      → Arch+PM write split memory, Architect synthesizes final technical digest, verify all orchestration processes are down
 ```
 
 ## Terminal Lifecycle
@@ -21,6 +21,8 @@ Phase 6: MEMORY      → Arch+PM write session memory, verify all orchestration 
 |------|----------|-------------|-----------------|--------------|
 | Architect | Phase 1 | Plan, feedback, memory | Each prompt exits after deliverable | YES — multiple times via memory files |
 | PM | Phase 1 | Assignments, feedback, memory | Each prompt exits after deliverable | YES — multiple times via memory files |
+| Architect Heartbeat | Triggered snapshot | Design drift / risk / ratification / tier advice | Snapshot exits immediately | YES — one-shot relaunches by orchestrator |
+| PM Heartbeat | Triggered snapshot | Checkpoint/gate/handoff / next-action advice | Snapshot exits immediately | YES — one-shot relaunches by orchestrator |
 | Dev (build) | Checkpoint 1 | Code + tests | `[DONE]` posted | New `-p` as cross-tester/patcher |
 | Dev (cross-test) | As soon as target task is `[DONE]` and a tester is available | Test results | `[CROSS_TEST_PASS/CROSS_TEST_FAIL/CROSS_TEST_BLOCKED]` | New `-p` if re-verify needed |
 | Dev (patch) | When issues found | Fix in worktree | `[FIX]` posted | New `-p` if fix rejected |
@@ -28,6 +30,7 @@ Phase 6: MEMORY      → Arch+PM write session memory, verify all orchestration 
 | Live Watcher | After first `[DONE]` and on monitor triggers | Snapshot of actionable items | Each snapshot exits immediately | YES — one-shot relaunches by orchestrator |
 | Scribe (optional) | After first `[DONE]` and periodic checkpoints | Compact status digest in coordination docs | Each snapshot exits immediately | YES — one-shot relaunches by orchestrator |
 | Orchestrator Monitor Loop | Start of Build phase | Heartbeat + alerts log | Stopped in Phase 4 worker spindown | YES — restart if stale |
+| Architect Final Synthesis | End of Phase 6 | Short deduped technical digest across memories | Digest written | No — single run |
 
 ## Deliver Then Die
 
@@ -51,6 +54,8 @@ The orchestrator is the ONLY thing that polls. Agents NEVER poll or wait.
 - Orchestrator watches streams (`tail -f`)
 - Orchestrator runs a persistent heartbeat loop and treats stale heartbeat as failure
 - Orchestrator re-launches watcher snapshots when trigger conditions are hit
+- Orchestrator records its own interventions in `coordination.md`
+- Orchestrator requests Architect ratification when a technical course correction changes task boundaries, scope, or tiering assumptions
 - Orchestrator detects when an agent should act
 - Orchestrator sends prompt/nudge to that agent
 - Agent does work, posts output, stops
@@ -64,7 +69,7 @@ After each run:
 
 **Delete:** Worktrees (`git worktree remove` only after PID/shell-detach checks), stream logs (`.jsonl`)
 
-**Keep (committed):** `plan.md`, `coordination.md`, `findings.md`, `architect_memory.md`, `pm_memory.md`
+**Keep (committed):** `plan.md`, `coordination.md`, `findings.md`, `architect_memory.md`, `pm_memory.md`, `architect_digest.md`
 
 **Next run:** Archive previous run → create fresh from templates → Arch+PM rehydrate from archived memory
 

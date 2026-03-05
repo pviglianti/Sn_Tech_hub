@@ -20,20 +20,28 @@ Orchestrator (Codex)
   ├── Launches Devs in parallel → implement in worktrees
   ├── Launches Reviewer after first [DONE] → constrained reviewer
   ├── Launches one-shot watcher snapshots on monitor triggers
+  ├── Launches one-shot Architect/PM heartbeat snapshots on orchestrator triggers
   ├── Starts rolling cross-test/fix lanes as soon as a tester is available
   ├── Re-launches Devs as cross-testers
   ├── Sends findings to Arch + PM for feedback
+  ├── Writes split role memory, then Architect synthesizes final technical digest
   ├── Merges worktrees → runs full tests → commits
   └── Sends memory-write prompts → session complete
 ```
 
 Shared orchestration docs live only in the ROOT `orchestration_run/` directory. Devs in worktrees must edit those files via absolute paths, never via worktree-local copies.
 
+Documentation ownership is split on purpose:
+- Reviewer writes review output to `orchestration_run/findings.md`
+- Orchestrator writes operational interventions and gate/course-correction notes to `orchestration_run/coordination.md`
+- Architect/PM heartbeat snapshots also append to `orchestration_run/coordination.md`
+
 Architect and PM do not require open tabs between prompts. They are re-launched as fresh `claude -p` runs, with continuity carried by shared docs and memory files.
 
 All launches should be streamable to `.jsonl` logs so Codex can steer in real time.
 Watcher runs are snapshot-based (one-shot): the orchestrator decides when to re-launch, and never tells the watcher to poll/wait.
 Optional scribe runs are also snapshot-based and never block build progress.
+Architect and PM heartbeat checks should also be one-shot snapshots driven by orchestrator triggers, not self-running loops.
 Gate scripts enforce critical safety checks (bootstrap ACK coverage and target worktree/branch context for cross-tests).
 A persistent monitor loop (`orchestrator_monitor_loop.sh`) should run during Build/Cross-Test and write heartbeat/alerts to `orchestration_run/logs/orchestrator_heartbeat.log`.
 
