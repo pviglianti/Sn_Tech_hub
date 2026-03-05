@@ -82,6 +82,10 @@ When AI generates output for a field that already has human content:
 - **Disposition fields:** If human has set a disposition, AI accepts it and provides supporting rationale
 - **Feature membership:** If human has moved artifacts between features, AI accepts the new grouping
 
+### AI Rewriting Principle
+
+When the AI encounters human-written content in any field, it MAY rewrite for improved flow, grammar, spelling, and clarity — but MUST preserve the human's core point and intent. The goal is to make human edits sound polished and professional while keeping the substance exactly as the human intended.
+
 ---
 
 ## Re-run Capability
