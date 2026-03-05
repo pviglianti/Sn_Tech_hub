@@ -86,8 +86,8 @@ def test_pipeline_stage_order_correct_sequence():
     """_PIPELINE_STAGE_ORDER must list stages in the correct 10-stage order."""
     expected = [
         "scans",
-        "ai_analysis",
         "engines",
+        "ai_analysis",
         "observations",
         "review",
         "grouping",
@@ -112,8 +112,9 @@ def test_pipeline_stage_labels_has_all_10():
 
 
 def test_pipeline_stage_autonext_includes_new_stages():
-    """_PIPELINE_STAGE_AUTONEXT must include ai_analysis->engines, ai_refinement->recommendations, report->complete."""
-    assert _PIPELINE_STAGE_AUTONEXT["ai_analysis"] == "engines"
+    """_PIPELINE_STAGE_AUTONEXT must include engines->ai_analysis, ai_analysis->observations, ai_refinement->recommendations, report->complete."""
+    assert _PIPELINE_STAGE_AUTONEXT["engines"] == "ai_analysis"
+    assert _PIPELINE_STAGE_AUTONEXT["ai_analysis"] == "observations"
     assert _PIPELINE_STAGE_AUTONEXT["ai_refinement"] == "recommendations"
     assert _PIPELINE_STAGE_AUTONEXT["report"] == "complete"
 
@@ -159,8 +160,8 @@ def _seed_assessment_at_stage(db_session, pipeline_stage: str):
 @patch("src.server._get_assessment_pipeline_job_snapshot", return_value=None)
 @patch("src.server._start_assessment_pipeline_job", return_value=True)
 def test_advance_pipeline_accepts_ai_analysis_target(mock_start, mock_snap, client, db_session):
-    """POST with target_stage=ai_analysis should return 200."""
-    asmt = _seed_assessment_at_stage(db_session, PipelineStage.scans.value)
+    """POST with target_stage=ai_analysis should return 200 (from engines stage)."""
+    asmt = _seed_assessment_at_stage(db_session, PipelineStage.engines.value)
     resp = client.post(
         f"/api/assessments/{asmt.id}/advance-pipeline",
         json={"target_stage": "ai_analysis"},

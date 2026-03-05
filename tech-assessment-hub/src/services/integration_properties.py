@@ -73,6 +73,10 @@ OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT = "observations.max_usage_queries_per_
 # AI Analysis pipeline keys
 AI_ANALYSIS_BATCH_SIZE = "ai_analysis.batch_size"
 AI_ANALYSIS_CONTEXT_ENRICHMENT = "ai_analysis.context_enrichment"
+AI_ANALYSIS_MODE = "ai_analysis.analysis_mode"
+AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH = "ai_analysis.max_rabbit_hole_depth"
+AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP = "ai_analysis.max_neighbors_per_hop"
+AI_ANALYSIS_MIN_EDGE_WEIGHT = "ai_analysis.min_edge_weight_for_traversal"
 
 # Pipeline prompt integration keys
 PIPELINE_USE_REGISTERED_PROMPTS = "pipeline.use_registered_prompts"
@@ -101,6 +105,11 @@ TIMEZONE_OPTIONS: List[Tuple[str, str]] = [
     ("Europe/Berlin", "Central Europe (CET)"),
     ("Asia/Tokyo", "Tokyo (JST)"),
     ("Australia/Sydney", "Sydney (AEST)"),
+]
+
+AI_ANALYSIS_MODE_OPTIONS: List[Tuple[str, str]] = [
+    ("sequential", "Sequential (Default)"),
+    ("depth_first", "Depth-First Relationship-Driven"),
 ]
 
 
@@ -143,6 +152,10 @@ class AIAnalysisProperties:
     """Typed AI analysis stage properties loaded from app_config."""
     batch_size: int = 0  # 0 = all at once, 50+ for batching
     context_enrichment: str = "auto"  # "auto", "always", "never"
+    analysis_mode: str = "sequential"
+    max_rabbit_hole_depth: int = 10
+    max_neighbors_per_hop: int = 20
+    min_edge_weight_for_traversal: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -249,6 +262,10 @@ PROPERTY_DEFAULTS: Dict[str, str] = {
     # AI Analysis pipeline defaults
     AI_ANALYSIS_BATCH_SIZE: "0",
     AI_ANALYSIS_CONTEXT_ENRICHMENT: "auto",
+    AI_ANALYSIS_MODE: "sequential",
+    AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH: "10",
+    AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP: "20",
+    AI_ANALYSIS_MIN_EDGE_WEIGHT: "2.0",
     # Pipeline prompt integration defaults
     PIPELINE_USE_REGISTERED_PROMPTS: "false",
     # AI runtime + budget defaults
@@ -610,6 +627,68 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
             ("always", "Always"),
             ("never", "Never"),
         ],
+    ),
+    AI_ANALYSIS_MODE: IntegrationPropertyDefinition(
+        key=AI_ANALYSIS_MODE,
+        label="Analysis Mode",
+        description=(
+            "How artifacts are analyzed. Sequential processes them in order. "
+            "Depth-first follows relationships between customizations, analyzing "
+            "related artifacts immediately and progressively building feature groups."
+        ),
+        value_type="select",
+        default=PROPERTY_DEFAULTS[AI_ANALYSIS_MODE],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_analysis",
+        section=SECTION_AI_ANALYSIS,
+        options=AI_ANALYSIS_MODE_OPTIONS,
+    ),
+    AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH: IntegrationPropertyDefinition(
+        key=AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH,
+        label="Max Traversal Depth",
+        description=(
+            "Maximum depth to follow relationship chains in depth-first mode. "
+            "Prevents runaway traversal. Items beyond this depth are analyzed "
+            "when reached from the main queue."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_analysis",
+        section=SECTION_AI_ANALYSIS,
+        min_value=1,
+        max_value=50,
+    ),
+    AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP: IntegrationPropertyDefinition(
+        key=AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP,
+        label="Max Neighbors Per Hop",
+        description=(
+            "Maximum number of related customizations to follow from each artifact "
+            "in depth-first mode. Prevents explosion on highly-connected artifacts."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_analysis",
+        section=SECTION_AI_ANALYSIS,
+        min_value=1,
+        max_value=100,
+    ),
+    AI_ANALYSIS_MIN_EDGE_WEIGHT: IntegrationPropertyDefinition(
+        key=AI_ANALYSIS_MIN_EDGE_WEIGHT,
+        label="Min Edge Weight for Traversal",
+        description=(
+            "Minimum relationship weight to follow in depth-first mode. "
+            "Higher values mean only strong relationships (code refs, update set overlaps) "
+            "trigger depth-first traversal."
+        ),
+        value_type="float",
+        default=PROPERTY_DEFAULTS[AI_ANALYSIS_MIN_EDGE_WEIGHT],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_analysis",
+        section=SECTION_AI_ANALYSIS,
+        min_value=0.0,
+        max_value=10.0,
     ),
     # ----- Pipeline prompt integration -----
     PIPELINE_USE_REGISTERED_PROMPTS: IntegrationPropertyDefinition(
@@ -1100,6 +1179,13 @@ def load_ai_analysis_properties(
     if context_enrichment not in {"auto", "always", "never"}:
         context_enrichment = defaults.context_enrichment
 
+    analysis_mode = (
+        _read_property(session, AI_ANALYSIS_MODE, instance_id=instance_id)
+        or PROPERTY_DEFAULTS[AI_ANALYSIS_MODE]
+    ).strip().lower()
+    if analysis_mode not in {"sequential", "depth_first"}:
+        analysis_mode = defaults.analysis_mode
+
     return AIAnalysisProperties(
         batch_size=_get_int(
             session,
@@ -1108,6 +1194,25 @@ def load_ai_analysis_properties(
             instance_id=instance_id,
         ),
         context_enrichment=context_enrichment,
+        analysis_mode=analysis_mode,
+        max_rabbit_hole_depth=_get_int(
+            session,
+            AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH,
+            defaults.max_rabbit_hole_depth,
+            instance_id=instance_id,
+        ),
+        max_neighbors_per_hop=_get_int(
+            session,
+            AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP,
+            defaults.max_neighbors_per_hop,
+            instance_id=instance_id,
+        ),
+        min_edge_weight_for_traversal=_get_float(
+            session,
+            AI_ANALYSIS_MIN_EDGE_WEIGHT,
+            defaults.min_edge_weight_for_traversal,
+            instance_id=instance_id,
+        ),
     )
 
 

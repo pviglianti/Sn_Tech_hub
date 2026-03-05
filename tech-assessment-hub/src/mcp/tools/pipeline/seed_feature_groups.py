@@ -42,6 +42,7 @@ from ....models import (
     UpdateSetOverlap,
 )
 from ....services.assessment_phase_progress import checkpoint_phase_progress, start_phase_progress
+from ....services.relationship_graph import EDGE_WEIGHTS
 
 
 INPUT_SCHEMA: Dict[str, Any] = {
@@ -81,16 +82,6 @@ INPUT_SCHEMA: Dict[str, Any] = {
     "required": ["assessment_id"],
 }
 
-
-_EDGE_WEIGHTS: Dict[str, float] = {
-    "update_set_overlap": 3.0,
-    "update_set_artifact_link": 2.5,
-    "code_reference": 3.0,
-    "structural_relationship": 2.5,
-    "temporal_cluster": 1.8,
-    "naming_cluster": 2.0,
-    "table_colocation": 1.2,
-}
 
 _CUSTOMIZED_ORIGIN_VALUES = {
     OriginType.modified_ootb.value,
@@ -359,7 +350,7 @@ def seed_feature_groups(
                 a=a,
                 b=b,
                 signal_type="update_set_artifact_link",
-                weight=_EDGE_WEIGHTS["update_set_artifact_link"],
+                weight=EDGE_WEIGHTS["update_set_artifact_link"],
                 payload={"update_set_id": us_id},
             )
         context_ids = sorted(update_set_context_members.get(us_id, set()))
@@ -393,7 +384,7 @@ def seed_feature_groups(
                 a=a,
                 b=b,
                 signal_type="update_set_overlap",
-                weight=_EDGE_WEIGHTS["update_set_overlap"],
+                weight=EDGE_WEIGHTS["update_set_overlap"],
                 payload={
                     "overlap_id": overlap.id,
                     "signal_type": overlap.signal_type,
@@ -428,7 +419,7 @@ def seed_feature_groups(
                 a=a,
                 b=b,
                 signal_type="temporal_cluster",
-                weight=_EDGE_WEIGHTS["temporal_cluster"],
+                weight=EDGE_WEIGHTS["temporal_cluster"],
                 payload={"cluster_id": cluster.id, "developer": cluster.developer},
             )
         for custom_id in custom_members:
@@ -458,7 +449,7 @@ def seed_feature_groups(
                 a=a,
                 b=b,
                 signal_type="naming_cluster",
-                weight=_EDGE_WEIGHTS["naming_cluster"],
+                weight=EDGE_WEIGHTS["naming_cluster"],
                 payload={"cluster_id": cluster.id, "label": cluster.cluster_label},
             )
         for custom_id in custom_members:
@@ -486,7 +477,7 @@ def seed_feature_groups(
                 a=a,
                 b=b,
                 signal_type="table_colocation",
-                weight=_EDGE_WEIGHTS["table_colocation"],
+                weight=EDGE_WEIGHTS["table_colocation"],
                 payload={"summary_id": summary.id, "target_table": summary.target_table},
             )
         for custom_id in custom_members:
@@ -515,7 +506,7 @@ def seed_feature_groups(
                 a=source_id,
                 b=target_id,
                 signal_type="code_reference",
-                weight=_EDGE_WEIGHTS["code_reference"],
+                weight=EDGE_WEIGHTS["code_reference"],
                 payload={"code_reference_id": ref.id, "reference_type": ref.reference_type},
             )
         elif source_id in eligible_set and target_id in non_customized_ids:
@@ -550,7 +541,7 @@ def seed_feature_groups(
                 a=parent_id,
                 b=child_id,
                 signal_type="structural_relationship",
-                weight=_EDGE_WEIGHTS["structural_relationship"],
+                weight=EDGE_WEIGHTS["structural_relationship"],
                 payload={"relationship_id": rel.id, "relationship_type": rel.relationship_type},
             )
         elif parent_id in eligible_set and child_id in non_customized_ids:

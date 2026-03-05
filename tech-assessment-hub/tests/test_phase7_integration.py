@@ -219,10 +219,11 @@ class TestPipelineConsistency:
             )
 
     def test_enum_values_match_order_list(self):
-        """PipelineStage enum values must match _PIPELINE_STAGE_ORDER exactly."""
-        enum_values = [member.value for member in PipelineStage]
-        assert enum_values == _PIPELINE_STAGE_ORDER, (
-            f"Enum values {enum_values} do not match order {_PIPELINE_STAGE_ORDER}"
+        """PipelineStage enum values must all appear in _PIPELINE_STAGE_ORDER."""
+        enum_values = {member.value for member in PipelineStage}
+        order_values = set(_PIPELINE_STAGE_ORDER)
+        assert enum_values == order_values, (
+            f"Enum values {enum_values} do not match order set {order_values}"
         )
 
     def test_three_new_ai_stages_in_enum(self):
@@ -242,10 +243,10 @@ class TestEndpointToHandler:
     @patch("src.server._set_assessment_pipeline_job_state")
     @patch("src.server._set_assessment_pipeline_stage")
     @patch("src.server.gather_artifact_context")
-    def test_ai_analysis_advances_stage_to_engines(
+    def test_ai_analysis_advances_stage_to_observations(
         self, mock_gather, mock_set_stage, mock_set_job, db_session, db_engine
     ):
-        """Running ai_analysis handler should auto-advance pipeline_stage to engines."""
+        """Running ai_analysis handler should auto-advance pipeline_stage to observations."""
         inst, asmt = _seed_instance_and_assessment(db_session, PipelineStage.ai_analysis.value)
         # Add one customized scan result so handler has work
         scan = Scan(assessment_id=asmt.id, scan_type=ScanType.metadata,
@@ -262,13 +263,13 @@ class TestEndpointToHandler:
         with patch("src.server.engine", db_engine):
             _run_assessment_pipeline_stage(asmt.id, target_stage="ai_analysis")
 
-        # Verify auto-advance: _set_assessment_pipeline_stage called with "engines"
+        # Verify auto-advance: _set_assessment_pipeline_stage called with "observations"
         advance_calls = [
             c for c in mock_set_stage.call_args_list
-            if c.args and c.args[1] == PipelineStage.engines.value
+            if c.args and c.args[1] == PipelineStage.observations.value
         ]
         assert len(advance_calls) >= 1, (
-            "Expected auto-advance call to 'engines' after ai_analysis completes"
+            "Expected auto-advance call to 'observations' after ai_analysis completes"
         )
 
     @patch("src.server._set_assessment_pipeline_job_state")
@@ -322,9 +323,9 @@ class TestEndpointToHandler:
         inst, asmt = _seed_instance_and_assessment(db_session, PipelineStage.scans.value)
 
         transitions = [
-            ("scans", "ai_analysis"),
-            ("ai_analysis", "engines"),
-            ("engines", "observations"),
+            ("scans", "engines"),
+            ("engines", "ai_analysis"),
+            ("ai_analysis", "observations"),
             ("observations", "review"),
         ]
         for current, target in transitions:

@@ -14,6 +14,7 @@ import logging
 import uuid
 import io
 import zipfile
+import re
 from pathlib import Path
 from datetime import datetime, timedelta, date
 from typing import List, Dict, Any, Optional, Tuple
@@ -428,8 +429,8 @@ _ASSESSMENT_PIPELINE_RUN_MODULE = "assessment"
 _ASSESSMENT_PIPELINE_RUN_TYPE = "reasoning_pipeline"
 _PIPELINE_STAGE_ORDER: List[str] = [
     PipelineStage.scans.value,
-    PipelineStage.ai_analysis.value,
     PipelineStage.engines.value,
+    PipelineStage.ai_analysis.value,
     PipelineStage.observations.value,
     PipelineStage.review.value,
     PipelineStage.grouping.value,
@@ -440,8 +441,8 @@ _PIPELINE_STAGE_ORDER: List[str] = [
 ]
 _PIPELINE_STAGE_LABELS: Dict[str, str] = {
     PipelineStage.scans.value: "Scans",
-    PipelineStage.ai_analysis.value: "AI Analysis",
     PipelineStage.engines.value: "Engines",
+    PipelineStage.ai_analysis.value: "AI Analysis",
     PipelineStage.observations.value: "Observations",
     PipelineStage.review.value: "Review",
     PipelineStage.grouping.value: "Grouping",
@@ -451,8 +452,8 @@ _PIPELINE_STAGE_LABELS: Dict[str, str] = {
     PipelineStage.complete.value: "Complete",
 }
 _PIPELINE_STAGE_AUTONEXT: Dict[str, str] = {
-    PipelineStage.ai_analysis.value: PipelineStage.engines.value,
-    PipelineStage.engines.value: PipelineStage.observations.value,
+    PipelineStage.engines.value: PipelineStage.ai_analysis.value,
+    PipelineStage.ai_analysis.value: PipelineStage.observations.value,
     PipelineStage.observations.value: PipelineStage.review.value,
     PipelineStage.grouping.value: PipelineStage.ai_refinement.value,
     PipelineStage.ai_refinement.value: PipelineStage.recommendations.value,
@@ -3958,6 +3959,1239 @@ def _build_feature_hierarchy_payload(
     }
 
 
+_GRAPH_EDGE_LABELS: Dict[str, str] = {
+    "code_reference": "Code Reference",
+    "structural": "Structural Relationship",
+    "reference_field": "Reference Field",
+    "dictionary_binding": "Dictionary Binding",
+    "target_table": "Target Table",
+    "same_update_set": "Same Update Set",
+    "same_table": "Same App File Class",
+    "shared_feature": "Shared Feature",
+    "feature_member": "Feature Member",
+    "feature_context": "Feature Context",
+    "table_member": "Table Member",
+}
+
+def _graph_result_node_id(result_id: int) -> str:
+    return f"artifact:{result_id}"
+
+
+def _graph_feature_node_id(feature_id: int) -> str:
+    return f"feature:{feature_id}"
+
+
+def _graph_table_node_id(table_name: str) -> str:
+    return f"table:{table_name}"
+
+
+_SYS_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
+
+
+def _extract_raw_scalar(raw_payload: Dict[str, Any], field_name: str) -> Optional[str]:
+    if not isinstance(raw_payload, dict):
+        return None
+    value = raw_payload.get(field_name)
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        for candidate_key in ("value", "display_value", "name", "label"):
+            candidate = value.get(candidate_key)
+            if candidate is None:
+                continue
+            text = str(candidate).strip()
+            if text:
+                return text
+        return None
+    if isinstance(value, list):
+        if not value:
+            return None
+        first = value[0]
+        if isinstance(first, dict):
+            for candidate_key in ("value", "display_value", "name", "label"):
+                candidate = first.get(candidate_key)
+                if candidate is None:
+                    continue
+                text = str(candidate).strip()
+                if text:
+                    return text
+            return None
+        text = str(first).strip()
+        return text or None
+    text = str(value).strip()
+    return text or None
+
+
+def _extract_reference_sys_ids_by_field(raw_payload: Dict[str, Any]) -> Dict[str, List[str]]:
+    if not isinstance(raw_payload, dict):
+        return {}
+
+    def _collect_sys_ids(value: Any, bucket: set) -> None:
+        if value is None:
+            return
+        if isinstance(value, dict):
+            for inner in value.values():
+                _collect_sys_ids(inner, bucket)
+            return
+        if isinstance(value, list):
+            for item in value:
+                _collect_sys_ids(item, bucket)
+            return
+        text = str(value).strip()
+        if _SYS_ID_PATTERN.match(text):
+            bucket.add(text.lower())
+
+    refs: Dict[str, List[str]] = {}
+    for field_name, field_value in raw_payload.items():
+        collected: set = set()
+        _collect_sys_ids(field_value, collected)
+        if collected:
+            refs[field_name] = sorted(collected)
+    return refs
+
+
+def _extract_target_table_name(result: ScanResult, raw_payload: Dict[str, Any]) -> Optional[str]:
+    candidates = [
+        result.meta_target_table,
+        _extract_raw_scalar(raw_payload, "table"),
+        _extract_raw_scalar(raw_payload, "collection"),
+        _extract_raw_scalar(raw_payload, "target_table"),
+        _extract_raw_scalar(raw_payload, "name"),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        text = str(candidate).strip()
+        if not text:
+            continue
+        if "." in text or "/" in text:
+            continue
+        return text
+    return None
+
+
+def _dictionary_key_from_result(result: ScanResult, raw_payload: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    if result.table_name not in {"sys_dictionary", "sys_dictionary_override", "sys_choice"}:
+        return None
+
+    table_name = _extract_raw_scalar(raw_payload, "name")
+    element_name = _extract_raw_scalar(raw_payload, "element")
+
+    if not table_name and result.table_name == "sys_dictionary":
+        fallback = result.name or ""
+        if "." in fallback:
+            table_name, element_name = fallback.split(".", 1)
+    if not table_name or not element_name:
+        return None
+    return (table_name.strip(), element_name.strip())
+
+
+def _collect_inferred_graph_links_for_center(
+    session: Session,
+    *,
+    center_result: ScanResult,
+    assessment_id: int,
+    instance_id: Optional[int],
+    scan_id: Optional[int],
+) -> List[Dict[str, Any]]:
+    if center_result.id is None:
+        return []
+
+    inferred_links: List[Dict[str, Any]] = []
+    center_id = int(center_result.id)
+    raw_payload = _safe_json(center_result.raw_data_json, {})
+    if not isinstance(raw_payload, dict):
+        raw_payload = {}
+
+    scope_filters = [
+        Scan.assessment_id == assessment_id,
+    ]
+    if scan_id is not None:
+        scope_filters.append(Scan.id == scan_id)
+    if instance_id is not None:
+        scope_filters.append(Assessment.instance_id == instance_id)
+
+    # 1) Generic sys_id references discovered from raw fields.
+    sys_ids_by_field = _extract_reference_sys_ids_by_field(raw_payload)
+    sys_id_to_fields: Dict[str, set] = {}
+    for field_name, ids in sys_ids_by_field.items():
+        for sys_id in ids:
+            sys_id_to_fields.setdefault(sys_id, set()).add(field_name)
+
+    if sys_id_to_fields:
+        referenced_rows = session.exec(
+            select(ScanResult.id, ScanResult.sys_id)
+            .join(Scan, ScanResult.scan_id == Scan.id)
+            .join(Assessment, Scan.assessment_id == Assessment.id)
+            .where(*scope_filters)
+            .where(func.lower(ScanResult.sys_id).in_(list(sys_id_to_fields.keys())))
+        ).all()
+        for target_id, target_sys_id in referenced_rows:
+            if target_id is None or target_sys_id is None:
+                continue
+            target_result_id = int(target_id)
+            if target_result_id == center_id:
+                continue
+            fields = sorted(sys_id_to_fields.get(str(target_sys_id).lower(), set()))
+            inferred_links.append({
+                "target_result_id": target_result_id,
+                "edge_type": "reference_field",
+                "priority": 2,
+                "detail": "Reference fields: " + ", ".join(fields) if fields else "Reference field link",
+                "metadata": {"fields": fields},
+            })
+
+    # 2) Script/config target table -> sys_db_object link.
+    target_table_name = _extract_target_table_name(center_result, raw_payload)
+    if target_table_name and center_result.table_name != "sys_db_object":
+        table_row = session.exec(
+            select(ScanResult.id)
+            .join(Scan, ScanResult.scan_id == Scan.id)
+            .join(Assessment, Scan.assessment_id == Assessment.id)
+            .where(*scope_filters)
+            .where(ScanResult.table_name == "sys_db_object")
+            .where(ScanResult.name == target_table_name)
+            .order_by(desc(ScanResult.id))
+            .limit(1)
+        ).first()
+        if table_row is not None:
+            inferred_links.append({
+                "target_result_id": int(table_row),
+                "edge_type": "target_table",
+                "priority": 3,
+                "detail": f"Targets table {target_table_name}",
+                "metadata": {"table_name": target_table_name},
+            })
+
+    # 3) Dictionary/override/choice binding by (table, element).
+    center_dict_key = _dictionary_key_from_result(center_result, raw_payload)
+    dictionary_scope_rows = session.exec(
+        select(ScanResult)
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .join(Assessment, Scan.assessment_id == Assessment.id)
+        .where(*scope_filters)
+        .where(ScanResult.table_name.in_(["sys_dictionary", "sys_dictionary_override", "sys_choice"]))
+    ).all()
+
+    dictionary_by_key: Dict[Tuple[str, str], List[ScanResult]] = {}
+    dictionaries_by_table: Dict[str, List[ScanResult]] = {}
+    for candidate in dictionary_scope_rows:
+        candidate_raw = _safe_json(candidate.raw_data_json, {})
+        if not isinstance(candidate_raw, dict):
+            candidate_raw = {}
+        key = _dictionary_key_from_result(candidate, candidate_raw)
+        if key is not None:
+            dictionary_by_key.setdefault(key, []).append(candidate)
+            dictionaries_by_table.setdefault(key[0], []).append(candidate)
+
+    if center_dict_key is not None:
+        for candidate in dictionary_by_key.get(center_dict_key, []):
+            if candidate.id is None or int(candidate.id) == center_id:
+                continue
+            inferred_links.append({
+                "target_result_id": int(candidate.id),
+                "edge_type": "dictionary_binding",
+                "priority": 2,
+                "detail": f"Shared dictionary key {center_dict_key[0]}.{center_dict_key[1]}",
+                "metadata": {"dictionary_key": f"{center_dict_key[0]}.{center_dict_key[1]}"},
+            })
+
+    # 4) If center is a table, connect to dictionary entries for that table.
+    if center_result.table_name == "sys_db_object":
+        table_name = (center_result.name or "").strip()
+        if table_name:
+            for candidate in dictionaries_by_table.get(table_name, []):
+                if candidate.id is None or int(candidate.id) == center_id:
+                    continue
+                inferred_links.append({
+                    "target_result_id": int(candidate.id),
+                    "edge_type": "dictionary_binding",
+                    "priority": 3,
+                    "detail": f"Dictionary entry for table {table_name}",
+                    "metadata": {"table_name": table_name},
+                })
+
+    return inferred_links
+
+
+def _graph_feature_refs_for_results(
+    session: Session,
+    result_ids: List[int],
+) -> Dict[int, List[Dict[str, Any]]]:
+    if not result_ids:
+        return {}
+
+    refs_by_result: Dict[int, List[Dict[str, Any]]] = {}
+
+    def _add_ref(
+        result_id: int,
+        feature_id: int,
+        feature_name: Optional[str],
+        role: str,
+    ) -> None:
+        bucket = refs_by_result.setdefault(result_id, [])
+        key = (feature_id, role)
+        for ref in bucket:
+            if int(ref.get("feature_id") or 0) == key[0] and str(ref.get("role") or "") == key[1]:
+                return
+        bucket.append({
+            "feature_id": feature_id,
+            "feature_name": feature_name or f"Feature {feature_id}",
+            "role": role,
+        })
+
+    member_rows = session.exec(
+        select(
+            FeatureScanResult.scan_result_id,
+            Feature.id,
+            Feature.name,
+            FeatureScanResult.membership_type,
+        )
+        .join(Feature, Feature.id == FeatureScanResult.feature_id)
+        .where(FeatureScanResult.scan_result_id.in_(result_ids))
+    ).all()
+    for scan_result_id, feature_id, feature_name, membership_type in member_rows:
+        if scan_result_id is None or feature_id is None:
+            continue
+        role = f"member:{membership_type or 'primary'}"
+        _add_ref(int(scan_result_id), int(feature_id), feature_name, role)
+
+    context_rows = session.exec(
+        select(
+            FeatureContextArtifact.scan_result_id,
+            Feature.id,
+            Feature.name,
+            FeatureContextArtifact.context_type,
+        )
+        .join(Feature, Feature.id == FeatureContextArtifact.feature_id)
+        .where(FeatureContextArtifact.scan_result_id.in_(result_ids))
+    ).all()
+    for scan_result_id, feature_id, feature_name, context_type in context_rows:
+        if scan_result_id is None or feature_id is None:
+            continue
+        role = f"context:{context_type or 'supporting'}"
+        _add_ref(int(scan_result_id), int(feature_id), feature_name, role)
+
+    return refs_by_result
+
+
+def _build_graph_artifact_node_payload(
+    result: ScanResult,
+    *,
+    assessment_id: int,
+    instance_id: int,
+    feature_refs: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    origin_value = _origin_type_value(result)
+    refs = feature_refs or []
+    feature_ids = sorted({int(ref.get("feature_id")) for ref in refs if ref.get("feature_id") is not None})
+    feature_names = sorted({str(ref.get("feature_name")) for ref in refs if ref.get("feature_name")})
+    return {
+        "id": _graph_result_node_id(int(result.id or 0)),
+        "node_type": "artifact",
+        "result_id": result.id,
+        "scan_id": result.scan_id,
+        "assessment_id": assessment_id,
+        "instance_id": instance_id,
+        "label": result.name or f"Result {result.id}",
+        "name": result.name,
+        "table_name": result.table_name,
+        "sys_id": result.sys_id,
+        "origin_type": origin_value,
+        "is_customized": bool(origin_value in _CUSTOMIZED_ORIGIN_VALUES),
+        "sys_updated_on": result.sys_updated_on.isoformat() if result.sys_updated_on else None,
+        "feature_ids": feature_ids,
+        "feature_names": feature_names,
+        "feature_refs": refs,
+    }
+
+
+def _load_graph_artifact_nodes(
+    session: Session,
+    result_ids: List[int],
+) -> Dict[int, Dict[str, Any]]:
+    if not result_ids:
+        return {}
+    rows = session.exec(
+        select(ScanResult, Scan, Assessment)
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .join(Assessment, Scan.assessment_id == Assessment.id)
+        .where(ScanResult.id.in_(result_ids))
+    ).all()
+    refs_by_result = _graph_feature_refs_for_results(session, result_ids)
+    nodes_by_id: Dict[int, Dict[str, Any]] = {}
+    for result, scan, assessment in rows:
+        if result.id is None:
+            continue
+        nodes_by_id[int(result.id)] = _build_graph_artifact_node_payload(
+            result,
+            assessment_id=scan.assessment_id,
+            instance_id=assessment.instance_id,
+            feature_refs=refs_by_result.get(int(result.id), []),
+        )
+    return nodes_by_id
+
+
+def _append_graph_edge(
+    *,
+    edges: List[Dict[str, Any]],
+    edge_ids: set,
+    edge_id: str,
+    source: str,
+    target: str,
+    edge_type: str,
+    detail: Optional[str] = None,
+    confidence: Optional[float] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    if not edge_id or source == target:
+        return
+    if edge_id in edge_ids:
+        return
+    payload: Dict[str, Any] = {
+        "id": edge_id,
+        "source": source,
+        "target": target,
+        "edge_type": edge_type,
+        "label": _GRAPH_EDGE_LABELS.get(edge_type, edge_type.replace("_", " ").title()),
+    }
+    if detail:
+        payload["detail"] = detail
+    if confidence is not None:
+        payload["confidence"] = confidence
+    if metadata:
+        payload["metadata"] = metadata
+    edges.append(payload)
+    edge_ids.add(edge_id)
+
+
+def _append_graph_intragroup_edges(
+    session: Session,
+    *,
+    assessment_id: int,
+    artifact_ids: List[int],
+    instance_id: Optional[int],
+    edges: List[Dict[str, Any]],
+    edge_ids: set,
+) -> None:
+    if len(artifact_ids) < 2:
+        return
+
+    code_stmt = (
+        select(CodeReference)
+        .where(CodeReference.assessment_id == assessment_id)
+        .where(CodeReference.source_scan_result_id.in_(artifact_ids))
+        .where(CodeReference.target_scan_result_id.in_(artifact_ids))
+    )
+    if instance_id is not None:
+        code_stmt = code_stmt.where(CodeReference.instance_id == instance_id)
+
+    for ref in session.exec(code_stmt).all():
+        if ref.source_scan_result_id is None or ref.target_scan_result_id is None:
+            continue
+        _append_graph_edge(
+            edges=edges,
+            edge_ids=edge_ids,
+            edge_id=f"code_reference:{ref.id}",
+            source=_graph_result_node_id(int(ref.source_scan_result_id)),
+            target=_graph_result_node_id(int(ref.target_scan_result_id)),
+            edge_type="code_reference",
+            detail=ref.target_identifier or ref.code_snippet,
+            confidence=ref.confidence,
+            metadata={
+                "reference_type": ref.reference_type,
+                "source_field": ref.source_field,
+                "line_number": ref.line_number,
+            },
+        )
+
+    structural_stmt = (
+        select(StructuralRelationship)
+        .where(StructuralRelationship.assessment_id == assessment_id)
+        .where(StructuralRelationship.parent_scan_result_id.in_(artifact_ids))
+        .where(StructuralRelationship.child_scan_result_id.in_(artifact_ids))
+    )
+    if instance_id is not None:
+        structural_stmt = structural_stmt.where(StructuralRelationship.instance_id == instance_id)
+
+    for rel in session.exec(structural_stmt).all():
+        if rel.parent_scan_result_id is None or rel.child_scan_result_id is None:
+            continue
+        _append_graph_edge(
+            edges=edges,
+            edge_ids=edge_ids,
+            edge_id=f"structural:{rel.id}",
+            source=_graph_result_node_id(int(rel.parent_scan_result_id)),
+            target=_graph_result_node_id(int(rel.child_scan_result_id)),
+            edge_type="structural",
+            detail=rel.relationship_type,
+            confidence=rel.confidence,
+            metadata={"parent_field": rel.parent_field},
+        )
+
+    scoped_rows = session.exec(
+        select(ScanResult)
+        .where(ScanResult.id.in_(artifact_ids))
+    ).all()
+    result_by_id: Dict[int, ScanResult] = {}
+    sys_id_to_result_id: Dict[str, int] = {}
+    dictionary_by_key: Dict[Tuple[str, str], List[int]] = {}
+    table_result_by_name: Dict[str, int] = {}
+
+    for result in scoped_rows:
+        if result.id is None:
+            continue
+        rid = int(result.id)
+        result_by_id[rid] = result
+        if result.sys_id:
+            sys_id_to_result_id[str(result.sys_id).lower()] = rid
+        if result.table_name == "sys_db_object" and result.name:
+            table_result_by_name[str(result.name).strip()] = rid
+        raw_payload = _safe_json(result.raw_data_json, {})
+        if not isinstance(raw_payload, dict):
+            raw_payload = {}
+        dict_key = _dictionary_key_from_result(result, raw_payload)
+        if dict_key is not None:
+            dictionary_by_key.setdefault(dict_key, []).append(rid)
+
+    for source_id, source_result in result_by_id.items():
+        raw_payload = _safe_json(source_result.raw_data_json, {})
+        if not isinstance(raw_payload, dict):
+            raw_payload = {}
+
+        refs_by_field = _extract_reference_sys_ids_by_field(raw_payload)
+        for field_name, referenced_sys_ids in refs_by_field.items():
+            for sys_id in referenced_sys_ids:
+                target_id = sys_id_to_result_id.get(str(sys_id).lower())
+                if target_id is None or target_id == source_id:
+                    continue
+                _append_graph_edge(
+                    edges=edges,
+                    edge_ids=edge_ids,
+                    edge_id=f"reference_field:{source_id}:{target_id}:{field_name}",
+                    source=_graph_result_node_id(source_id),
+                    target=_graph_result_node_id(target_id),
+                    edge_type="reference_field",
+                    detail=f"Reference field: {field_name}",
+                    metadata={"fields": [field_name]},
+                )
+
+        target_table_name = _extract_target_table_name(source_result, raw_payload)
+        if target_table_name and source_result.table_name != "sys_db_object":
+            target_table_id = table_result_by_name.get(target_table_name)
+            if target_table_id is not None and target_table_id != source_id:
+                _append_graph_edge(
+                    edges=edges,
+                    edge_ids=edge_ids,
+                    edge_id=f"target_table:{source_id}:{target_table_id}",
+                    source=_graph_result_node_id(source_id),
+                    target=_graph_result_node_id(target_table_id),
+                    edge_type="target_table",
+                    detail=f"Targets table {target_table_name}",
+                    metadata={"table_name": target_table_name},
+                )
+
+        dict_key = _dictionary_key_from_result(source_result, raw_payload)
+        if dict_key is not None:
+            for target_id in dictionary_by_key.get(dict_key, []):
+                if target_id == source_id:
+                    continue
+                _append_graph_edge(
+                    edges=edges,
+                    edge_ids=edge_ids,
+                    edge_id=f"dictionary_binding:{source_id}:{target_id}:{dict_key[0]}:{dict_key[1]}",
+                    source=_graph_result_node_id(source_id),
+                    target=_graph_result_node_id(target_id),
+                    edge_type="dictionary_binding",
+                    detail=f"Shared dictionary key {dict_key[0]}.{dict_key[1]}",
+                    metadata={"dictionary_key": f"{dict_key[0]}.{dict_key[1]}"},
+                )
+
+        if source_result.table_name == "sys_db_object":
+            table_name = (source_result.name or "").strip()
+            if not table_name:
+                continue
+            for (dict_table_name, _element_name), target_ids in dictionary_by_key.items():
+                if dict_table_name != table_name:
+                    continue
+                for target_id in target_ids:
+                    if target_id == source_id:
+                        continue
+                    _append_graph_edge(
+                        edges=edges,
+                        edge_ids=edge_ids,
+                        edge_id=f"dictionary_binding:{source_id}:{target_id}:table:{table_name}",
+                        source=_graph_result_node_id(source_id),
+                        target=_graph_result_node_id(target_id),
+                        edge_type="dictionary_binding",
+                        detail=f"Dictionary entry for table {table_name}",
+                        metadata={"table_name": table_name},
+                    )
+
+
+def _build_relationship_graph_artifact_payload(
+    session: Session,
+    *,
+    result_id: int,
+    assessment_id: Optional[int],
+    instance_id: Optional[int],
+    scan_id: Optional[int],
+    max_neighbors: int,
+    exclude_result_ids: List[int],
+) -> Dict[str, Any]:
+    center_row = session.exec(
+        select(ScanResult, Scan, Assessment)
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .join(Assessment, Scan.assessment_id == Assessment.id)
+        .where(ScanResult.id == result_id)
+    ).first()
+    if not center_row:
+        raise ValueError("Result not found.")
+
+    center_result, center_scan, center_assessment = center_row
+    effective_assessment_id = assessment_id if assessment_id is not None else center_scan.assessment_id
+    effective_instance_id = instance_id if instance_id is not None else center_assessment.instance_id
+
+    if assessment_id is not None and center_scan.assessment_id != assessment_id:
+        raise ValueError("Result does not belong to the requested assessment.")
+    if instance_id is not None and center_assessment.instance_id != instance_id:
+        raise ValueError("Result does not belong to the requested instance.")
+    if scan_id is not None and center_scan.id != scan_id:
+        raise ValueError("Result does not belong to the requested scan.")
+
+    allowed_scan_result_ids: Optional[set] = None
+    if scan_id is not None:
+        allowed_scan_result_ids = set(
+            int(value)
+            for value in session.exec(
+                select(ScanResult.id).where(ScanResult.scan_id == scan_id)
+            ).all()
+            if value is not None
+        )
+
+    neighbor_priority: Dict[int, int] = {}
+
+    def _register_neighbor(candidate_id: Optional[int], priority: int) -> None:
+        if candidate_id is None:
+            return
+        cid = int(candidate_id)
+        if cid == result_id:
+            return
+        if allowed_scan_result_ids is not None and cid not in allowed_scan_result_ids:
+            return
+        current = neighbor_priority.get(cid)
+        if current is None or priority < current:
+            neighbor_priority[cid] = priority
+
+    code_rows: List[CodeReference] = []
+    code_neighbor_ids: set = set()
+    code_stmt = (
+        select(CodeReference)
+        .where(CodeReference.assessment_id == effective_assessment_id)
+        .where(
+            or_(
+                CodeReference.source_scan_result_id == result_id,
+                CodeReference.target_scan_result_id == result_id,
+            )
+        )
+    )
+    if effective_instance_id is not None:
+        code_stmt = code_stmt.where(CodeReference.instance_id == effective_instance_id)
+
+    for ref in session.exec(code_stmt).all():
+        other_id: Optional[int]
+        if ref.source_scan_result_id == result_id:
+            other_id = ref.target_scan_result_id
+        elif ref.target_scan_result_id == result_id:
+            other_id = ref.source_scan_result_id
+        else:
+            other_id = None
+        if other_id is None:
+            continue
+        _register_neighbor(other_id, 1)
+        code_neighbor_ids.add(int(other_id))
+        code_rows.append(ref)
+
+    structural_rows: List[StructuralRelationship] = []
+    structural_neighbor_ids: set = set()
+    structural_stmt = (
+        select(StructuralRelationship)
+        .where(StructuralRelationship.assessment_id == effective_assessment_id)
+        .where(
+            or_(
+                StructuralRelationship.parent_scan_result_id == result_id,
+                StructuralRelationship.child_scan_result_id == result_id,
+            )
+        )
+    )
+    if effective_instance_id is not None:
+        structural_stmt = structural_stmt.where(StructuralRelationship.instance_id == effective_instance_id)
+
+    for rel in session.exec(structural_stmt).all():
+        other_id: Optional[int]
+        if rel.parent_scan_result_id == result_id:
+            other_id = rel.child_scan_result_id
+        elif rel.child_scan_result_id == result_id:
+            other_id = rel.parent_scan_result_id
+        else:
+            other_id = None
+        if other_id is None:
+            continue
+        _register_neighbor(other_id, 2)
+        structural_neighbor_ids.add(int(other_id))
+        structural_rows.append(rel)
+
+    update_set_neighbor_ids: set = set()
+    center_update_set_ids: set = set()
+    if center_result.update_set_id:
+        center_update_set_ids.add(int(center_result.update_set_id))
+    for update_set_id in session.exec(
+        select(UpdateSetArtifactLink.update_set_id)
+        .where(UpdateSetArtifactLink.assessment_id == effective_assessment_id)
+        .where(UpdateSetArtifactLink.scan_result_id == result_id)
+    ).all():
+        if update_set_id is not None:
+            center_update_set_ids.add(int(update_set_id))
+
+    if center_update_set_ids:
+        same_us_scan_stmt = (
+            select(ScanResult.id)
+            .join(Scan, ScanResult.scan_id == Scan.id)
+            .where(Scan.assessment_id == effective_assessment_id)
+            .where(ScanResult.id != result_id)
+            .where(ScanResult.update_set_id.in_(list(center_update_set_ids)))
+            .order_by(desc(ScanResult.sys_updated_on), desc(ScanResult.id))
+            .limit(max_neighbors * 4)
+        )
+        if scan_id is not None:
+            same_us_scan_stmt = same_us_scan_stmt.where(Scan.id == scan_id)
+        for candidate_id in session.exec(same_us_scan_stmt).all():
+            if candidate_id is None:
+                continue
+            _register_neighbor(int(candidate_id), 3)
+            update_set_neighbor_ids.add(int(candidate_id))
+
+        same_us_link_stmt = (
+            select(UpdateSetArtifactLink.scan_result_id)
+            .where(UpdateSetArtifactLink.assessment_id == effective_assessment_id)
+            .where(UpdateSetArtifactLink.scan_result_id != result_id)
+            .where(UpdateSetArtifactLink.update_set_id.in_(list(center_update_set_ids)))
+            .limit(max_neighbors * 4)
+        )
+        for candidate_id in session.exec(same_us_link_stmt).all():
+            if candidate_id is None:
+                continue
+            _register_neighbor(int(candidate_id), 3)
+            update_set_neighbor_ids.add(int(candidate_id))
+
+    same_table_neighbor_ids: set = set()
+    if center_result.table_name:
+        same_table_stmt = (
+            select(ScanResult.id)
+            .join(Scan, ScanResult.scan_id == Scan.id)
+            .where(Scan.assessment_id == effective_assessment_id)
+            .where(ScanResult.id != result_id)
+            .where(ScanResult.table_name == center_result.table_name)
+            .order_by(desc(ScanResult.sys_updated_on), desc(ScanResult.id))
+            .limit(max_neighbors * 4)
+        )
+        if scan_id is not None:
+            same_table_stmt = same_table_stmt.where(Scan.id == scan_id)
+        for candidate_id in session.exec(same_table_stmt).all():
+            if candidate_id is None:
+                continue
+            _register_neighbor(int(candidate_id), 4)
+            same_table_neighbor_ids.add(int(candidate_id))
+
+    inferred_links = _collect_inferred_graph_links_for_center(
+        session,
+        center_result=center_result,
+        assessment_id=effective_assessment_id,
+        instance_id=effective_instance_id,
+        scan_id=scan_id,
+    )
+    inferred_neighbor_ids: set = set()
+    for link in inferred_links:
+        target_id = link.get("target_result_id")
+        if target_id is None:
+            continue
+        priority = int(link.get("priority") or 2)
+        _register_neighbor(int(target_id), priority)
+        inferred_neighbor_ids.add(int(target_id))
+
+    exclude_set = {int(v) for v in exclude_result_ids if v is not None}
+    sorted_candidates = sorted(neighbor_priority.items(), key=lambda item: (item[1], item[0]))
+    available_neighbors = [rid for rid, _priority in sorted_candidates if rid not in exclude_set]
+    selected_neighbors = available_neighbors[:max_neighbors]
+    truncated = len(available_neighbors) > len(selected_neighbors)
+
+    node_result_ids: List[int] = [result_id] + selected_neighbors
+    nodes_by_result_id = _load_graph_artifact_nodes(session, node_result_ids)
+    center_node = nodes_by_result_id.get(result_id)
+    if center_node is None:
+        raise ValueError("Center artifact could not be loaded.")
+
+    nodes: List[Dict[str, Any]] = [center_node]
+    for candidate_id in selected_neighbors:
+        node = nodes_by_result_id.get(candidate_id)
+        if node is not None:
+            nodes.append(node)
+
+    available_node_result_ids = {
+        int(node.get("result_id"))
+        for node in nodes
+        if node.get("node_type") == "artifact" and node.get("result_id") is not None
+    }
+    edges: List[Dict[str, Any]] = []
+    edge_ids: set = set()
+
+    for ref in code_rows:
+        if ref.source_scan_result_id is None or ref.target_scan_result_id is None:
+            continue
+        source_id = int(ref.source_scan_result_id)
+        target_id = int(ref.target_scan_result_id)
+        if source_id not in available_node_result_ids or target_id not in available_node_result_ids:
+            continue
+        _append_graph_edge(
+            edges=edges,
+            edge_ids=edge_ids,
+            edge_id=f"code_reference:{ref.id}",
+            source=_graph_result_node_id(source_id),
+            target=_graph_result_node_id(target_id),
+            edge_type="code_reference",
+            detail=ref.target_identifier or ref.code_snippet,
+            confidence=ref.confidence,
+            metadata={
+                "reference_type": ref.reference_type,
+                "source_field": ref.source_field,
+                "line_number": ref.line_number,
+            },
+        )
+
+    for rel in structural_rows:
+        if rel.parent_scan_result_id is None or rel.child_scan_result_id is None:
+            continue
+        parent_id = int(rel.parent_scan_result_id)
+        child_id = int(rel.child_scan_result_id)
+        if parent_id not in available_node_result_ids or child_id not in available_node_result_ids:
+            continue
+        _append_graph_edge(
+            edges=edges,
+            edge_ids=edge_ids,
+            edge_id=f"structural:{rel.id}",
+            source=_graph_result_node_id(parent_id),
+            target=_graph_result_node_id(child_id),
+            edge_type="structural",
+            detail=rel.relationship_type,
+            confidence=rel.confidence,
+            metadata={"parent_field": rel.parent_field},
+        )
+
+    for index, link in enumerate(inferred_links, start=1):
+        target_id = link.get("target_result_id")
+        if target_id is None:
+            continue
+        tid = int(target_id)
+        if tid not in available_node_result_ids:
+            continue
+        edge_type = str(link.get("edge_type") or "reference_field")
+        _append_graph_edge(
+            edges=edges,
+            edge_ids=edge_ids,
+            edge_id=f"inferred:{edge_type}:{result_id}:{tid}:{index}",
+            source=_graph_result_node_id(result_id),
+            target=_graph_result_node_id(tid),
+            edge_type=edge_type,
+            detail=str(link.get("detail") or ""),
+            metadata=link.get("metadata") if isinstance(link.get("metadata"), dict) else None,
+        )
+
+    for candidate_id in selected_neighbors:
+        if candidate_id not in available_node_result_ids:
+            continue
+        if candidate_id in update_set_neighbor_ids:
+            _append_graph_edge(
+                edges=edges,
+                edge_ids=edge_ids,
+                edge_id=f"same_update_set:{result_id}:{candidate_id}",
+                source=_graph_result_node_id(result_id),
+                target=_graph_result_node_id(candidate_id),
+                edge_type="same_update_set",
+                detail="Shared update set provenance",
+            )
+        if candidate_id in same_table_neighbor_ids:
+            _append_graph_edge(
+                edges=edges,
+                edge_ids=edge_ids,
+                edge_id=f"same_table:{result_id}:{candidate_id}",
+                source=_graph_result_node_id(result_id),
+                target=_graph_result_node_id(candidate_id),
+                edge_type="same_table",
+                detail=f"Both artifacts are {center_result.table_name}",
+            )
+
+    center_feature_ids = set(center_node.get("feature_ids") or [])
+    for candidate_id in selected_neighbors:
+        neighbor_node = nodes_by_result_id.get(candidate_id)
+        if not neighbor_node:
+            continue
+        neighbor_feature_ids = set(neighbor_node.get("feature_ids") or [])
+        shared_feature_ids = sorted(center_feature_ids.intersection(neighbor_feature_ids))
+        if not shared_feature_ids:
+            continue
+        shared_feature_names = [
+            name
+            for name in (center_node.get("feature_names") or [])
+            if name in set(neighbor_node.get("feature_names") or [])
+        ]
+        _append_graph_edge(
+            edges=edges,
+            edge_ids=edge_ids,
+            edge_id=f"shared_feature:{result_id}:{candidate_id}:{'-'.join(str(v) for v in shared_feature_ids)}",
+            source=_graph_result_node_id(result_id),
+            target=_graph_result_node_id(candidate_id),
+            edge_type="shared_feature",
+            detail=", ".join(shared_feature_names) if shared_feature_names else "Shared grouped feature",
+        )
+
+    return {
+        "mode": "artifact",
+        "scope": {
+            "assessment_id": effective_assessment_id,
+            "instance_id": effective_instance_id,
+            "scan_id": scan_id,
+        },
+        "center_node": center_node,
+        "nodes": nodes,
+        "edges": edges,
+        "summary": {
+            "candidate_neighbor_count": len(neighbor_priority),
+            "returned_neighbor_count": len(nodes) - 1,
+            "truncated": truncated,
+            "relationship_counts": {
+                "code_reference": len(code_neighbor_ids),
+                "structural": len(structural_neighbor_ids),
+                "reference_inferred": len(inferred_neighbor_ids),
+                "same_update_set": len(update_set_neighbor_ids),
+                "same_table": len(same_table_neighbor_ids),
+            },
+            "generated_at": datetime.utcnow().isoformat(),
+        },
+    }
+
+
+def _build_relationship_graph_feature_payload(
+    session: Session,
+    *,
+    feature_id: int,
+    assessment_id: Optional[int],
+    instance_id: Optional[int],
+    scan_id: Optional[int],
+    max_neighbors: int,
+    exclude_result_ids: List[int],
+) -> Dict[str, Any]:
+    feature = session.get(Feature, feature_id)
+    if not feature:
+        raise ValueError("Feature not found.")
+
+    assessment = session.get(Assessment, feature.assessment_id)
+    if not assessment:
+        raise ValueError("Feature assessment not found.")
+
+    effective_assessment_id = assessment_id if assessment_id is not None else feature.assessment_id
+    effective_instance_id = instance_id if instance_id is not None else assessment.instance_id
+
+    if assessment_id is not None and assessment_id != feature.assessment_id:
+        raise ValueError("Feature does not belong to the requested assessment.")
+    if instance_id is not None and instance_id != assessment.instance_id:
+        raise ValueError("Feature does not belong to the requested instance.")
+
+    member_rows = session.exec(
+        select(FeatureScanResult.scan_result_id, FeatureScanResult.membership_type)
+        .join(ScanResult, FeatureScanResult.scan_result_id == ScanResult.id)
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .where(FeatureScanResult.feature_id == feature_id)
+        .where(Scan.assessment_id == feature.assessment_id)
+    ).all()
+    context_rows = session.exec(
+        select(FeatureContextArtifact.scan_result_id, FeatureContextArtifact.context_type)
+        .join(ScanResult, FeatureContextArtifact.scan_result_id == ScanResult.id)
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .where(FeatureContextArtifact.feature_id == feature_id)
+        .where(FeatureContextArtifact.assessment_id == feature.assessment_id)
+        .where(Scan.assessment_id == feature.assessment_id)
+    ).all()
+
+    if scan_id is not None:
+        allowed_scan_ids = {int(value) for value in session.exec(select(ScanResult.id).where(ScanResult.scan_id == scan_id)).all() if value is not None}
+    else:
+        allowed_scan_ids = None
+
+    member_map: Dict[int, str] = {}
+    for scan_result_id, membership_type in member_rows:
+        if scan_result_id is None:
+            continue
+        rid = int(scan_result_id)
+        if allowed_scan_ids is not None and rid not in allowed_scan_ids:
+            continue
+        member_map[rid] = str(membership_type or "primary")
+
+    context_map: Dict[int, str] = {}
+    for scan_result_id, context_type in context_rows:
+        if scan_result_id is None:
+            continue
+        rid = int(scan_result_id)
+        if allowed_scan_ids is not None and rid not in allowed_scan_ids:
+            continue
+        context_map[rid] = str(context_type or "supporting")
+
+    all_candidates = list(dict.fromkeys(list(member_map.keys()) + list(context_map.keys())))
+    exclude_set = {int(v) for v in exclude_result_ids if v is not None}
+    available_candidates = [rid for rid in all_candidates if rid not in exclude_set]
+    selected_ids = available_candidates[:max_neighbors]
+    truncated = len(available_candidates) > len(selected_ids)
+
+    nodes_by_result_id = _load_graph_artifact_nodes(session, selected_ids)
+    artifact_nodes = [nodes_by_result_id[rid] for rid in selected_ids if rid in nodes_by_result_id]
+    selected_artifact_ids = [int(node["result_id"]) for node in artifact_nodes if node.get("result_id") is not None]
+
+    center_node = {
+        "id": _graph_feature_node_id(feature_id),
+        "node_type": "feature",
+        "feature_id": feature_id,
+        "assessment_id": feature.assessment_id,
+        "instance_id": assessment.instance_id,
+        "label": feature.name or f"Feature {feature_id}",
+        "name": feature.name,
+        "description": feature.description,
+        "disposition": feature.disposition.value if feature.disposition else None,
+        "confidence_score": feature.confidence_score,
+        "confidence_level": feature.confidence_level,
+    }
+
+    edges: List[Dict[str, Any]] = []
+    edge_ids: set = set()
+    for rid in selected_artifact_ids:
+        if rid in member_map:
+            _append_graph_edge(
+                edges=edges,
+                edge_ids=edge_ids,
+                edge_id=f"feature_member:{feature_id}:{rid}",
+                source=center_node["id"],
+                target=_graph_result_node_id(rid),
+                edge_type="feature_member",
+                detail=f"membership_type={member_map[rid]}",
+            )
+        elif rid in context_map:
+            _append_graph_edge(
+                edges=edges,
+                edge_ids=edge_ids,
+                edge_id=f"feature_context:{feature_id}:{rid}",
+                source=center_node["id"],
+                target=_graph_result_node_id(rid),
+                edge_type="feature_context",
+                detail=f"context_type={context_map[rid]}",
+            )
+
+    _append_graph_intragroup_edges(
+        session,
+        assessment_id=feature.assessment_id,
+        artifact_ids=selected_artifact_ids,
+        instance_id=assessment.instance_id,
+        edges=edges,
+        edge_ids=edge_ids,
+    )
+
+    return {
+        "mode": "feature",
+        "scope": {
+            "assessment_id": effective_assessment_id,
+            "instance_id": effective_instance_id,
+            "scan_id": scan_id,
+        },
+        "center_node": center_node,
+        "nodes": [center_node] + artifact_nodes,
+        "edges": edges,
+        "summary": {
+            "candidate_neighbor_count": len(all_candidates),
+            "returned_neighbor_count": len(artifact_nodes),
+            "truncated": truncated,
+            "relationship_counts": {
+                "feature_member": len(member_map),
+                "feature_context": len(context_map),
+            },
+            "generated_at": datetime.utcnow().isoformat(),
+        },
+    }
+
+
+def _build_relationship_graph_table_payload(
+    session: Session,
+    *,
+    table_name: str,
+    assessment_id: Optional[int],
+    instance_id: Optional[int],
+    scan_id: Optional[int],
+    max_neighbors: int,
+    exclude_result_ids: List[int],
+) -> Dict[str, Any]:
+    normalized_table = str(table_name or "").strip()
+    if not normalized_table:
+        raise ValueError("table_name is required.")
+
+    effective_scan_id = scan_id
+    effective_assessment_id = assessment_id
+    effective_instance_id = instance_id
+
+    if effective_scan_id is not None:
+        scan = session.get(Scan, effective_scan_id)
+        if not scan:
+            raise ValueError("Scan not found.")
+        if effective_assessment_id is not None and effective_assessment_id != scan.assessment_id:
+            raise ValueError("Scan does not belong to the requested assessment.")
+        effective_assessment_id = scan.assessment_id
+
+    if effective_assessment_id is not None:
+        assessment = session.get(Assessment, effective_assessment_id)
+        if not assessment:
+            raise ValueError("Assessment not found.")
+        if effective_instance_id is not None and effective_instance_id != assessment.instance_id:
+            raise ValueError("Assessment does not belong to the requested instance.")
+        effective_instance_id = assessment.instance_id
+
+    if effective_assessment_id is None and effective_instance_id is None:
+        raise ValueError("Provide assessment_id or instance_id for table graph scope.")
+
+    table_stmt = (
+        select(ScanResult.id)
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .join(Assessment, Scan.assessment_id == Assessment.id)
+        .where(ScanResult.table_name == normalized_table)
+        .order_by(desc(ScanResult.sys_updated_on), desc(ScanResult.id))
+        .limit(max_neighbors * 6)
+    )
+    if effective_scan_id is not None:
+        table_stmt = table_stmt.where(Scan.id == effective_scan_id)
+    if effective_assessment_id is not None:
+        table_stmt = table_stmt.where(Scan.assessment_id == effective_assessment_id)
+    if effective_instance_id is not None:
+        table_stmt = table_stmt.where(Assessment.instance_id == effective_instance_id)
+
+    candidate_ids = [int(value) for value in session.exec(table_stmt).all() if value is not None]
+    exclude_set = {int(v) for v in exclude_result_ids if v is not None}
+    available_ids = [rid for rid in candidate_ids if rid not in exclude_set]
+    selected_ids = available_ids[:max_neighbors]
+    truncated = len(available_ids) > len(selected_ids)
+
+    nodes_by_result_id = _load_graph_artifact_nodes(session, selected_ids)
+    artifact_nodes = [nodes_by_result_id[rid] for rid in selected_ids if rid in nodes_by_result_id]
+    selected_artifact_ids = [int(node["result_id"]) for node in artifact_nodes if node.get("result_id") is not None]
+
+    center_node = {
+        "id": _graph_table_node_id(normalized_table),
+        "node_type": "table",
+        "table_name": normalized_table,
+        "assessment_id": effective_assessment_id,
+        "instance_id": effective_instance_id,
+        "label": normalized_table,
+        "name": normalized_table,
+    }
+
+    edges: List[Dict[str, Any]] = []
+    edge_ids: set = set()
+    for rid in selected_artifact_ids:
+        _append_graph_edge(
+            edges=edges,
+            edge_ids=edge_ids,
+            edge_id=f"table_member:{normalized_table}:{rid}",
+            source=center_node["id"],
+            target=_graph_result_node_id(rid),
+            edge_type="table_member",
+            detail=f"Artifact belongs to {normalized_table}",
+        )
+
+    if effective_assessment_id is not None:
+        _append_graph_intragroup_edges(
+            session,
+            assessment_id=effective_assessment_id,
+            artifact_ids=selected_artifact_ids,
+            instance_id=effective_instance_id,
+            edges=edges,
+            edge_ids=edge_ids,
+        )
+
+    return {
+        "mode": "table",
+        "scope": {
+            "assessment_id": effective_assessment_id,
+            "instance_id": effective_instance_id,
+            "scan_id": effective_scan_id,
+        },
+        "center_node": center_node,
+        "nodes": [center_node] + artifact_nodes,
+        "edges": edges,
+        "summary": {
+            "candidate_neighbor_count": len(candidate_ids),
+            "returned_neighbor_count": len(artifact_nodes),
+            "truncated": truncated,
+            "relationship_counts": {
+                "table_member": len(artifact_nodes),
+            },
+            "generated_at": datetime.utcnow().isoformat(),
+        },
+    }
+
+
+def _build_relationship_graph_payload(
+    session: Session,
+    *,
+    result_id: Optional[int] = None,
+    feature_id: Optional[int] = None,
+    table_name: Optional[str] = None,
+    assessment_id: Optional[int] = None,
+    instance_id: Optional[int] = None,
+    scan_id: Optional[int] = None,
+    max_neighbors: int = 30,
+    exclude_result_ids: Optional[List[int]] = None,
+) -> Dict[str, Any]:
+    if max_neighbors < 1:
+        raise ValueError("max_neighbors must be greater than 0.")
+    bounded_neighbors = min(max(1, int(max_neighbors)), 200)
+    excludes = [int(v) for v in (exclude_result_ids or []) if v is not None]
+
+    if result_id is not None:
+        return _build_relationship_graph_artifact_payload(
+            session,
+            result_id=int(result_id),
+            assessment_id=assessment_id,
+            instance_id=instance_id,
+            scan_id=scan_id,
+            max_neighbors=bounded_neighbors,
+            exclude_result_ids=excludes,
+        )
+    if feature_id is not None:
+        return _build_relationship_graph_feature_payload(
+            session,
+            feature_id=int(feature_id),
+            assessment_id=assessment_id,
+            instance_id=instance_id,
+            scan_id=scan_id,
+            max_neighbors=bounded_neighbors,
+            exclude_result_ids=excludes,
+        )
+    if table_name is not None and str(table_name).strip():
+        return _build_relationship_graph_table_payload(
+            session,
+            table_name=str(table_name),
+            assessment_id=assessment_id,
+            instance_id=instance_id,
+            scan_id=scan_id,
+            max_neighbors=bounded_neighbors,
+            exclude_result_ids=excludes,
+        )
+    raise ValueError("Provide one seed input: result_id, feature_id, or table_name.")
+
+
 def _build_feature_recommendation_payload(recommendation: FeatureRecommendation) -> Dict[str, Any]:
     return {
         "id": recommendation.id,
@@ -6998,6 +8232,49 @@ async def list_results(request: Request, session: Session = Depends(get_session)
     })
 
 
+@app.get("/relationship-graph", response_class=HTMLResponse)
+async def relationship_graph_page(
+    request: Request,
+    result_id: Optional[int] = Query(default=None),
+    feature_id: Optional[int] = Query(default=None),
+    table_name: Optional[str] = Query(default=None),
+    assessment_id: Optional[int] = Query(default=None),
+    instance_id: Optional[int] = Query(default=None),
+    scan_id: Optional[int] = Query(default=None),
+):
+    """Standalone relationship graph explorer page."""
+    if result_id is None and feature_id is None and not str(table_name or "").strip():
+        raise HTTPException(status_code=400, detail="Provide result_id, feature_id, or table_name.")
+
+    if result_id is not None:
+        seed_mode = "artifact"
+        seed_label = f"Artifact #{result_id}"
+    elif feature_id is not None:
+        seed_mode = "feature"
+        seed_label = f"Feature #{feature_id}"
+    else:
+        seed_mode = "table"
+        seed_label = str(table_name or "").strip()
+
+    seed_payload = {
+        "result_id": result_id,
+        "feature_id": feature_id,
+        "table_name": str(table_name or "").strip() or None,
+        "assessment_id": assessment_id,
+        "instance_id": instance_id,
+        "scan_id": scan_id,
+    }
+
+    return templates.TemplateResponse("relationship_graph.html", {
+        "request": request,
+        "seed_mode": seed_mode,
+        "seed_label": seed_label,
+        "seed_payload": seed_payload,
+        "assessment_id": assessment_id,
+        "scan_id": scan_id,
+    })
+
+
 @app.get("/results/{result_id}", response_class=HTMLResponse)
 async def view_result(
     request: Request,
@@ -7834,6 +9111,52 @@ async def api_scan_results(
     )
     payload["scan_id"] = scan_id
     return payload
+
+
+@app.get("/api/relationship-graph/neighborhood")
+async def api_relationship_graph_neighborhood(
+    result_id: Optional[int] = Query(default=None),
+    feature_id: Optional[int] = Query(default=None),
+    table_name: Optional[str] = Query(default=None),
+    assessment_id: Optional[int] = Query(default=None),
+    instance_id: Optional[int] = Query(default=None),
+    scan_id: Optional[int] = Query(default=None),
+    max_neighbors: int = Query(default=30, ge=1, le=200),
+    exclude_result_ids: str = Query(default=""),
+    session: Session = Depends(get_session),
+):
+    """Progressive neighborhood payload for relationship graph exploration."""
+    normalized_table = str(table_name or "").strip()
+    seed_count = 0
+    if result_id is not None:
+        seed_count += 1
+    if feature_id is not None:
+        seed_count += 1
+    if normalized_table:
+        seed_count += 1
+    if seed_count != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide exactly one seed: result_id, feature_id, or table_name.",
+        )
+
+    try:
+        payload = _build_relationship_graph_payload(
+            session,
+            result_id=result_id,
+            feature_id=feature_id,
+            table_name=normalized_table or None,
+            assessment_id=assessment_id,
+            instance_id=instance_id,
+            scan_id=scan_id,
+            max_neighbors=max_neighbors,
+            exclude_result_ids=_parse_csv_ints(exclude_result_ids),
+        )
+        return payload
+    except ValueError as exc:
+        message = str(exc)
+        status = 404 if "not found" in message.lower() else 400
+        raise HTTPException(status_code=status, detail=message)
 
 
 @app.get("/api/assessments/{assessment_id}/grouping-signals")
