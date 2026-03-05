@@ -143,6 +143,15 @@ def test_runtime_usage_link_is_on_integration_properties_page(client: TestClient
     response = client.get("/integration-properties")
     assert response.status_code == 200
     assert "/integration-properties/assessment-runtime-usage" in response.text
+    assert "/integration-properties/ai-setup" in response.text
+
+
+def test_ai_setup_wizard_page_renders(client: TestClient):
+    response = client.get("/integration-properties/ai-setup")
+    assert response.status_code == 200
+    assert "AI Setup Wizard" in response.text
+    assert "Step 3: Local Bridge Launcher" in response.text
+    assert "Step 4: Start AI Pipeline Stage" in response.text
 
 
 def test_runtime_usage_page_and_api_require_admin_token_when_configured(

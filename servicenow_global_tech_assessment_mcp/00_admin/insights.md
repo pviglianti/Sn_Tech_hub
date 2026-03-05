@@ -43,6 +43,7 @@
 - AI runtime control decision (2026-03-05): model execution mode/provider/model and budget guardrails are first-class integration properties (`ai.runtime.*`, `ai.budget.*`) with per-instance overrides and typed loader (`load_ai_runtime_properties`).
 - Runtime telemetry decision (2026-03-05): `assessment_runtime_usage` is the canonical per-assessment cost/perf telemetry surface (results/features/recommendations counts, MCP call splits, token usage, estimated cost, runtime mode/model), exposed at `/integration-properties/assessment-runtime-usage`.
 - Resume checkpoint decision (2026-03-05): `assessment_phase_progress` is the canonical resumable cursor per assessment+phase. Pipeline stages and MCP tools update `resume_from_index`/`completed_items` at chunk boundaries and use explicit failure statuses (`blocked_rate_limit`, `blocked_cost_limit`, `failed`) to support deterministic rehydrate/resume.
+- AI setup UX decision (2026-03-05): non-technical runtime onboarding now has a dedicated guided page at `/integration-properties/ai-setup` (scope-aware runtime property save + bridge lifecycle controls + direct pipeline stage kickoff), and Integration Properties exposes inline/link entry points in the `AI / LLM Runtime` area.
 - Phase sequencing decision (2026-03-05): prompt integration is promoted from deferred Phase 10 work into Phase 9 scope (Option A), and will ship together with Excel/Word exports + process recommendations UI after Phase 8A stabilization/validation gate.
 - Phase 9 execution decision (2026-03-05): keep existing JSON contracts in stage fields and append registered-prompt context under additive keys (`registered_prompt`, `prompt_context`, `registered_prompt_error`) so enabling prompt integration is reversible and backward compatible with existing consumers/tests.
 - Phase 9 export contract decision (2026-03-05): canonical download route is `/api/assessments/{id}/export/{format}` (`xlsx`/`docx`) backed by `src/services/report_export.py`; duplicate export routes were removed during cross-agent review to avoid drift.
@@ -161,6 +162,23 @@
 - **Session-aware prompt infrastructure**: `PromptSpec.handler` callback replaces static `arguments` — enables prompts to dynamically load assessment context, scan results, and best practices at invocation time.
 - **4 MCP prompts**: `artifact_analyzer` (per-artifact deep analysis), `relationship_tracer` (cross-artifact dependency tracing), `technical_architect` (dual-mode full/focused review), `report_writer` (assessment deliverable generation). All registered in `PROMPT_REGISTRY`.
 - **Key files**: `src/models.py` (BestPractice), `src/mcp/prompts/` (4 prompt modules), `src/mcp/registry.py` (registration).
+
+### ARCHITECTURE: SN API Centralization (2026-03-05)
+- **Centralized SN client API surface**: `sn_client.py` now owns `_iterate_batches`, `_fetch_with_retry`, `_watermark_filter`, `get_records` as the single network abstraction. All callers (scan_executor, sn_dictionary, data_pull_executor) route through client methods for retry, auth, and consistent parameter handling.
+- **DESC ordering**: `_iterate_batches(order_desc=True)` appends `ORDERBYDESC{order_by}` with dedup guard preventing duplicate ORDER clauses. Controlled by `integration.pull.order_desc` property (default `true`).
+- **Consolidation pattern**: Module-level functions (`_apply_since_filter`, `_iterate_batches` in scan_executor; raw `session.get()` in sn_dictionary) deleted and replaced with `client.*` equivalents. Gains: retry, auth header, watermark normalization.
+- **Watermark normalization**: All since-filter call sites now use `client._watermark_filter(since, inclusive=True)`. The `inclusive=False` bug at data_pull_executor line 299 was removed.
+- **Dual-signal bail-out**: Count gate (`local_count >= remote_count`) AND content gate (`consecutive_unchanged >= bail_threshold`) must BOTH fire. Safety cap (`total_records >= max_records`) fires independently. First-load skip prevents false bail when `local_count_pre == 0`.
+- **Bail-out telemetry**: 6 new `InstanceDataPull` columns (`local_count_pre_pull`, `local_count_post_pull`, `remote_count_at_probe`, `bail_out_reason`, `records_changed_count`, `records_unchanged_count`) populated by `execute_data_pull`.
+- **PullHandler type alias**: `Callable[..., Tuple[int, Optional[datetime]]]` — loosened for flexibility. Watch for signature drift across 11 handlers.
+- **Refactor debt**: Bail-out boilerplate (~25 lines) repeated across 11 `_pull_*` handlers. Extract to shared helper in future sprint. `csdm_ingestion.py` still has its own `build_delta_query()` and `fetch_batch_with_retry()` — consolidate in future sprint.
+
+### PROCESS: Multi-Agent Orchestration Lessons (2026-03-05)
+- **Zero-overlap file ownership enables clean parallel dev**. PM-verified file ownership map prevented merge conflicts across 3 worktrees.
+- **Round-robin cross-testing is effective**: Dev-2→Task 1, Dev-1→Task 3, Dev-3→Task 2. Each dev verified another's work with source-level evidence.
+- **Architect/PM feedback is a post-commit loop, not a merge gate**. Checkpoint 4 (cross-test complete) is the merge gate. Architect reads reviewer findings → posts lessons-learned → stores in memory for next sprint planning. PM updates checkpoints + backlog.
+- **Dev-3 replicated Dev-1 identically** when building on shared files in its own worktree. The overlapping files were byte-identical, enabling simple copy merge strategy (dev_3 superset wins).
+- **Worktree strategy**: Each dev gets isolated worktree branched from same base commit. Changes are uncommitted working directory modifications. Merge = file copy to feature branch → run full suite → commit.
 
 ## Open Questions
 - (none currently — all resolved this session)

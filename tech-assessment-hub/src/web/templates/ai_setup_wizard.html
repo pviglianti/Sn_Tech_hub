@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+
+{% block title %}AI Setup Wizard - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>AI Setup Wizard</h1>
+        <p class="text-muted-sm mb-0">Configure local AI runtime and launch AI stages from one page.</p>
+    </div>
+    <div class="button-group">
+        <a href="/integration-properties" class="btn btn-secondary">Back to Properties</a>
+        <a href="/mcp-console" class="btn btn-secondary">Advanced MCP Console</a>
+    </div>
+</div>
+
+<div class="card">
+    <p class="text-muted-plain mb-0">
+        This page is optimized for non-technical setup. It saves AI runtime properties, bridge launcher config,
+        and can start/restart the bridge process for local subscription flows.
+    </p>
+</div>
+
+<div class="card mt-1">
+    <h2>Step 1: Scope + Admin Access</h2>
+    <div class="form-group">
+        <label for="aiSetupScope">Property Scope</label>
+        <select id="aiSetupScope" class="form-input">
+            <option value="">Global Defaults (all instances)</option>
+        </select>
+        <small>Choose a specific instance only if you want per-instance AI settings.</small>
+    </div>
+    {% set token_input_id = 'aiSetupAdminToken' %}
+    {% set token_help_text = 'Required for remote access. Localhost access works when admin token is not configured.' %}
+    {% include "components/admin_token_field.html" %}
+</div>
+
+<div class="card mt-1">
+    <h2>Step 2: AI Runtime</h2>
+    <div class="split-grid">
+        <div class="form-group">
+            <label for="aiRuntimeMode">Runtime Mode</label>
+            <select id="aiRuntimeMode" class="form-input"></select>
+        </div>
+        <div class="form-group">
+            <label for="aiRuntimeProvider">Provider</label>
+            <select id="aiRuntimeProvider" class="form-input"></select>
+        </div>
+    </div>
+    <div class="form-group">
+        <label for="aiRuntimeModel">Model</label>
+        <select id="aiRuntimeModel" class="form-input"></select>
+    </div>
+    <div class="button-group">
+        <button class="btn btn-secondary" id="aiSetupLoadRuntime">Reload Runtime</button>
+        <button class="btn btn-primary" id="aiSetupSaveRuntime">Save Runtime</button>
+    </div>
+</div>
+
+<div class="card mt-1">
+    <h2>Step 3: Local Bridge Launcher</h2>
+    <p class="text-muted-plain mt-0">
+        Enter the command that starts your local MCP-capable bridge/adapter for Claude/OpenAI local subscription use.
+    </p>
+    <div class="form-group">
+        <label>
+            <input id="aiBridgeEnabled" type="checkbox" />
+            Bridge Enabled
+        </label>
+    </div>
+    <div class="split-grid">
+        <div class="form-group">
+            <label for="aiBridgeCommand">Command</label>
+            <input id="aiBridgeCommand" class="form-input" placeholder="node" />
+        </div>
+        <div class="form-group">
+            <label for="aiBridgeCwd">Working Directory (optional)</label>
+            <input id="aiBridgeCwd" class="form-input" placeholder="/absolute/path/to/bridge" />
+        </div>
+    </div>
+    <div class="form-group">
+        <label for="aiBridgeArgs">Args (one per line)</label>
+        <textarea id="aiBridgeArgs" rows="4" class="form-input" placeholder="dist/index.js&#10;--port&#10;3333"></textarea>
+    </div>
+    <div class="split-grid">
+        <div class="form-group">
+            <label for="aiBridgeRpcUrl">RPC URL (optional)</label>
+            <input id="aiBridgeRpcUrl" class="form-input" placeholder="http://127.0.0.1:3333/mcp" />
+        </div>
+        <div class="form-group">
+            <label for="aiBridgeMgmtUrl">Management Base URL (optional)</label>
+            <input id="aiBridgeMgmtUrl" class="form-input" placeholder="http://127.0.0.1:3333" />
+        </div>
+    </div>
+    <div class="split-grid">
+        <div class="form-group">
+            <label for="aiBridgeEventUrl">Event URL (optional)</label>
+            <input id="aiBridgeEventUrl" class="form-input" placeholder="http://127.0.0.1:3333/mcp/events" />
+        </div>
+        <div class="form-group">
+            <label for="aiBridgeHealthUrl">Health URL (optional)</label>
+            <input id="aiBridgeHealthUrl" class="form-input" placeholder="http://127.0.0.1:3333/health" />
+        </div>
+    </div>
+    <div class="form-group">
+        <label for="aiBridgeEnvJson">Environment JSON (optional)</label>
+        <textarea id="aiBridgeEnvJson" rows="4" class="form-input" placeholder='{"NODE_ENV":"production"}'></textarea>
+    </div>
+    <div class="button-group">
+        <button class="btn btn-secondary" id="aiSetupLoadBridge">Reload Bridge Config</button>
+        <button class="btn btn-primary" id="aiSetupSaveBridge">Save Bridge Config</button>
+        <button class="btn btn-primary" id="aiSetupSaveAndStartBridge">Save + Start Bridge</button>
+        <button class="btn btn-secondary" id="aiSetupRestartBridge">Restart Bridge</button>
+        <button class="btn btn-secondary" id="aiSetupStopBridge">Stop Bridge</button>
+    </div>
+    <pre id="aiSetupBridgeStatus" class="code-block mt-1">Bridge status not loaded.</pre>
+</div>
+
+<div class="card mt-1">
+    <h2>Step 4: Start AI Pipeline Stage</h2>
+    <p class="text-muted-plain mt-0">
+        Kick off AI stages directly from web UI once bridge/runtime are configured.
+    </p>
+    <div class="split-grid">
+        <div class="form-group">
+            <label for="aiPipelineAssessmentId">Assessment ID</label>
+            <input id="aiPipelineAssessmentId" class="form-input" placeholder="123" />
+        </div>
+        <div class="form-group">
+            <label for="aiPipelineTargetStage">Target Stage</label>
+            <select id="aiPipelineTargetStage" class="form-input">
+                <option value="engines">Engines</option>
+                <option value="ai_analysis">AI Analysis</option>
+                <option value="observations">Observations</option>
+                <option value="grouping">Grouping</option>
+                <option value="ai_refinement">AI Refinement</option>
+                <option value="recommendations">Recommendations</option>
+                <option value="report">Report</option>
+            </select>
+        </div>
+    </div>
+    <div class="button-group">
+        <label><input type="checkbox" id="aiPipelineSkipReview" /> Skip review gate</label>
+        <label><input type="checkbox" id="aiPipelineForce" /> Force stage transition</label>
+    </div>
+    <div class="button-group mt-1">
+        <button class="btn btn-primary" id="aiPipelineStartBtn">Start Stage</button>
+    </div>
+    <pre id="aiPipelineResponse" class="code-block mt-1">Pipeline action response not loaded.</pre>
+</div>
+
+<div class="card mt-1">
+    <h2>Status</h2>
+    <pre id="aiSetupStatus" class="code-block">Ready.</pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    window.AI_SETUP_INSTANCE_OPTIONS = {{ instance_options_json | safe }};
+    window.AI_SETUP_SELECTED_INSTANCE_ID = {{ selected_instance_id | tojson }};
+    window.AI_RUNTIME_KEYS = {
+        mode: {{ runtime_mode_key | tojson }},
+        provider: {{ runtime_provider_key | tojson }},
+        model: {{ runtime_model_key | tojson }}
+    };
+    window.AI_RUNTIME_MODE_OPTIONS = {{ runtime_mode_options_json | safe }};
+    window.AI_RUNTIME_PROVIDER_OPTIONS = {{ runtime_provider_options_json | safe }};
+    window.AI_RUNTIME_MODEL_OPTIONS = {{ runtime_model_options_json | safe }};
+</script>
+<script src="/static/js/ai_setup_wizard.js?v={{ static_version }}"></script>
+{% endblock %}

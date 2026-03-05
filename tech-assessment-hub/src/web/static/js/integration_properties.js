@@ -198,6 +198,13 @@
             var sectionProps = result.groups[sectionName];
             html += '<div class="card mt-1">';
             html += '<h2>' + escapeHtml(sectionName) + '</h2>';
+            if (sectionName === "AI / LLM Runtime") {
+                html += '<div class="button-group mb-05">';
+                html += '<a class="btn btn-secondary" href="/integration-properties/ai-setup" ';
+                html += 'title="Open guided AI setup (runtime + local bridge launcher + pipeline start).">';
+                html += 'AI Setup Wizard</a>';
+                html += "</div>";
+            }
             html += '<div class="table-scroll"><table class="data-table">';
             html += '<thead><tr>';
             html += '<th>Label</th><th>Value</th><th>Current Stored</th><th>Default</th><th>Description</th>';

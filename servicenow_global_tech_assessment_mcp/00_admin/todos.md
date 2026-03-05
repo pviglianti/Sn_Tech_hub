@@ -27,7 +27,16 @@
 - [ ] [owner:any] Rabbit hole priority config — modular/adjustable rules for which dependency types to follow.
 - [ ] [owner:any] Catch-all label table — mapping app file class → display label (sys_dictionary → "Form Fields", etc.).
 
+## Completed (session 2026-03-05 — AI Setup Wizard Flow)
+- [x] [owner:codex] Added guided AI setup page at `/integration-properties/ai-setup` for non-technical runtime setup (scope selection, runtime mode/provider/model save, bridge config save/start/restart/stop, and direct pipeline stage kickoff action).
+- [x] [owner:codex] Added Integration Properties entry points to the wizard: Assessment Tools card button and inline `AI Setup Wizard` link directly in the `AI / LLM Runtime` section next to AI provider/model controls.
+
 ## Backlog
+- [ ] [owner:codex] **Bail-out boilerplate refactor**: Extract ~25 lines of repeated bail-out logic across 11 `_pull_*` handlers into a shared helper function in `data_pull_executor.py`. Logged by Reviewer-T3 (2026-03-05 sprint).
+- [ ] [owner:codex] **csdm_ingestion consolidation**: `csdm_ingestion.py` still has its own `build_delta_query()` and `fetch_batch_with_retry()` — migrate to centralized `sn_client` methods. Logged as out-of-scope debt in SN API centralization sprint.
+- [ ] [owner:codex] **display_value parameter normalization**: `display_value=False` silently dropped in Task 2 consolidated modules (scan_executor, sn_dictionary). Add explicit `display_value` parameter to `get_records()` if needed by callers. Flagged by Architect (2026-03-05 sprint).
+- [ ] [owner:codex] **ORDER direction dedup hardening**: Harden cross-direction `sysparm_order_by` vs encoded-query ORDER clause conflict detection. Latent risk flagged by Architect (2026-03-05 sprint).
+- [ ] [owner:codex] **Bail-out telemetry dashboard**: Build observability view for the 6 new `InstanceDataPull` bail-out columns. Recommended by Architect (2026-03-05 sprint).
 - [ ] [owner:claude] UI Consolidation Group 3A: Jinja macros for filter cards (deferred as low-value for now).
 - [ ] [owner:any] Full-app UI modularization [H]: unify remaining results-grid behavior across global/assessment/scan into one reusable controller (audit 3.1).
 - [ ] [owner:any] Full-app UI modularization [H]: create shared polling/status engine with standardized lifecycle/backoff/visibility handling (audit 3.3).

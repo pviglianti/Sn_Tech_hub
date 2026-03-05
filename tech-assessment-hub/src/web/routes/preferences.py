@@ -14,6 +14,12 @@ from sqlmodel import Session, select
 from ...database import get_session
 from ...models import Instance
 from ...services.integration_properties import (
+    AI_RUNTIME_MODE,
+    AI_RUNTIME_MODE_OPTIONS,
+    AI_RUNTIME_MODEL,
+    AI_RUNTIME_MODEL_OPTIONS,
+    AI_RUNTIME_PROVIDER,
+    AI_RUNTIME_PROVIDER_OPTIONS,
     PROPERTY_SCOPE_APPLICATION,
     SECTION_ORDER,
     list_integration_property_snapshots,
@@ -57,6 +63,37 @@ def create_preferences_router(require_mcp_admin: Callable[..., Dict[str, Any]]) 
                 "instance_options_json": json.dumps(instance_options),
                 "selected_instance_id": resolved_instance_id,
                 "property_scope": PROPERTY_SCOPE_APPLICATION,
+            },
+        )
+
+    @preferences_router.get("/integration-properties/ai-setup", response_class=HTMLResponse)
+    async def ai_setup_wizard_page(
+        request: Request,
+        instance_id: Optional[int] = Query(default=None),
+        session: Session = Depends(get_session),
+    ):
+        """Guided AI runtime + bridge setup page for non-technical operators."""
+        resolved_instance_id = _resolve_instance_scope(instance_id, session)
+        instances = session.exec(select(Instance).order_by(Instance.name.asc())).all()
+        instance_options = [{"id": inst.id, "name": inst.name} for inst in instances]
+        return templates.TemplateResponse(
+            "ai_setup_wizard.html",
+            {
+                "request": request,
+                "instance_options_json": json.dumps(instance_options),
+                "selected_instance_id": resolved_instance_id,
+                "runtime_mode_key": AI_RUNTIME_MODE,
+                "runtime_provider_key": AI_RUNTIME_PROVIDER,
+                "runtime_model_key": AI_RUNTIME_MODEL,
+                "runtime_mode_options_json": json.dumps(
+                    [{"value": value, "label": label} for value, label in AI_RUNTIME_MODE_OPTIONS]
+                ),
+                "runtime_provider_options_json": json.dumps(
+                    [{"value": value, "label": label} for value, label in AI_RUNTIME_PROVIDER_OPTIONS]
+                ),
+                "runtime_model_options_json": json.dumps(
+                    [{"value": value, "label": label} for value, label in AI_RUNTIME_MODEL_OPTIONS]
+                ),
             },
         )
 
