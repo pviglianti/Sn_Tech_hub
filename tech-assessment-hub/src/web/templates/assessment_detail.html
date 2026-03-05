@@ -120,6 +120,65 @@
     </div>
 </div>
 
+<!-- Pipeline Flow Bar -->
+{% if assessment.state.value in ('in_progress', 'completed') %}
+<div class="card pipeline-flow-card" id="pipelineFlowCard">
+    <h3>Assessment Pipeline</h3>
+    <div class="pipeline-flow-bar" id="pipelineFlowBar">
+        <div class="pipeline-step" data-pipeline-step="scans">
+            <div class="pipeline-step-circle" data-step-circle>1</div>
+            <div class="pipeline-step-label">Scans</div>
+            <div class="pipeline-step-status" data-step-status></div>
+            <div class="pipeline-step-action" data-step-action></div>
+        </div>
+        <div class="pipeline-step" data-pipeline-step="engines">
+            <div class="pipeline-step-circle" data-step-circle>2</div>
+            <div class="pipeline-step-label">Engines</div>
+            <div class="pipeline-step-status" data-step-status></div>
+            <div class="pipeline-step-action" data-step-action></div>
+        </div>
+        <div class="pipeline-step" data-pipeline-step="observations">
+            <div class="pipeline-step-circle" data-step-circle>3</div>
+            <div class="pipeline-step-label">Observations</div>
+            <div class="pipeline-step-status" data-step-status></div>
+            <div class="pipeline-step-action" data-step-action></div>
+        </div>
+        <div class="pipeline-step" data-pipeline-step="review">
+            <div class="pipeline-step-circle" data-step-circle>4</div>
+            <div class="pipeline-step-label">Review</div>
+            <div class="pipeline-step-status" data-step-status></div>
+            <div class="pipeline-step-action" data-step-action></div>
+            <div class="pipeline-review-progress" data-review-progress style="display:none;">
+                <div class="pipeline-review-bar"><div class="pipeline-review-fill" data-review-fill></div></div>
+                <div class="pipeline-review-count" data-review-count></div>
+            </div>
+        </div>
+        <div class="pipeline-step" data-pipeline-step="grouping">
+            <div class="pipeline-step-circle" data-step-circle>5</div>
+            <div class="pipeline-step-label">Grouping</div>
+            <div class="pipeline-step-status" data-step-status></div>
+            <div class="pipeline-step-action" data-step-action></div>
+        </div>
+        <div class="pipeline-step" data-pipeline-step="recommendations">
+            <div class="pipeline-step-circle" data-step-circle>6</div>
+            <div class="pipeline-step-label">Recommendations</div>
+            <div class="pipeline-step-status" data-step-status></div>
+            <div class="pipeline-step-action" data-step-action></div>
+        </div>
+        <div class="pipeline-step" data-pipeline-step="complete">
+            <div class="pipeline-step-circle" data-step-circle>7</div>
+            <div class="pipeline-step-label">Complete</div>
+            <div class="pipeline-step-status" data-step-status></div>
+            <div class="pipeline-step-action" data-step-action></div>
+            <div class="pipeline-complete-links" data-complete-links style="display:none;">
+                <a href="#features" class="pipeline-link" onclick="document.querySelector('[data-tab-btn=features]').click()">Features</a>
+                <a href="#grouping-signals" class="pipeline-link" onclick="document.querySelector('[data-tab-btn=grouping-signals]').click()">Signals</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <div class="card" id="syncCard">
     <h2 id="syncCardTitle">Preflight Sync Plan</h2>
     <p class="preflight-subtitle" id="syncCardSubtitle">
@@ -1134,6 +1193,9 @@ async function refreshScanStatus() {
         updateAssessmentRunStatus(data.run_status || null);
         applyPreflightStatus(data.data_sync || null, data.run_status || null);
         applyPostflightStatus(data.postflight_details || null);
+
+        // Pipeline flow bar update
+        updatePipelineFlowBar(data.pipeline || null);
     } catch (err) {
         // ignore polling errors
     }
@@ -1385,5 +1447,176 @@ document.addEventListener('tab:activated', function(e) {
         signalsPanel.refresh();
     }
 });
+
+// ── Pipeline Flow Bar ───────────────────────────────────────────────
+
+const _PIPELINE_STAGES = ['scans', 'engines', 'observations', 'review', 'grouping', 'recommendations', 'complete'];
+const _PIPELINE_LABELS = {
+    scans: 'Scans', engines: 'Engines', observations: 'Observations',
+    review: 'Review', grouping: 'Grouping', recommendations: 'Recommendations',
+    complete: 'Complete',
+};
+// Which stages have action buttons and what target_stage to send
+const _PIPELINE_ACTIONS = {
+    engines: { label: 'Run Engines', target: 'engines' },
+    observations: { label: 'Generate Observations', target: 'observations' },
+    review: { label: 'Enter Review', target: 'review' },
+    grouping: { label: 'Run Grouping', target: 'grouping' },
+    recommendations: { label: 'Run Recommendations', target: 'recommendations' },
+};
+const _CHECK_SVG = '<svg class="pipeline-step-check" viewBox="0 0 14 14" fill="none"><path d="M2.5 7.5L5.5 10.5L11.5 3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+let _pipelineAdvancing = false;
+let _lastPipelineStage = null;
+
+function updatePipelineFlowBar(pipeline) {
+    const flowBar = document.getElementById('pipelineFlowBar');
+    if (!flowBar || !pipeline) return;
+
+    const currentStage = pipeline.stage || 'scans';
+    const currentIndex = _PIPELINE_STAGES.indexOf(currentStage);
+    const activeRun = pipeline.active_run || null;
+    const isRunning = activeRun && activeRun.status === 'running';
+    const reviewGate = pipeline.review_gate || {};
+
+    _lastPipelineStage = currentStage;
+
+    _PIPELINE_STAGES.forEach((stage, idx) => {
+        const stepEl = flowBar.querySelector(`[data-pipeline-step="${stage}"]`);
+        if (!stepEl) return;
+
+        const circleEl = stepEl.querySelector('[data-step-circle]');
+        const statusEl = stepEl.querySelector('[data-step-status]');
+        const actionEl = stepEl.querySelector('[data-step-action]');
+        const reviewProgressEl = stepEl.querySelector('[data-review-progress]');
+
+        // Reset classes
+        stepEl.classList.remove('step-completed', 'step-active', 'step-running', 'step-pending');
+
+        // Show/hide completion links
+        const completeLinksEl = stepEl.querySelector('[data-complete-links]');
+        if (completeLinksEl) {
+            completeLinksEl.style.display = (currentStage === 'complete') ? '' : 'none';
+        }
+
+        if (idx < currentIndex) {
+            // Completed step
+            stepEl.classList.add('step-completed');
+            circleEl.innerHTML = _CHECK_SVG;
+            statusEl.textContent = '';
+            actionEl.innerHTML = '';
+        } else if (idx === currentIndex) {
+            // Active/current step
+            if (isRunning && activeRun.target_stage === stage) {
+                stepEl.classList.add('step-running');
+                circleEl.innerHTML = String(idx + 1);
+                const pct = activeRun.progress_percent || 0;
+                statusEl.textContent = pct > 0 ? `${pct}%` : 'Running...';
+            } else {
+                stepEl.classList.add('step-active');
+                circleEl.innerHTML = String(idx + 1);
+                statusEl.textContent = 'Current';
+            }
+
+            // Action buttons for current stage
+            _renderStepActions(stage, actionEl, currentStage, isRunning, reviewGate);
+        } else {
+            // Future step
+            stepEl.classList.add('step-pending');
+            circleEl.innerHTML = String(idx + 1);
+            statusEl.textContent = '';
+            actionEl.innerHTML = '';
+        }
+
+        // Review gate progress bar (only for review step)
+        if (reviewProgressEl) {
+            if (stage === 'review' && (currentStage === 'review' || currentIndex > _PIPELINE_STAGES.indexOf('review'))) {
+                const total = reviewGate.total_customized || 0;
+                const reviewed = reviewGate.reviewed || 0;
+                if (total > 0) {
+                    reviewProgressEl.style.display = '';
+                    const pct = Math.round((reviewed / total) * 100);
+                    reviewProgressEl.querySelector('[data-review-fill]').style.width = pct + '%';
+                    reviewProgressEl.querySelector('[data-review-count]').textContent = `${reviewed} / ${total} reviewed`;
+                } else {
+                    reviewProgressEl.style.display = 'none';
+                }
+            } else {
+                reviewProgressEl.style.display = 'none';
+            }
+        }
+    });
+}
+
+function _renderStepActions(stage, actionEl, currentStage, isRunning, reviewGate) {
+    actionEl.innerHTML = '';
+    if (isRunning) return; // No buttons while running
+
+    // The next stage to advance to
+    const currentIndex = _PIPELINE_STAGES.indexOf(currentStage);
+    const nextStage = currentIndex < _PIPELINE_STAGES.length - 1 ? _PIPELINE_STAGES[currentIndex + 1] : null;
+
+    if (!nextStage || nextStage === 'complete') return;
+    if (currentStage === 'complete') return;
+
+    const actionDef = _PIPELINE_ACTIONS[nextStage];
+    if (!actionDef) return;
+
+    // Special handling for review → grouping (need review gate check)
+    if (currentStage === 'review') {
+        const allReviewed = reviewGate.all_reviewed || false;
+        const btn = document.createElement('button');
+        btn.className = 'btn-pipeline';
+        btn.textContent = 'Proceed to Grouping';
+        btn.disabled = !allReviewed && !_pipelineAdvancing;
+        btn.addEventListener('click', () => advancePipelineStage('grouping'));
+        actionEl.appendChild(btn);
+
+        if (!allReviewed) {
+            const skipBtn = document.createElement('button');
+            skipBtn.className = 'btn-pipeline btn-pipeline-skip';
+            skipBtn.textContent = 'Skip Review';
+            skipBtn.addEventListener('click', () => advancePipelineStage('grouping', true));
+            actionEl.appendChild(skipBtn);
+        }
+        return;
+    }
+
+    const btn = document.createElement('button');
+    btn.className = 'btn-pipeline';
+    btn.textContent = actionDef.label;
+    btn.disabled = _pipelineAdvancing;
+    btn.addEventListener('click', () => advancePipelineStage(actionDef.target));
+    actionEl.appendChild(btn);
+}
+
+async function advancePipelineStage(targetStage, skipReview) {
+    if (_pipelineAdvancing) return;
+    _pipelineAdvancing = true;
+
+    try {
+        const body = { target_stage: targetStage };
+        if (skipReview) body.skip_review = true;
+
+        const res = await fetch(`/api/assessments/${assessmentId}/advance-pipeline`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: 'Request failed' }));
+            alert('Pipeline error: ' + (err.detail || 'Unknown error'));
+            return;
+        }
+
+        // Trigger an immediate poll to pick up state change
+        refreshScanStatus();
+    } catch (err) {
+        alert('Pipeline advance failed: ' + err.message);
+    } finally {
+        _pipelineAdvancing = false;
+    }
+}
 </script>
 {% endblock %}

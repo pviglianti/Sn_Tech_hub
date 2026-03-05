@@ -4,6 +4,7 @@
 - [ ] [owner:human] **Job Log cancellation validation**: run UI checklist in `03_outputs/human_ui_validation_job_log_cancellation_2026-02-16.md` (per-row cancel + cancel-all-active + filtered cancel-all behavior). ~10 min.
 - [ ] [owner:human] **MCP Prompts + Resources validation**: 8 curl tests against running server. Start app, run curl commands from `03_outputs/human_ui_validation_instance_scoped_config_2026-02-15.md` (bottom section). Verifies the MCP server correctly serves methodology prompts and reference docs to AI clients. ~10 min.
 - [ ] [owner:human] **Instance-scoped Integration Properties validation**: UI walkthrough from same file (top section). Verifies global vs per-instance config scope selector + override behavior. ~10 min.
+- [ ] [owner:human] **Credential key reconciliation (integration blocker)**: `POST /instances/{id}/test` currently returns 500 (`cryptography.fernet.InvalidToken`) for connected instances, including `testweis` (`instance_id=4`). Restore the matching `data/.encryption_key` for this DB or re-enter instance credentials, then rerun integration smoke.
 
 ## Now — When Available
 - [ ] [owner:human] Visual QA: Data Browser page, template component changes, routed pages (instances, pulls).
@@ -16,6 +17,11 @@
 - [x] [owner:claude] Phase 3 implementation kickoff (P3C/P4B): grouping-signal tabs + feature hierarchy UI and prompt/skill updates; align to Codex API contracts.
 - [x] [owner:claude] Cross-review Codex Phase 3 backend contracts and confirm/patch any UI-required payload diffs in `phase3_planning_chat.md`.
 - [ ] [owner:human] Phase 3/P4D final gate: execute manual QA checklist from `phase3_planning_chat.md` (QA-1..QA-14) on real assessment data after running `run_preprocessing_engines` → `seed_feature_groups` / `run_feature_reasoning`, then mark phase done.
+- [x] [owner:codex] Phase 5 backend (P5A/P5B/P5C/P5D + P5E backend trigger wiring): pipeline stage model/API contracts, observation properties, `get_usage_count`, `generate_observations`, review-status API, and `advance-pipeline` stage execution. Full regression green (`328 passed`).
+- [x] [owner:claude] Phase 5 UI scope: flow bar rendering/wiring, observation cards + review controls, review gate UI, and grouping/recommendation trigger UX using Codex backend contracts.
+- [x] [owner:both] Phase 5 cross-review + end-to-end validation (backend+UI integration) and updated human QA checklist — automated validation green (`330` full regression after new dedupe tests) and live pipeline re-validation completed on `pdi` (`assessment_id=19`) through `engines → observations → review gate → grouping → recommendations → complete`.
+- [x] [owner:codex] Phase 6 Task 3 UI prep: drafted `src/web/templates/admin_best_practices.html` with DataTable-based list + editor form and endpoint wiring assumptions (`GET/POST/PUT /api/best-practices`), then posted contract notes to `phase3_planning_chat.md` for Claude route wiring.
+- [ ] [owner:claude] Phase 6 Task 3 backend wiring: add page route/nav + `best-practices` API routes to match Codex template contract, then request Codex cross-review + targeted test run.
 - [ ] [owner:human] Reasoning Phase 1 validation: run `run_preprocessing_engines` tool on a real assessment and spot-check generated `code_reference` + `structural_relationship` rows in Data Browser.
 - [ ] [owner:any] Rabbit hole priority config — modular/adjustable rules for which dependency types to follow.
 - [ ] [owner:any] Catch-all label table — mapping app file class → display label (sys_dictionary → "Form Fields", etc.).
@@ -52,6 +58,7 @@
 - [x] [owner:claude] Reasoning Phase 2 Task 4: Table Co-location — groups ScanResults by `meta_target_table` (2+ members). 8 tests.
 - [x] [owner:claude] Reasoning Phase 2 Task 5: Registry wiring — all 6 engines in `run_preprocessing_engines` MCP tool.
 - [x] [owner:both] Reasoning Phase 2 Task 6: Full regression — 276 tests passing, 0 failures. Claude + Codex approved.
+- [x] [owner:codex] Connection-triggered pull dedupe hardening: validated live `pdi` connection pulls are upsert-only (no duplicate `(instance_id,sn_sys_id)` keys in app-file types, table definitions, version history, dictionary registry/mappings), added regression tests `tests/test_connection_pull_upsert.py`, and relabeled Job Log metric from "Rows Inserted" to "Rows/Items Processed" to reflect processed counters.
 
 ## Completed (session 2026-02-16)
 - [x] [owner:claude] VH phantom event fix: `_get_or_create_vh_event()` replaced with read-only `_VH_EVENTS.get()` in preflight check + Stage 5. Prevents 1-hour hang when no proactive pull exists.

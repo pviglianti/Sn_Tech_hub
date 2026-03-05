@@ -176,5 +176,6 @@ def test_mcp_registry_uses_new_feature_grouping_tools():
     assert registry.has_tool("seed_feature_groups")
     assert registry.has_tool("run_feature_reasoning")
     assert registry.has_tool("feature_grouping_status")
+    assert registry.has_tool("generate_observations")
+    assert registry.has_tool("get_usage_count")
     assert not registry.has_tool("group_by_feature")
-

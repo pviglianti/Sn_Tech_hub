@@ -24,8 +24,15 @@ SECTION_GENERAL = "General"
 SECTION_PREFLIGHT = "Assessment / Preflight"
 SECTION_FETCH = "Integration / Fetch"
 SECTION_REASONING = "Reasoning / Engines"
+SECTION_OBSERVATIONS = "Observations"
 
-SECTION_ORDER: List[str] = [SECTION_GENERAL, SECTION_PREFLIGHT, SECTION_FETCH, SECTION_REASONING]
+SECTION_ORDER: List[str] = [
+    SECTION_GENERAL,
+    SECTION_PREFLIGHT,
+    SECTION_FETCH,
+    SECTION_REASONING,
+    SECTION_OBSERVATIONS,
+]
 
 # ---------------------------------------------------------------------------
 # Property keys
@@ -52,6 +59,12 @@ REASONING_NAMING_MIN_PREFIX_TOKENS = "reasoning.naming.min_prefix_tokens"
 REASONING_FEATURE_MAX_ITERATIONS = "reasoning.feature.max_iterations"
 REASONING_FEATURE_MEMBERSHIP_DELTA_THRESHOLD = "reasoning.feature.membership_delta_threshold"
 REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE = "reasoning.feature.min_assignment_confidence"
+
+# Observation pipeline keys
+OBSERVATIONS_USAGE_LOOKBACK_MONTHS = "observations.usage_lookback_months"
+OBSERVATIONS_BATCH_SIZE = "observations.batch_size"
+OBSERVATIONS_INCLUDE_USAGE_QUERIES = "observations.include_usage_queries"
+OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT = "observations.max_usage_queries_per_result"
 
 # Common IANA timezone choices for the select dropdown
 TIMEZONE_OPTIONS: List[Tuple[str, str]] = [
@@ -92,6 +105,15 @@ class ReasoningEngineProperties:
     feature_max_iterations: int = 3
     feature_membership_delta_threshold: float = 0.02
     feature_min_assignment_confidence: float = 0.6
+
+
+@dataclass(frozen=True)
+class ObservationProperties:
+    """Typed observation-pipeline properties loaded from app_config."""
+    usage_lookback_months: int = 6
+    batch_size: int = 10
+    include_usage_queries: str = "auto"
+    max_usage_queries_per_result: int = 2
 
 
 @dataclass(frozen=True)
@@ -146,6 +168,11 @@ PROPERTY_DEFAULTS: Dict[str, str] = {
     REASONING_FEATURE_MAX_ITERATIONS: "3",
     REASONING_FEATURE_MEMBERSHIP_DELTA_THRESHOLD: "0.02",
     REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE: "0.6",
+    # Observation pipeline defaults
+    OBSERVATIONS_USAGE_LOOKBACK_MONTHS: "6",
+    OBSERVATIONS_BATCH_SIZE: "10",
+    OBSERVATIONS_INCLUDE_USAGE_QUERIES: "auto",
+    OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT: "2",
 }
 
 PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
@@ -398,6 +425,68 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         section=SECTION_REASONING,
         min_value=0.0,
         max_value=1.0,
+    ),
+    OBSERVATIONS_USAGE_LOOKBACK_MONTHS: IntegrationPropertyDefinition(
+        key=OBSERVATIONS_USAGE_LOOKBACK_MONTHS,
+        label="Usage Lookback (Months)",
+        description=(
+            "How far back to evaluate activity when optional usage checks are run "
+            "during observation generation."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[OBSERVATIONS_USAGE_LOOKBACK_MONTHS],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="observations",
+        section=SECTION_OBSERVATIONS,
+        min_value=1,
+        max_value=24,
+    ),
+    OBSERVATIONS_BATCH_SIZE: IntegrationPropertyDefinition(
+        key=OBSERVATIONS_BATCH_SIZE,
+        label="Observation Batch Size",
+        description=(
+            "Number of customized scan results processed per observation batch run."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[OBSERVATIONS_BATCH_SIZE],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="observations",
+        section=SECTION_OBSERVATIONS,
+        min_value=1,
+        max_value=200,
+    ),
+    OBSERVATIONS_INCLUDE_USAGE_QUERIES: IntegrationPropertyDefinition(
+        key=OBSERVATIONS_INCLUDE_USAGE_QUERIES,
+        label="Include Usage Queries",
+        description=(
+            "Controls whether optional instance usage-count queries are run while "
+            "generating observations."
+        ),
+        value_type="select",
+        default=PROPERTY_DEFAULTS[OBSERVATIONS_INCLUDE_USAGE_QUERIES],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="observations",
+        section=SECTION_OBSERVATIONS,
+        options=[
+            ("always", "Always"),
+            ("auto", "Auto"),
+            ("never", "Never"),
+        ],
+    ),
+    OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT: IntegrationPropertyDefinition(
+        key=OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT,
+        label="Max Usage Queries Per Result",
+        description=(
+            "Maximum usage-count queries allowed per customized artifact while "
+            "building observation context."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="observations",
+        section=SECTION_OBSERVATIONS,
+        min_value=0,
+        max_value=10,
     ),
 }
 
@@ -684,6 +773,42 @@ def load_reasoning_engine_properties(
             session,
             REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE,
             defaults.feature_min_assignment_confidence,
+            instance_id=instance_id,
+        ),
+    )
+
+
+def load_observation_properties(
+    session: Session,
+    instance_id: Optional[int] = None,
+) -> ObservationProperties:
+    """Load typed observation-pipeline properties from app_config."""
+    defaults = ObservationProperties()
+    include_usage = (
+        _read_property(session, OBSERVATIONS_INCLUDE_USAGE_QUERIES, instance_id=instance_id)
+        or PROPERTY_DEFAULTS[OBSERVATIONS_INCLUDE_USAGE_QUERIES]
+    ).strip().lower()
+    if include_usage not in {"always", "auto", "never"}:
+        include_usage = defaults.include_usage_queries
+
+    return ObservationProperties(
+        usage_lookback_months=_get_int(
+            session,
+            OBSERVATIONS_USAGE_LOOKBACK_MONTHS,
+            defaults.usage_lookback_months,
+            instance_id=instance_id,
+        ),
+        batch_size=_get_int(
+            session,
+            OBSERVATIONS_BATCH_SIZE,
+            defaults.batch_size,
+            instance_id=instance_id,
+        ),
+        include_usage_queries=include_usage,
+        max_usage_queries_per_result=_get_int(
+            session,
+            OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT,
+            defaults.max_usage_queries_per_result,
             instance_id=instance_id,
         ),
     )

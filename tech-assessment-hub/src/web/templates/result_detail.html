@@ -103,6 +103,67 @@
     </div>
 </div>
 
+<!-- Observation Card (visible only for customized results with observations) -->
+{% if result.observations or (result.origin_type and result.origin_type.value in ('modified_ootb', 'net_new_customer')) %}
+<div class="card mt-15 observation-card" id="observationCard"
+     data-result-id="{{ result.id }}"
+     data-review-status="{{ result.review_status.value if result.review_status else 'pending_review' }}">
+    <div class="observation-card-header">
+        <h2>AI Observation</h2>
+        <div class="observation-card-controls">
+            <span class="status-badge observation-review-badge"
+                  id="observationReviewBadge"
+                  data-review-status="{{ result.review_status.value if result.review_status else 'pending_review' }}">
+                {{ (result.review_status.value if result.review_status else 'pending_review') | replace('_', ' ') | title }}
+            </span>
+            <button type="button" class="btn btn-sm btn-secondary" id="observationEditBtn"
+                    onclick="toggleObservationEdit()" title="Edit observation text">
+                Edit
+            </button>
+            {% if not result.review_status or result.review_status.value != 'reviewed' %}
+            <button type="button" class="btn btn-sm btn-success" id="observationReviewBtn"
+                    onclick="markObservationReviewed()" title="Mark observation as reviewed">
+                Mark Reviewed
+            </button>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- View Mode -->
+    <div class="observation-content" id="observationView">
+        {% if result.observations %}
+        <p class="observation-text">{{ result.observations }}</p>
+        {% else %}
+        <p class="text-muted-plain">No observations generated yet. Run the observation pipeline from the assessment detail page.</p>
+        {% endif %}
+    </div>
+
+    <!-- Edit Mode (hidden by default) -->
+    <div class="observation-edit is-hidden" id="observationEdit">
+        <textarea class="observation-textarea" id="observationTextarea"
+                  rows="5" placeholder="Enter observation text...">{{ result.observations or '' }}</textarea>
+        <div class="observation-edit-actions">
+            <button type="button" class="btn btn-sm btn-primary" onclick="saveObservation()">Save</button>
+            <button type="button" class="btn btn-sm btn-secondary" onclick="cancelObservationEdit()">Cancel</button>
+        </div>
+    </div>
+
+    {% if result.ai_summary %}
+    <div class="observation-summary mt-075">
+        <div class="info-label">AI Summary</div>
+        <p class="text-muted-plain">{{ result.ai_summary }}</p>
+    </div>
+    {% endif %}
+
+    {% if result.disposition %}
+    <div class="observation-disposition mt-075">
+        <div class="info-label">Disposition</div>
+        <span class="status-badge">{{ result.disposition }}</span>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
 <div class="card mt-15">
     <h2>Related Records</h2>
     <div class="info-grid">
@@ -806,5 +867,124 @@ document.addEventListener('tab:activated', function(e) {
         loadGroupingEvidence();
     }
 });
+
+// ── Observation Review Controls ─────────────────────────────────────
+
+function toggleObservationEdit() {
+    var viewEl = document.getElementById('observationView');
+    var editEl = document.getElementById('observationEdit');
+    var textarea = document.getElementById('observationTextarea');
+    if (!viewEl || !editEl) return;
+
+    var isEditing = !editEl.classList.contains('is-hidden');
+    if (isEditing) {
+        // Switch to view mode
+        editEl.classList.add('is-hidden');
+        viewEl.classList.remove('is-hidden');
+    } else {
+        // Switch to edit mode
+        viewEl.classList.add('is-hidden');
+        editEl.classList.remove('is-hidden');
+        if (textarea) textarea.focus();
+    }
+}
+
+function cancelObservationEdit() {
+    var viewEl = document.getElementById('observationView');
+    var editEl = document.getElementById('observationEdit');
+    var textarea = document.getElementById('observationTextarea');
+    var card = document.getElementById('observationCard');
+    if (!viewEl || !editEl) return;
+
+    // Reset textarea to current observation text
+    var currentText = viewEl.querySelector('.observation-text');
+    if (textarea && currentText) {
+        textarea.value = currentText.textContent.trim();
+    }
+
+    editEl.classList.add('is-hidden');
+    viewEl.classList.remove('is-hidden');
+}
+
+function saveObservation() {
+    var card = document.getElementById('observationCard');
+    var textarea = document.getElementById('observationTextarea');
+    if (!card || !textarea) return;
+
+    var resultId = card.dataset.resultId;
+    var newText = textarea.value.trim();
+
+    fetch('/api/results/' + resultId + '/review-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            review_status: card.dataset.reviewStatus || 'pending_review',
+            observations: newText,
+        }),
+    })
+    .then(function (res) {
+        if (!res.ok) throw new Error('Save failed');
+        return res.json();
+    })
+    .then(function (data) {
+        // Update view mode text
+        var viewEl = document.getElementById('observationView');
+        var textEl = viewEl ? viewEl.querySelector('.observation-text') : null;
+        if (textEl) {
+            textEl.textContent = newText || 'No observations generated yet.';
+        } else if (viewEl && newText) {
+            viewEl.innerHTML = '<p class="observation-text">' + _escapeHtml(newText) + '</p>';
+        }
+        // Switch back to view mode
+        toggleObservationEdit();
+    })
+    .catch(function (err) {
+        alert('Failed to save observation: ' + err.message);
+    });
+}
+
+function markObservationReviewed() {
+    var card = document.getElementById('observationCard');
+    if (!card) return;
+
+    var resultId = card.dataset.resultId;
+    fetch('/api/results/' + resultId + '/review-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ review_status: 'reviewed' }),
+    })
+    .then(function (res) {
+        if (!res.ok) throw new Error('Update failed');
+        return res.json();
+    })
+    .then(function (data) {
+        // Update badge
+        var badge = document.getElementById('observationReviewBadge');
+        if (badge) {
+            badge.textContent = 'Reviewed';
+            badge.dataset.reviewStatus = 'reviewed';
+        }
+        card.dataset.reviewStatus = 'reviewed';
+
+        // Hide the "Mark Reviewed" button
+        var reviewBtn = document.getElementById('observationReviewBtn');
+        if (reviewBtn) reviewBtn.style.display = 'none';
+
+        // Update header meta
+        var metaReview = document.querySelector('.assessment-meta span:last-child');
+        if (metaReview && metaReview.textContent.includes('Review:')) {
+            metaReview.innerHTML = '<strong>Review:</strong> Reviewed';
+        }
+    })
+    .catch(function (err) {
+        alert('Failed to mark as reviewed: ' + err.message);
+    });
+}
+
+function _escapeHtml(str) {
+    var div = document.createElement('div');
+    div.appendChild(document.createTextNode(str));
+    return div.innerHTML;
+}
 </script>
 {% endblock %}

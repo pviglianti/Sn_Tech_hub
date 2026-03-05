@@ -6,12 +6,17 @@ from src.services.integration_properties import (
     FETCH_INTER_BATCH_DELAY,
     FETCH_MAX_BATCHES,
     FETCH_REQUEST_TIMEOUT,
+    OBSERVATIONS_BATCH_SIZE,
+    OBSERVATIONS_INCLUDE_USAGE_QUERIES,
+    OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT,
+    OBSERVATIONS_USAGE_LOOKBACK_MONTHS,
     PREFLIGHT_CONCURRENT_TYPES,
     REASONING_FEATURE_MAX_ITERATIONS,
     REASONING_FEATURE_MEMBERSHIP_DELTA_THRESHOLD,
     REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE,
     list_integration_property_snapshots,
     load_fetch_properties,
+    load_observation_properties,
     load_preflight_concurrent_types,
     load_reasoning_engine_properties,
     update_integration_properties,
@@ -244,3 +249,29 @@ def test_load_reasoning_properties_feature_overrides(db_session, sample_instance
     assert props.feature_max_iterations == 7
     assert props.feature_membership_delta_threshold == 0.15
     assert props.feature_min_assignment_confidence == 0.85
+
+
+def test_load_observation_properties_defaults(db_session):
+    props = load_observation_properties(db_session)
+    assert props.usage_lookback_months == 6
+    assert props.batch_size == 10
+    assert props.include_usage_queries == "auto"
+    assert props.max_usage_queries_per_result == 2
+
+
+def test_load_observation_properties_overrides(db_session, sample_instance):
+    update_integration_properties(
+        db_session,
+        {
+            OBSERVATIONS_USAGE_LOOKBACK_MONTHS: "12",
+            OBSERVATIONS_BATCH_SIZE: "25",
+            OBSERVATIONS_INCLUDE_USAGE_QUERIES: "always",
+            OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT: "4",
+        },
+        instance_id=sample_instance.id,
+    )
+    props = load_observation_properties(db_session, instance_id=sample_instance.id)
+    assert props.usage_lookback_months == 12
+    assert props.batch_size == 25
+    assert props.include_usage_queries == "always"
+    assert props.max_usage_queries_per_result == 4

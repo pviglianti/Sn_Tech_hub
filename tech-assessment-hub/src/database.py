@@ -47,6 +47,7 @@ def create_db_and_tables():
     _ensure_instance_columns()
     _ensure_app_config_instance_scope()
     _ensure_model_table_columns([
+        "assessment",
         "scan",
         "scan_result",
         "feature",
@@ -84,6 +85,7 @@ def create_db_and_tables():
         "naming_cluster",
         "table_colocation_summary",
     ])
+    _ensure_assessment_pipeline_defaults()
     _ensure_instance_app_file_type_defaults()
     _ensure_indexes()
     # Create / update per-class artifact detail tables from ARTIFACT_DETAIL_DEFS.
@@ -120,6 +122,31 @@ def _ensure_instance_columns():
             if name not in existing:
                 conn.execute(text(f"ALTER TABLE instance ADD COLUMN {name} {col_type}"))
 
+        conn.commit()
+
+
+def _ensure_assessment_pipeline_defaults() -> None:
+    """Backfill assessment.pipeline_stage for databases created before Phase 5."""
+    with engine.connect() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='assessment'")
+        ).first()
+        if not table_exists:
+            return
+
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(assessment)")).fetchall()}
+        if "pipeline_stage" not in columns:
+            return
+
+        conn.execute(
+            text(
+                """
+                UPDATE assessment
+                SET pipeline_stage = 'scans'
+                WHERE pipeline_stage IS NULL OR TRIM(pipeline_stage) = ''
+                """
+            )
+        )
         conn.commit()
 
 

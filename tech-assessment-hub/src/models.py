@@ -27,6 +27,17 @@ class AssessmentState(str, Enum):
     cancelled = "cancelled"
 
 
+class PipelineStage(str, Enum):
+    """Assessment reasoning pipeline stages after scans complete."""
+    scans = "scans"
+    engines = "engines"
+    observations = "observations"
+    review = "review"
+    grouping = "grouping"
+    recommendations = "recommendations"
+    complete = "complete"
+
+
 class AssessmentType(str, Enum):
     """Type of assessment - determines what can be selected"""
     global_app = "global_app"          # Pick from known ITSM apps (Incident, Change, etc.)
@@ -260,6 +271,8 @@ class Assessment(SQLModel, table=True):
     # Timestamps
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    pipeline_stage: PipelineStage = PipelineStage.scans
+    pipeline_stage_updated_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

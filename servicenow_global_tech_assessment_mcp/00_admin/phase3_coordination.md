@@ -1,15 +1,16 @@
-# Phase 3 — UI Signal Surfacing + AI Feature Orchestration — Coordination
+# Phase 3–5 — Coordination File
 
-> **Purpose:** Shared coordination file for Claude and Codex during Phase 3 implementation.
+> **Purpose:** Shared coordination file for Claude and Codex during implementation.
 > Both agents MUST monitor this file for updates after completing development work.
 > **Protocol:** See `agent_coordination_protocol.md` for communication rules.
 
-**Plan document:** `tech-assessment-hub/docs/plans/2026-03-04-reasoning-layer-phase3-ui-ai-feature-orchestration.md`
-**Addendums:** A1–A5 in `phase3_planning_chat.md` (2026-03-04 21:30 CLAUDE message)
+**Phase 3/4 Plan:** `tech-assessment-hub/docs/plans/2026-03-04-reasoning-layer-phase3-ui-ai-feature-orchestration.md`
+**Phase 5 Plan:** `tech-assessment-hub/docs/plans/2026-03-04-phase5-pipeline-orchestration.md`
+**Addendums:** A1–A10 in `phase3_planning_chat.md`
 
 ---
 
-## Task Assignments
+## Phase 3/4 Task Assignments (COMPLETE)
 
 | Task | Owner | Status | Depends On |
 |------|-------|--------|------------|
@@ -21,6 +22,33 @@
 | P4B: Prompt/skill updates for AI reasoning loop | Claude | `approved` | P4A |
 | P4C: OOTB replacement recommendation persistence + rendering | Both | `approved` | P4A, P4B |
 | P4D: End-to-end validation + human QA checklist | Both + Human | `review_requested` | P3C, P4C |
+
+---
+
+## Phase 5 Task Assignments (APPROVED)
+
+> **Status:** Both tranches complete and cross-reviewed. 328 tests passing.
+
+| Task | Owner | Status | Depends On |
+|------|-------|--------|------------|
+| P5A-backend: PipelineStage enum + Assessment fields + advance-pipeline API + polling | Codex | `approved` | Phase 3/4 done |
+| P5A-ui: Process flow bar HTML/CSS/JS + button wiring + polling JS | Claude | `approved` | P5A-backend contracts |
+| P5B: Observation properties + get_usage_count MCP tool | Codex | `approved` | P5A |
+| P5C-backend: generate_observations deterministic tool + background job | Codex | `approved` | P5B |
+| P5C-prompts: Observation prompt templates (landscape + per-artifact) | Claude | `approved` | P5C-backend |
+| P5D-backend: POST /api/results/{id}/review-status endpoint | Codex | `approved` | P5C |
+| P5D-ui: Observation card UI + observation-review.js + review gate UI | Claude | `approved` | P5D-backend |
+| P5E: Grouping + recommendation trigger buttons | Claude | `approved` | P5D |
+
+### Accepted Addendums (A6–A10)
+- **A6:** Plural route naming: `/api/assessments/...`, `/api/results/...`
+- **A7:** Separate `pipeline` object in polling response (not overloading scan job)
+- **A8:** Replace `usage_query_limit` with `max_usage_queries_per_result` (int, default 2)
+- **A9:** P5E runs verification pass; recommendations come from orchestrator calling `upsert_feature_recommendation`
+- **A10:** `generate_observations` = deterministic baseline + usage enrichment (no embedded LLM runtime)
+
+### Checkpoint pattern
+Codex posts `STATUS` with API contracts after each backend phase → Claude builds UI against them
 
 ### Status values
 `not_started` → `in_progress` → `tests_passing` → `review_requested` → `approved` → `done`

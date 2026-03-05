@@ -104,7 +104,7 @@ _JOB_LOG_FIELDS = [
     },
     {
         "local_column": "rows_inserted",
-        "column_label": "Rows Inserted",
+        "column_label": "Rows/Items Processed",
         "kind": "number",
         "is_reference": False,
         "sn_reference_table": None,

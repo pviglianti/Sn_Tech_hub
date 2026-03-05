@@ -2947,3 +2947,303 @@ h1, h2, h3, h4, h5, h6 {
 .gsp-table {
     font-size: 0.8125rem;
 }
+
+/* ── Pipeline Flow Bar ────────────────────────────────────────────── */
+
+.pipeline-flow-bar {
+    display: flex;
+    align-items: flex-start;
+    gap: 0;
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+}
+
+.pipeline-step {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    position: relative;
+    min-width: 100px;
+    text-align: center;
+}
+
+/* Connector line between steps */
+.pipeline-step:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    top: 16px;
+    left: calc(50% + 18px);
+    width: calc(100% - 36px);
+    height: 2px;
+    background: var(--border-color);
+    z-index: 0;
+}
+
+.pipeline-step.step-completed:not(:last-child)::after {
+    background: var(--success-color);
+}
+
+.pipeline-step.step-active:not(:last-child)::after,
+.pipeline-step.step-running:not(:last-child)::after {
+    background: linear-gradient(90deg, var(--primary-color), var(--border-color));
+}
+
+/* Step circle */
+.pipeline-step-circle {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    font-weight: 700;
+    border: 2px solid var(--border-color);
+    background: var(--card-bg);
+    color: var(--text-muted);
+    position: relative;
+    z-index: 1;
+    transition: all 0.3s ease;
+}
+
+.pipeline-step.step-completed .pipeline-step-circle {
+    background: var(--success-color);
+    border-color: var(--success-color);
+    color: #fff;
+}
+
+.pipeline-step.step-active .pipeline-step-circle {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+    color: #fff;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+}
+
+.pipeline-step.step-running .pipeline-step-circle {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+    color: #fff;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+    animation: pipeline-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pipeline-pulse {
+    0%, 100% { box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2); }
+    50% { box-shadow: 0 0 0 6px rgba(37, 99, 235, 0.1); }
+}
+
+/* Step label */
+.pipeline-step-label {
+    margin-top: 0.4rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.pipeline-step.step-completed .pipeline-step-label {
+    color: var(--success-color);
+}
+
+.pipeline-step.step-active .pipeline-step-label,
+.pipeline-step.step-running .pipeline-step-label {
+    color: var(--primary-color);
+}
+
+/* Step status text */
+.pipeline-step-status {
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    margin-top: 0.15rem;
+}
+
+.pipeline-step.step-running .pipeline-step-status {
+    color: var(--primary-color);
+}
+
+/* Step action button */
+.pipeline-step-action {
+    margin-top: 0.35rem;
+}
+
+.pipeline-step-action .btn-pipeline {
+    font-size: 0.6875rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--primary-color);
+    background: var(--primary-color);
+    color: #fff;
+    cursor: pointer;
+    font-weight: 600;
+    transition: background 0.2s, transform 0.1s;
+}
+
+.pipeline-step-action .btn-pipeline:hover {
+    background: var(--primary-hover);
+    transform: translateY(-1px);
+}
+
+.pipeline-step-action .btn-pipeline:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.pipeline-step-action .btn-pipeline-skip {
+    background: transparent;
+    color: var(--text-muted);
+    border-color: var(--border-color);
+    font-weight: 500;
+}
+
+.pipeline-step-action .btn-pipeline-skip:hover {
+    background: rgba(0, 0, 0, 0.04);
+    color: var(--text-color);
+}
+
+/* Review gate progress */
+.pipeline-review-progress {
+    margin-top: 0.25rem;
+    width: 80%;
+}
+
+.pipeline-review-bar {
+    height: 4px;
+    background: var(--border-color);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.pipeline-review-fill {
+    height: 100%;
+    background: var(--success-color);
+    border-radius: 2px;
+    transition: width 0.4s ease;
+}
+
+.pipeline-review-count {
+    font-size: 0.625rem;
+    color: var(--text-muted);
+    text-align: center;
+    margin-top: 0.15rem;
+}
+
+/* Checkmark icon (SVG inline) */
+.pipeline-step-check {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+}
+
+/* Pipeline flow bar card styling */
+.pipeline-flow-card {
+    margin-bottom: 0.75rem;
+}
+
+.pipeline-flow-card h3 {
+    font-size: 0.875rem;
+    font-weight: 700;
+    color: var(--text-color);
+    padding: 0.75rem 1.25rem 0;
+    margin-bottom: 0;
+}
+
+/* Pipeline completion links */
+.pipeline-complete-links {
+    display: flex;
+    gap: 0.4rem;
+    margin-top: 0.3rem;
+}
+
+.pipeline-link {
+    font-size: 0.6875rem;
+    color: var(--primary-color);
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.pipeline-link:hover {
+    text-decoration: underline;
+}
+
+/* ── Observation Card ─────────────────────────────────────────────── */
+
+.observation-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+}
+
+.observation-card-header h2 {
+    margin: 0;
+}
+
+.observation-card-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.observation-review-badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.2rem 0.6rem;
+    border-radius: var(--radius-sm);
+}
+
+.observation-review-badge[data-review-status="pending_review"] {
+    background: rgba(245, 158, 11, 0.1);
+    color: var(--warning-color);
+    border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+.observation-review-badge[data-review-status="review_in_progress"] {
+    background: rgba(59, 130, 246, 0.1);
+    color: var(--info-color);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+.observation-review-badge[data-review-status="reviewed"] {
+    background: rgba(16, 185, 129, 0.1);
+    color: var(--success-color);
+    border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.observation-text {
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: var(--text-color);
+}
+
+.observation-textarea {
+    width: 100%;
+    min-height: 100px;
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-body);
+    font-size: 0.875rem;
+    line-height: 1.6;
+    resize: vertical;
+    transition: border-color 0.2s;
+}
+
+.observation-textarea:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.observation-edit-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+}
+
+.observation-summary,
+.observation-disposition {
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border-color);
+}
