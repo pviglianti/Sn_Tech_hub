@@ -439,8 +439,8 @@ _ASSESSMENT_PIPELINE_RUN_MODULE = "assessment"
 _ASSESSMENT_PIPELINE_RUN_TYPE = "reasoning_pipeline"
 _PIPELINE_STAGE_ORDER: List[str] = [
     PipelineStage.scans.value,
-    PipelineStage.engines.value,
     PipelineStage.ai_analysis.value,
+    PipelineStage.engines.value,
     PipelineStage.observations.value,
     PipelineStage.review.value,
     PipelineStage.grouping.value,
@@ -451,8 +451,8 @@ _PIPELINE_STAGE_ORDER: List[str] = [
 ]
 _PIPELINE_STAGE_LABELS: Dict[str, str] = {
     PipelineStage.scans.value: "Scans",
-    PipelineStage.engines.value: "Engines",
     PipelineStage.ai_analysis.value: "AI Analysis",
+    PipelineStage.engines.value: "Engines",
     PipelineStage.observations.value: "Observations",
     PipelineStage.review.value: "Review",
     PipelineStage.grouping.value: "Grouping",
@@ -462,8 +462,8 @@ _PIPELINE_STAGE_LABELS: Dict[str, str] = {
     PipelineStage.complete.value: "Complete",
 }
 _PIPELINE_STAGE_AUTONEXT: Dict[str, str] = {
-    PipelineStage.engines.value: PipelineStage.ai_analysis.value,
-    PipelineStage.ai_analysis.value: PipelineStage.observations.value,
+    PipelineStage.ai_analysis.value: PipelineStage.engines.value,
+    PipelineStage.engines.value: PipelineStage.observations.value,
     PipelineStage.observations.value: PipelineStage.review.value,
     PipelineStage.grouping.value: PipelineStage.ai_refinement.value,
     PipelineStage.ai_refinement.value: PipelineStage.recommendations.value,
@@ -9955,19 +9955,26 @@ async def api_assessment_feature_colors(
         select(Feature).where(Feature.assessment_id == assessment_id)
     ).all()
 
+    # Batch member counts (avoid N+1)
+    feature_ids = [f.id for f in features if f.id is not None]
+    member_counts: dict = {}
+    if feature_ids:
+        count_rows = session.exec(
+            select(FeatureScanResult.feature_id, func.count(FeatureScanResult.id))
+            .where(FeatureScanResult.feature_id.in_(feature_ids))
+            .group_by(FeatureScanResult.feature_id)
+        ).all()
+        member_counts = {fid: cnt for fid, cnt in count_rows}
+
     result = []
     for feat in features:
-        member_count = session.exec(
-            select(func.count(FeatureScanResult.id))
-            .where(FeatureScanResult.feature_id == feat.id)
-        ).one()
         color_hex = FEATURE_COLORS[(feat.id or 0) % len(FEATURE_COLORS)]
         result.append({
             "feature_id": feat.id,
             "feature_name": feat.name,
             "color_hex": color_hex,
             "color_index": (feat.id or 0) % len(FEATURE_COLORS),
-            "member_count": member_count,
+            "member_count": member_counts.get(feat.id, 0),
             "disposition": feat.disposition.value if feat.disposition else None,
         })
 

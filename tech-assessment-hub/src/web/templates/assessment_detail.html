@@ -1466,6 +1466,8 @@ var featureTree = new FeatureHierarchyTree({
 let _featuresLoaded = false;
 
 function loadFeatureColorLegend() {
+    var esc = function(s) { if (s == null) return ''; var d = document.createElement('div'); d.appendChild(document.createTextNode(String(s))); return d.innerHTML; };
+    var safeHex = function(c) { return /^#[0-9A-Fa-f]{3,8}$/.test(c) ? c : '#ccc'; };
     fetch('/api/assessments/' + assessmentId + '/feature-colors', { cache: 'no-store' })
         .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(data) {
@@ -1475,9 +1477,9 @@ function loadFeatureColorLegend() {
             var html = '';
             data.features.forEach(function(f) {
                 html += '<div class="feature-color-legend-item">';
-                html += '<span class="feature-color-dot" style="background:' + f.color_hex + '"></span>';
-                html += '<span>' + f.feature_name + '</span>';
-                html += '<span class="member-count">(' + f.member_count + ')</span>';
+                html += '<span class="feature-color-dot" style="background:' + safeHex(f.color_hex) + '"></span>';
+                html += '<span>' + esc(f.feature_name) + '</span>';
+                html += '<span class="member-count">(' + esc(String(f.member_count)) + ')</span>';
                 html += '</div>';
             });
             container.innerHTML = html;

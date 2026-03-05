@@ -667,6 +667,7 @@ function loadGroupingEvidence() {
             var html = '';
             var totalSignals = 0;
             var esc = function(s) { if (s == null) return ''; var d = document.createElement('div'); d.appendChild(document.createTextNode(String(s))); return d.innerHTML; };
+            var safeHex = function(c) { return /^#[0-9A-Fa-f]{3,8}$/.test(c) ? c : '#ccc'; };
 
             // Feature assignments
             if (data.feature_assignments && data.feature_assignments.length) {
@@ -678,7 +679,7 @@ function loadGroupingEvidence() {
                     html += '<tr>';
                     html += '<td>';
                     if (fa.feature_color_hex) {
-                        html += '<span class="feature-color-dot" style="background:' + fa.feature_color_hex + '"></span>';
+                        html += '<span class="feature-color-dot" style="background:' + safeHex(fa.feature_color_hex) + '"></span>';
                     }
                     html += '<a href="/features/' + fa.feature_id + '">' + esc(fa.feature_name || '-') + '</a></td>';
                     html += '<td>' + esc((fa.membership_type || 'primary').replace(/_/g, ' ')) + '</td>';
@@ -757,7 +758,7 @@ function loadGroupingEvidence() {
                     html += '<tr class="is-assessment-customization">';
                     html += '<td>';
                     if (ca.feature_color_hex) {
-                        html += '<span class="feature-color-dot" style="background:' + ca.feature_color_hex + '"></span>';
+                        html += '<span class="feature-color-dot" style="background:' + safeHex(ca.feature_color_hex) + '"></span>';
                     }
                     html += '<a href="/features/' + ca.feature_id + '">' + esc(ca.feature_name || '-') + '</a></td>';
                     html += '<td><a href="/results/' + (sr.id || '') + '">' + esc(sr.name || sr.id || '-') + '</a>';
@@ -776,7 +777,7 @@ function loadGroupingEvidence() {
                     html += '<tr>';
                     html += '<td>';
                     if (ca.feature_color_hex) {
-                        html += '<span class="feature-color-dot" style="background:' + ca.feature_color_hex + '"></span>';
+                        html += '<span class="feature-color-dot" style="background:' + safeHex(ca.feature_color_hex) + '"></span>';
                     }
                     html += '<a href="/features/' + ca.feature_id + '">' + esc(ca.feature_name || '-') + '</a></td>';
                     html += '<td><a href="/results/' + (sr.id || '') + '">' + esc(sr.name || sr.id || '-') + '</a></td>';
