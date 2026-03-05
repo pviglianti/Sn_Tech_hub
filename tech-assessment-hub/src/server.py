@@ -1599,12 +1599,11 @@ def _run_assessment_pipeline_stage(
             pipeline_prompt_props = load_pipeline_prompt_properties(session, instance_id=assessment.instance_id)
             instance_id = assessment.instance_id
 
-            # Use assessment-level analysis_mode (safe from mid-run global property changes)
-            effective_mode = getattr(assessment, "analysis_mode", None) or ai_props.analysis_mode
+            # Always attempt depth-first when the relationship graph has data
+            graph = build_relationship_graph(session, assessment_id)
 
-            if effective_mode == "depth_first":
+            if graph and len(graph.adjacency) > 0:
                 # --- Depth-first relationship-driven analysis ---
-                graph = build_relationship_graph(session, assessment_id)
 
                 def dfs_checkpoint_cb(sr_id, visited_count, total):
                     checkpoint_phase_progress(
@@ -1880,9 +1879,6 @@ def _run_assessment_pipeline_stage(
             }
 
         elif stage == PipelineStage.grouping.value:
-            # Load AI analysis properties to check mode
-            ai_props_grouping = load_ai_analysis_properties(session, instance_id=assessment.instance_id)
-
             phase_progress = start_phase_progress(
                 session,
                 assessment_id,
@@ -1895,10 +1891,12 @@ def _run_assessment_pipeline_stage(
             if skip_review:
                 _mark_remaining_customizations_reviewed(session, assessment_id)
 
-            # In depth-first mode, features already exist -- run in merge mode (don't reset)
+            # If features already exist (e.g. from depth-first analysis), run in merge mode
             grouping_params = {"assessment_id": assessment_id}
-            effective_grouping_mode = getattr(assessment, "analysis_mode", None) or ai_props_grouping.analysis_mode
-            if effective_grouping_mode == "depth_first":
+            existing_feature_count = session.exec(
+                select(func.count(Feature.id)).where(Feature.assessment_id == assessment_id)
+            ).one()
+            if existing_feature_count > 0:
                 grouping_params["reset_existing"] = False
 
             result = seed_feature_groups_handle(grouping_params, session)
@@ -8358,10 +8356,6 @@ async def add_assessment(
         selected_classes = _default_selected_file_classes(session, instance_id)
     app_file_classes_json = json.dumps(selected_classes) if selected_classes else None
 
-    # Snapshot the current global analysis_mode so the assessment is immune to later changes
-    ai_props = load_ai_analysis_properties(session, instance_id=instance_id)
-    initial_analysis_mode = ai_props.analysis_mode  # "sequential" or "depth_first"
-
     # Create assessment
     assessment = Assessment(
         number=assessment_number,
@@ -8375,7 +8369,6 @@ async def add_assessment(
         target_plugins_json=target_plugins if assessment_type == "plugin" else None,
         app_file_classes_json=app_file_classes_json,
         scope_filter=scope_filter,
-        analysis_mode=initial_analysis_mode,
     )
     session.add(assessment)
     session.commit()

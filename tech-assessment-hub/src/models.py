@@ -279,9 +279,6 @@ class Assessment(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
-    # Analysis configuration (per-assessment, avoids mid-run surprises from global property changes)
-    analysis_mode: str = "sequential"  # "sequential" or "depth_first"
-
     # Created by
     created_by: Optional[str] = None
 

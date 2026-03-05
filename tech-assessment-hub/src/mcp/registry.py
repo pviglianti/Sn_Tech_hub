@@ -208,17 +208,25 @@ def build_registry() -> ToolRegistry:
     # --- Level 1 write-back tools ---
     from .tools.core.update_result import TOOL_SPEC as update_result_tool
     from .tools.core.update_feature import TOOL_SPEC as update_feature_tool
+    from .tools.core.create_feature import TOOL_SPEC as create_feature_tool
     from .tools.core.feature_detail import TOOL_SPEC as feature_detail_tool
     from .tools.core.feature_recommendation import TOOL_SPEC as feature_recommendation_tool
     from .tools.core.update_set_contents import TOOL_SPEC as update_set_contents_tool
     from .tools.core.general_recommendation import TOOL_SPEC as general_recommendation_tool
+    from .tools.core.feature_membership import (
+        ADD_TOOL_SPEC as add_result_to_feature_tool,
+        REMOVE_TOOL_SPEC as remove_result_from_feature_tool,
+    )
 
     registry.register(update_result_tool)
     registry.register(update_feature_tool)
+    registry.register(create_feature_tool)
     registry.register(feature_detail_tool)
     registry.register(feature_recommendation_tool)
     registry.register(update_set_contents_tool)
     registry.register(general_recommendation_tool)
+    registry.register(add_result_to_feature_tool)
+    registry.register(remove_result_from_feature_tool)
 
     return registry
 

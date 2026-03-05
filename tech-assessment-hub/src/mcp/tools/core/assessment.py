@@ -17,7 +17,6 @@ from ....models import (
     NumberSequence,
 )
 from ....services.encryption import decrypt_password
-from ....services.integration_properties import load_ai_analysis_properties
 from ....services.sn_client import ServiceNowClient
 from ....services.scan_executor import run_scans_for_assessment
 from ....database import get_session
@@ -115,9 +114,6 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
     # Generate ASMT number
     number = _generate_assessment_number(session)
 
-    # Snapshot current global analysis_mode so assessment is immune to later changes
-    ai_props = load_ai_analysis_properties(session, instance_id=instance_id)
-
     assessment = Assessment(
         instance_id=instance_id,
         number=number,
@@ -125,7 +121,6 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
         assessment_type=assessment_type,
         scope_filter=scope_filter,
         state=AssessmentState.in_progress,
-        analysis_mode=ai_props.analysis_mode,
     )
 
     if target_app_id and assessment_type == AssessmentType.global_app:

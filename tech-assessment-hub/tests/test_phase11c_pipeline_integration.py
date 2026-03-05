@@ -1,7 +1,8 @@
 """Phase 11C integration tests: depth-first analyzer pipeline wiring.
 
-Verifies that the ai_analysis stage handler branches correctly by analysis_mode
-and that the grouping stage is mode-aware (preserving DFS features).
+Verifies that the ai_analysis stage handler branches on graph content
+(DFS when relationship graph has nodes, sequential otherwise) and that
+the grouping stage preserves existing features created by DFS.
 """
 
 import json
@@ -33,7 +34,7 @@ from src.services.integration_properties import AIAnalysisProperties
 # Seed helpers
 # ---------------------------------------------------------------------------
 
-def _seed_instance_and_assessment(db_session, pipeline_stage="ai_analysis", analysis_mode="sequential"):
+def _seed_instance_and_assessment(db_session, pipeline_stage="ai_analysis"):
     """Create a minimal Instance + Assessment at a given pipeline stage."""
     inst = Instance(
         name="p11c-test",
@@ -51,7 +52,6 @@ def _seed_instance_and_assessment(db_session, pipeline_stage="ai_analysis", anal
         assessment_type=AssessmentType.global_app,
         state=AssessmentState.in_progress,
         pipeline_stage=pipeline_stage,
-        analysis_mode=analysis_mode,
     )
     db_session.add(asmt)
     db_session.commit()
@@ -87,6 +87,22 @@ def _add_customized_scan_results(db_session, asmt, count=3):
     return scan, srs
 
 
+def _add_features(db_session, asmt, count=2):
+    """Seed Feature records for an assessment (simulates DFS-created features)."""
+    features = []
+    for i in range(count):
+        feat = Feature(
+            assessment_id=asmt.id,
+            name=f"DFS Feature {i}",
+        )
+        db_session.add(feat)
+        features.append(feat)
+    db_session.commit()
+    for f in features:
+        db_session.refresh(f)
+    return features
+
+
 def _make_mock_context(sr_name="TestArtifact", sr_table="sys_script_include"):
     """Return a fake gather_artifact_context response."""
     return {
@@ -108,21 +124,12 @@ def _make_mock_context(sr_name="TestArtifact", sr_table="sys_script_include"):
     }
 
 
-def _make_dfs_ai_props():
-    """Return AIAnalysisProperties with depth_first mode."""
+def _make_ai_props():
+    """Return AIAnalysisProperties with DFS-relevant settings."""
     return AIAnalysisProperties(
-        analysis_mode="depth_first",
         max_rabbit_hole_depth=10,
         max_neighbors_per_hop=20,
         min_edge_weight_for_traversal=2.0,
-        context_enrichment="auto",
-    )
-
-
-def _make_sequential_ai_props():
-    """Return AIAnalysisProperties with default sequential mode."""
-    return AIAnalysisProperties(
-        analysis_mode="sequential",
         context_enrichment="auto",
     )
 
@@ -138,8 +145,22 @@ def _make_dfs_result():
     )
 
 
+def _make_graph_with_nodes():
+    """Return a mock graph that has adjacency data (triggers DFS path)."""
+    mock_graph = MagicMock()
+    mock_graph.adjacency = {1: [], 2: [], 3: []}  # non-empty adjacency
+    return mock_graph
+
+
+def _make_empty_graph():
+    """Return a mock graph with empty adjacency (triggers sequential path)."""
+    mock_graph = MagicMock()
+    mock_graph.adjacency = {}  # empty adjacency
+    return mock_graph
+
+
 # ===========================================================================
-# Test 1: ai_analysis in depth_first mode
+# Test 1: ai_analysis with populated relationship graph -> DFS
 # ===========================================================================
 
 class TestAIAnalysisDepthFirstMode:
@@ -153,12 +174,12 @@ class TestAIAnalysisDepthFirstMode:
         self, mock_load_ai, mock_build_graph, mock_dfs, mock_set_stage, mock_set_job,
         db_session, db_engine,
     ):
-        """When analysis_mode=depth_first, DFS function should be called with correct args."""
-        inst, asmt = _seed_instance_and_assessment(db_session, analysis_mode="depth_first")
+        """When relationship graph has nodes, DFS function should be called with correct args."""
+        inst, asmt = _seed_instance_and_assessment(db_session)
         scan, srs = _add_customized_scan_results(db_session, asmt)
 
-        mock_load_ai.return_value = _make_dfs_ai_props()
-        mock_graph = MagicMock()
+        mock_load_ai.return_value = _make_ai_props()
+        mock_graph = _make_graph_with_nodes()
         mock_build_graph.return_value = mock_graph
         dfs_result = _make_dfs_result()
         mock_dfs.return_value = dfs_result
@@ -186,7 +207,7 @@ class TestAIAnalysisDepthFirstMode:
 
 
 # ===========================================================================
-# Test 2: ai_analysis in sequential mode unchanged
+# Test 2: ai_analysis with empty graph -> sequential
 # ===========================================================================
 
 class TestAIAnalysisSequentialMode:
@@ -196,21 +217,24 @@ class TestAIAnalysisSequentialMode:
     @patch("src.server.gather_artifact_context")
     @patch("src.server.run_depth_first_analysis")
     @patch("src.server.build_relationship_graph")
+    @patch("src.server.load_ai_analysis_properties")
     def test_ai_analysis_sequential_mode_unchanged(
-        self, mock_build_graph, mock_dfs, mock_gather, mock_set_stage, mock_set_job,
+        self, mock_load_ai, mock_build_graph, mock_dfs, mock_gather, mock_set_stage, mock_set_job,
         db_session, db_engine,
     ):
-        """When analysis_mode=sequential (default), DFS should NOT be called."""
+        """When relationship graph is empty, DFS should NOT be called; sequential analysis runs."""
         inst, asmt = _seed_instance_and_assessment(db_session)
         scan, srs = _add_customized_scan_results(db_session, asmt, count=2)
 
+        mock_load_ai.return_value = _make_ai_props()
+        mock_build_graph.return_value = _make_empty_graph()
         mock_gather.return_value = _make_mock_context()
 
         with patch("src.server.engine", db_engine):
             _run_assessment_pipeline_stage(asmt.id, target_stage="ai_analysis")
 
-        # DFS functions should NOT be called in sequential mode
-        mock_build_graph.assert_not_called()
+        # build_relationship_graph is always called now, but DFS should NOT run
+        mock_build_graph.assert_called_once()
         mock_dfs.assert_not_called()
 
         # gather_artifact_context SHOULD be called (sequential mode)
@@ -225,7 +249,7 @@ class TestAIAnalysisSequentialMode:
 
 
 # ===========================================================================
-# Test 3: grouping after depth_first preserves features
+# Test 3: grouping with existing features preserves them (reset_existing=False)
 # ===========================================================================
 
 class TestGroupingModeAware:
@@ -233,15 +257,15 @@ class TestGroupingModeAware:
     @patch("src.server._set_assessment_pipeline_job_state")
     @patch("src.server._set_assessment_pipeline_stage")
     @patch("src.server.seed_feature_groups_handle")
-    @patch("src.server.load_ai_analysis_properties")
-    def test_grouping_after_depth_first_preserves_features(
-        self, mock_load_ai, mock_seed_handle, mock_set_stage, mock_set_job,
+    def test_grouping_with_existing_features_preserves(
+        self, mock_seed_handle, mock_set_stage, mock_set_job,
         db_session, db_engine,
     ):
-        """In depth_first mode, grouping passes reset_existing=False."""
-        inst, asmt = _seed_instance_and_assessment(db_session, pipeline_stage="grouping", analysis_mode="depth_first")
+        """When features already exist, grouping passes reset_existing=False."""
+        inst, asmt = _seed_instance_and_assessment(db_session, pipeline_stage="grouping")
+        # Seed existing features (simulates DFS-created features)
+        _add_features(db_session, asmt, count=3)
 
-        mock_load_ai.return_value = _make_dfs_ai_props()
         mock_seed_handle.return_value = {
             "success": True,
             "features_created": 0,
@@ -258,21 +282,20 @@ class TestGroupingModeAware:
         assert call_params["reset_existing"] is False
 
     # ===========================================================================
-    # Test 4: grouping after sequential resets features
+    # Test 4: grouping without existing features resets normally
     # ===========================================================================
 
     @patch("src.server._set_assessment_pipeline_job_state")
     @patch("src.server._set_assessment_pipeline_stage")
     @patch("src.server.seed_feature_groups_handle")
-    @patch("src.server.load_ai_analysis_properties")
-    def test_grouping_after_sequential_resets_features(
-        self, mock_load_ai, mock_seed_handle, mock_set_stage, mock_set_job,
+    def test_grouping_without_existing_features_resets(
+        self, mock_seed_handle, mock_set_stage, mock_set_job,
         db_session, db_engine,
     ):
-        """In sequential mode (default), grouping should NOT pass reset_existing=False."""
+        """When no features exist, grouping should NOT pass reset_existing=False."""
         inst, asmt = _seed_instance_and_assessment(db_session, pipeline_stage="grouping")
+        # No features seeded
 
-        mock_load_ai.return_value = _make_sequential_ai_props()
         mock_seed_handle.return_value = {
             "success": True,
             "features_created": 3,
@@ -306,11 +329,11 @@ class TestDepthFirstTelemetry:
         mock_set_stage, mock_set_job, db_session, db_engine,
     ):
         """Telemetry details should contain mode=depth_first and DFS-specific fields."""
-        inst, asmt = _seed_instance_and_assessment(db_session, analysis_mode="depth_first")
+        inst, asmt = _seed_instance_and_assessment(db_session)
         scan, srs = _add_customized_scan_results(db_session, asmt)
 
-        mock_load_ai.return_value = _make_dfs_ai_props()
-        mock_build_graph.return_value = MagicMock()
+        mock_load_ai.return_value = _make_ai_props()
+        mock_build_graph.return_value = _make_graph_with_nodes()
         dfs_result = _make_dfs_result()
         mock_dfs.return_value = dfs_result
 
