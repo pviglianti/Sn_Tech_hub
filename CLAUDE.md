@@ -32,6 +32,12 @@ The rehydration contract and rollover rules must stay identical to `AGENTS.md`.
 - Prefer explicit file paths in references.
 - Exclude `archive/` from default context scans and rehydration unless explicitly requested.
 - Treat files under `archive/` as old/historical and ignore them for active planning and implementation unless user asks.
+- Also exclude these from default scans unless explicitly requested by user or active task:
+  - `docs/`
+  - `Templates/`
+  - `snow-flow_pv/`
+  - `tech-assessment-hub/docs/plans/`
+- For `00_admin/*coordination*.md` and `00_admin/*chat*.md`, load only files tied to the active phase; treat others as historical unless asked.
 
 ## Engineering Principles
 Follow `AGENTS.md` > "Engineering Principles" section in full. Key reminders:

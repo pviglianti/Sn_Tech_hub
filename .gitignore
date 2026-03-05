@@ -57,3 +57,9 @@ iMovie-Library-backup/
 
 # Local parallel-agent worktrees
 .worktrees/
+
+# AI orchestration transient run artifacts (keep canonical docs tracked)
+orchestration_run/logs/
+orchestration_run/*.pid
+orchestration_run/*.lock
+orchestration_run/*.session

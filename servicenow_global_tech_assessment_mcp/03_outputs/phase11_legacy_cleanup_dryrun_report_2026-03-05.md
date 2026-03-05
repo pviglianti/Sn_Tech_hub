@@ -387,6 +387,60 @@ AND fsr.assignment_source = 'human';
 
 ---
 
+## Section 8 — Running the Cleanup Utility
+
+### Prerequisites
+
+- Python virtual environment activated (`tech-assessment-hub/venv`)
+- Working directory: `tech-assessment-hub/`
+
+### Basic Usage
+
+```bash
+# Dry-run (default, read-only) — shows what would be cleaned
+./venv/bin/python -m src.scripts.cleanup_legacy_feature_data --assessment-id ASMT0000001
+
+# Dry-run with JSON output (for programmatic consumption)
+./venv/bin/python -m src.scripts.cleanup_legacy_feature_data --assessment-id ASMT0000001 --json
+```
+
+### Applying Cleanup
+
+```bash
+# Interactive apply — shows dry-run report first, then prompts for confirmation
+./venv/bin/python -m src.scripts.cleanup_legacy_feature_data --assessment-id ASMT0000001 --apply
+
+# Automated apply — skips confirmation prompt (for scripting)
+./venv/bin/python -m src.scripts.cleanup_legacy_feature_data --assessment-id ASMT0000001 --apply --yes
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success (dry-run report generated, apply completed, or user declined apply confirmation) |
+| 1 | Pre-flight failure (assessment not found, active pipeline, human FSRs detected) |
+| 2 | Runtime error |
+
+### Safety Gates
+
+1. **Dry-run default** — no destructive action without explicit `--apply`.
+2. **Pre-flight checks** — aborts if assessment is mid-pipeline or has human-authored memberships.
+3. **Confirmation prompt** — `--apply` requires typing `YES` (bypass with `--yes` for automation).
+4. **Single transaction** — all mutations are atomic; any error triggers full rollback.
+
+### Post-Apply Verification
+
+After running `--apply`, re-run in dry-run mode to confirm idempotency:
+
+```bash
+./venv/bin/python -m src.scripts.cleanup_legacy_feature_data --assessment-id ASMT0000001
+```
+
+A successful cleanup should show zero duplicate groups, zero non-customized FSRs, and zero empty features.
+
+---
+
 ## Appendix: Raw Counts Reference
 
 ```

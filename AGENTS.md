@@ -38,6 +38,12 @@ This file is the single shared standard for Claude, Codex, and other tools.
 - Never include `archive/` in default rehydration or exploratory scans.
 - Read files under `archive/` only when the user explicitly asks for archived material.
 - Treat files moved into `archive/` as historical/old docs and ignore them for active implementation decisions.
+- For this workspace, also exclude these paths from default rehydration/exploratory scans unless explicitly referenced by the active task or requested by the user:
+  - `docs/`
+  - `Templates/`
+  - `snow-flow_pv/`
+  - `tech-assessment-hub/docs/plans/`
+- For phase coordination/chat files in `00_admin/`, read only the files tied to the current active phase in `todos.md`/`ACTIVE_PROJECT.md`; treat other phase files as historical context unless explicitly requested.
 
 ## Core Memory File Shapes
 - `context.md`: includes `## Rehydrate Snapshot` (8-12 bullets max).
