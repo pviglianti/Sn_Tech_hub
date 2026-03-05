@@ -64,3 +64,4 @@ orchestration_run/logs/
 orchestration_run/*.pid
 orchestration_run/*.lock
 orchestration_run/*.session
+orchestration_run/.stop_*
