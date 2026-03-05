@@ -81,6 +81,7 @@ def _handle_prompts_list(request_id: Optional[Union[str, int]]) -> Dict[str, Any
 def _handle_prompts_get(
     request_id: Optional[Union[str, int]],
     params: Dict[str, Any],
+    session: Optional[Session] = None,
 ) -> Dict[str, Any]:
     name = params.get("name")
     if not name:
@@ -88,7 +89,7 @@ def _handle_prompts_get(
 
     try:
         arguments = params.get("arguments") or {}
-        result = PROMPT_REGISTRY.get_prompt(name, arguments)
+        result = PROMPT_REGISTRY.get_prompt(name, arguments, session=session)
     except KeyError:
         return make_error(request_id, -32601, f"Prompt not found: {name}")
     except Exception as exc:
@@ -147,7 +148,7 @@ def handle_request(
 
     if method == "prompts/get":
         params = payload.get("params") or {}
-        return _handle_prompts_get(request_id, params)
+        return _handle_prompts_get(request_id, params, session=session)
 
     if method == "resources/list":
         return _handle_resources_list(request_id)

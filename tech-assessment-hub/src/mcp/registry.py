@@ -56,7 +56,7 @@ class PromptSpec:
     name: str
     description: str
     arguments: List[Dict[str, Any]]
-    handler: Callable[[Dict[str, Any]], Dict[str, Any]]
+    handler: Callable[..., Dict[str, Any]]
 
 
 class PromptRegistry:
@@ -79,10 +79,21 @@ class PromptRegistry:
     def has_prompt(self, name: str) -> bool:
         return name in self._prompts
 
-    def get_prompt(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def get_prompt(
+        self,
+        name: str,
+        arguments: Optional[Dict[str, Any]] = None,
+        session: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         if name not in self._prompts:
             raise KeyError(f"Prompt not found: {name}")
-        return self._prompts[name].handler(arguments or {})
+        handler = self._prompts[name].handler
+        # Check if handler accepts session parameter
+        import inspect
+        sig = inspect.signature(handler)
+        if "session" in sig.parameters:
+            return handler(arguments or {}, session=session)
+        return handler(arguments or {})
 
 
 # ── Resource Registry ────────────────────────────────────────────────
@@ -165,6 +176,7 @@ def build_registry() -> ToolRegistry:
     from .tools.core.facts import SAVE_FACT_TOOL_SPEC, GET_FACTS_TOOL_SPEC, DELETE_FACTS_TOOL_SPEC
     from .tools.core.query_live import TOOL_SPEC as query_live_tool
     from .tools.core.customizations import TOOL_SPEC as customizations_tool
+    from .tools.core.get_usage_count import TOOL_SPEC as get_usage_count_tool
 
     registry.register(instance_summary_tool)
     registry.register(assessment_results_tool)
@@ -176,6 +188,7 @@ def build_registry() -> ToolRegistry:
     registry.register(DELETE_FACTS_TOOL_SPEC)
     registry.register(query_live_tool)
     registry.register(customizations_tool)
+    registry.register(get_usage_count_tool)
 
     # --- Level 2 analysis tools (pipeline) ---
     from .tools.pipeline.customization_summary import TOOL_SPEC as customization_summary_tool
@@ -183,12 +196,14 @@ def build_registry() -> ToolRegistry:
     from .tools.pipeline.run_feature_reasoning import TOOL_SPEC as run_feature_reasoning_tool
     from .tools.pipeline.feature_grouping_status import TOOL_SPEC as feature_grouping_status_tool
     from .tools.pipeline.run_engines import TOOL_SPEC as run_engines_tool
+    from .tools.pipeline.generate_observations import TOOL_SPEC as generate_observations_tool
 
     registry.register(customization_summary_tool)
     registry.register(seed_feature_groups_tool)
     registry.register(run_feature_reasoning_tool)
     registry.register(feature_grouping_status_tool)
     registry.register(run_engines_tool)
+    registry.register(generate_observations_tool)
 
     # --- Level 1 write-back tools ---
     from .tools.core.update_result import TOOL_SPEC as update_result_tool
@@ -254,8 +269,11 @@ RESOURCE_REGISTRY = ResourceRegistry()
 def _populate_prompt_registry() -> None:
     """Register assessment methodology prompts."""
     from .prompts.tech_assessment import PROMPT_SPECS
+    from .prompts.observation_prompt import PROMPT_SPECS as OBSERVATION_PROMPT_SPECS
 
     for spec in PROMPT_SPECS:
+        PROMPT_REGISTRY.register(spec)
+    for spec in OBSERVATION_PROMPT_SPECS:
         PROMPT_REGISTRY.register(spec)
 
 
