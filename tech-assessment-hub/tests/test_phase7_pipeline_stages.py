@@ -546,3 +546,255 @@ def test_ai_analysis_handler_progress_updates(
         if c.kwargs.get("message", "").startswith("Analyzing artifact")
     ]
     assert len(progress_calls) == 3, f"Expected 3 progress calls, got {len(progress_calls)}"
+
+
+# ---------------------------------------------------------------------------
+# Task 7 tests: AI Refinement pipeline stage handler
+# ---------------------------------------------------------------------------
+
+from sqlmodel import select  # noqa: E402 – late import for Task 7 tests
+
+from src.models import (
+    Feature,
+    FeatureScanResult,
+    GeneralRecommendation,
+    Disposition,
+    BestPractice,
+    BestPracticeCategory,
+)
+
+
+def _seed_assessment_with_features(db_session, *, num_features=1, members_per_feature=5, tables=None):
+    """Seed an Instance, Assessment, Scan, Features and linked ScanResults for ai_refinement tests.
+
+    Returns (assessment, list_of_features, list_of_scan_results).
+    """
+    if tables is None:
+        tables = ["sys_script_include"]
+
+    inst = Instance(
+        name="refine-test-inst",
+        url="https://refine-test.service-now.com",
+        username="admin",
+        password_encrypted="encrypted",
+    )
+    db_session.add(inst)
+    db_session.flush()
+
+    asmt = Assessment(
+        instance_id=inst.id,
+        name="AI Refinement Test",
+        number="ASMT0088800",
+        assessment_type=AssessmentType.global_app,
+        state=AssessmentState.in_progress,
+        pipeline_stage=PipelineStage.ai_refinement.value,
+    )
+    db_session.add(asmt)
+    db_session.flush()
+
+    scan = Scan(
+        assessment_id=asmt.id,
+        scan_type=ScanType.metadata,
+        name="refine-scan",
+        status=ScanStatus.completed,
+    )
+    db_session.add(scan)
+    db_session.flush()
+
+    all_features = []
+    all_scan_results = []
+
+    for fi in range(num_features):
+        feat = Feature(
+            assessment_id=asmt.id,
+            name=f"Feature_{fi}",
+            description=f"Test feature {fi}",
+        )
+        db_session.add(feat)
+        db_session.flush()
+
+        for mi in range(members_per_feature):
+            table = tables[mi % len(tables)]
+            sr = ScanResult(
+                scan_id=scan.id,
+                sys_id=f"sys_feat{fi}_member{mi}",
+                table_name=table,
+                name=f"Artifact_F{fi}_M{mi}",
+                origin_type=OriginType.modified_ootb,
+            )
+            db_session.add(sr)
+            db_session.flush()
+
+            link = FeatureScanResult(
+                feature_id=feat.id,
+                scan_result_id=sr.id,
+            )
+            db_session.add(link)
+            all_scan_results.append(sr)
+
+        all_features.append(feat)
+
+    db_session.commit()
+    for f in all_features:
+        db_session.refresh(f)
+    for sr in all_scan_results:
+        db_session.refresh(sr)
+    db_session.refresh(asmt)
+    return asmt, all_features, all_scan_results
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+def test_ai_refinement_handler_analyzes_complex_features(
+    mock_set_stage, mock_set_job, db_session, db_engine
+):
+    """Features with 5+ members should get ai_summary populated."""
+    asmt, features, _ = _seed_assessment_with_features(
+        db_session,
+        num_features=1,
+        members_per_feature=6,
+        tables=["sys_script_include", "sys_ui_policy"],
+    )
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="ai_refinement")
+
+    db_session.refresh(features[0])
+    assert features[0].ai_summary is not None, "ai_summary should be populated for complex feature"
+
+    parsed = json.loads(features[0].ai_summary)
+    assert parsed["refinement_type"] == "complex_feature_analysis"
+    assert parsed["member_count"] == 6
+    assert parsed["cross_table_relationship"] is True
+    assert len(parsed["member_artifacts"]) == 6
+    assert len(parsed["tables_involved"]) == 2
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+def test_ai_refinement_handler_skips_simple_features(
+    mock_set_stage, mock_set_job, db_session, db_engine
+):
+    """Features with <5 members should NOT get ai_summary populated."""
+    asmt, features, _ = _seed_assessment_with_features(
+        db_session,
+        num_features=1,
+        members_per_feature=3,
+    )
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="ai_refinement")
+
+    db_session.refresh(features[0])
+    assert features[0].ai_summary is None, "ai_summary should NOT be populated for simple feature"
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+def test_ai_refinement_handler_mode_a_enriches_ai_observations(
+    mock_set_stage, mock_set_job, db_session, db_engine
+):
+    """Artifacts with ai_observations should get a 'technical_review' key added."""
+    asmt, features, scan_results = _seed_assessment_with_features(
+        db_session,
+        num_features=1,
+        members_per_feature=2,
+    )
+
+    # Populate ai_observations on one scan result (simulating ai_analysis stage output)
+    prior_analysis = {"artifact_name": "Artifact_F0_M0", "context_enrichment_mode": "auto"}
+    scan_results[0].ai_observations = json.dumps(prior_analysis, sort_keys=True)
+    db_session.add(scan_results[0])
+    db_session.commit()
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="ai_refinement")
+
+    db_session.refresh(scan_results[0])
+    parsed = json.loads(scan_results[0].ai_observations)
+    assert "technical_review" in parsed, "ai_observations should contain 'technical_review' key"
+    assert parsed["technical_review"]["review_type"] == "mode_a_artifact_review"
+    # Prior keys should still be present
+    assert "artifact_name" in parsed
+    assert "context_enrichment_mode" in parsed
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+def test_ai_refinement_handler_creates_general_recommendation(
+    mock_set_stage, mock_set_job, db_session, db_engine
+):
+    """A GeneralRecommendation with category='technical_findings' should be created."""
+    asmt, _, _ = _seed_assessment_with_features(
+        db_session,
+        num_features=2,
+        members_per_feature=3,
+    )
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="ai_refinement")
+
+    recs = db_session.exec(
+        select(GeneralRecommendation)
+        .where(GeneralRecommendation.assessment_id == asmt.id)
+        .where(GeneralRecommendation.category == "technical_findings")
+    ).all()
+    assert len(recs) == 1, f"Expected 1 GeneralRecommendation, got {len(recs)}"
+    rec = recs[0]
+
+    assert rec.title == "AI Refinement \u2014 Technical Debt Roll-up"
+    assert rec.created_by == "ai_pipeline"
+
+    rollup = json.loads(rec.description)
+    assert "total_customized_artifacts" in rollup
+    assert "customized_by_table" in rollup
+    assert "features_created" in rollup
+    assert "disposition_distribution" in rollup
+    assert "active_best_practice_checks" in rollup
+    assert rollup["features_created"] == 2
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+def test_ai_refinement_handler_progress_updates(
+    mock_set_stage, mock_set_job, db_session, db_engine
+):
+    """Progress updates should be called at the expected stages."""
+    asmt, _, _ = _seed_assessment_with_features(
+        db_session,
+        num_features=1,
+        members_per_feature=2,
+    )
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="ai_refinement")
+
+    # Collect all progress calls from the handler (excluding the initial 15% from the wrapper)
+    handler_calls = [
+        c for c in mock_set_job.call_args_list
+        if c.kwargs.get("stage") == "ai_refinement" and c.kwargs.get("status") == "running"
+    ]
+    # We expect: 15% (complex features), 45% (artifact review), 75% (roll-up), 95% (committing)
+    # Plus the initial 15% from _run_assessment_pipeline_stage wrapper
+    progress_values = [c.kwargs.get("progress_percent") for c in handler_calls]
+    assert 15 in progress_values, f"15% progress not found in {progress_values}"
+    assert 45 in progress_values, f"45% progress not found in {progress_values}"
+    assert 75 in progress_values, f"75% progress not found in {progress_values}"
+    assert 95 in progress_values, f"95% progress not found in {progress_values}"
+
+    # Final completion call
+    completion_calls = [
+        c for c in mock_set_job.call_args_list
+        if c.kwargs.get("status") == "completed"
+    ]
+    assert len(completion_calls) == 1, "Should have exactly one completion call"

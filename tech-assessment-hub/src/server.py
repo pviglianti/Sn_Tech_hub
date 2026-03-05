@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from .database import get_session, create_db_and_tables, engine
 from .models import (
     Instance, Assessment, Scan, ScanResult, Customization, Feature, FeatureScanResult, FeatureContextArtifact, FeatureRecommendation,
+    GeneralRecommendation,
     GlobalApp, AppFileClass, NumberSequence,
     ConnectionStatus, AssessmentState, AssessmentType, PipelineStage,
     ScanStatus,
@@ -1496,6 +1497,175 @@ def _run_assessment_pipeline_stage(
             success_message = (
                 f"Grouping stage completed ({grouped_count} customized results grouped; "
                 f"{features_created} feature(s) created)."
+            )
+
+        elif stage == PipelineStage.ai_refinement.value:
+            # --- AI Refinement: relationship tracing, artifact review, debt roll-up ---
+
+            # ---- Sub-step 1: Identify complex features (5+ members) ----
+            _set_assessment_pipeline_job_state(
+                assessment_id,
+                stage=stage,
+                status="running",
+                message="Identifying complex features...",
+                progress_percent=15,
+            )
+
+            features = session.exec(
+                select(Feature).where(Feature.assessment_id == assessment_id)
+            ).all()
+
+            complex_features: list = []
+            for feat in features:
+                member_count = session.exec(
+                    select(func.count(FeatureScanResult.id))
+                    .where(FeatureScanResult.feature_id == feat.id)
+                ).one()
+                if member_count >= 5:
+                    # Gather member artifact details
+                    member_links = session.exec(
+                        select(FeatureScanResult).where(FeatureScanResult.feature_id == feat.id)
+                    ).all()
+                    member_names: list = []
+                    member_tables: set = set()
+                    for link in member_links:
+                        sr = session.get(ScanResult, link.scan_result_id)
+                        if sr:
+                            member_names.append(sr.name or sr.sys_id)
+                            if sr.table_name:
+                                member_tables.add(sr.table_name)
+
+                    cross_table = len(member_tables) > 1
+
+                    summary = {
+                        "refinement_type": "complex_feature_analysis",
+                        "feature_name": feat.name,
+                        "member_count": member_count,
+                        "member_artifacts": member_names,
+                        "tables_involved": sorted(member_tables),
+                        "cross_table_relationship": cross_table,
+                        "human_disposition": feat.disposition.value if feat.disposition else None,
+                        "human_recommendation": feat.recommendation,
+                    }
+                    feat.ai_summary = json.dumps(summary, sort_keys=True)
+                    session.add(feat)
+                    complex_features.append((feat, member_count))
+
+            # ---- Sub-step 2: Mode A — review flagged artifacts ----
+            _set_assessment_pipeline_job_state(
+                assessment_id,
+                stage=stage,
+                status="running",
+                message="Reviewing flagged artifacts...",
+                progress_percent=45,
+            )
+
+            flagged_artifacts = session.exec(
+                select(ScanResult)
+                .join(Scan, ScanResult.scan_id == Scan.id)
+                .where(Scan.assessment_id == assessment_id)
+                .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
+                .where(ScanResult.ai_observations.isnot(None))
+            ).all()
+
+            mode_a_count = 0
+            for sr in flagged_artifacts:
+                try:
+                    existing_obs = json.loads(sr.ai_observations) if sr.ai_observations else {}
+                except (json.JSONDecodeError, TypeError):
+                    existing_obs = {}
+
+                # Build Mode A technical review context
+                # Gather feature memberships for this artifact
+                feat_links = session.exec(
+                    select(FeatureScanResult).where(FeatureScanResult.scan_result_id == sr.id)
+                ).all()
+                feature_names = []
+                for fl in feat_links:
+                    linked_feat = session.get(Feature, fl.feature_id)
+                    if linked_feat:
+                        feature_names.append(linked_feat.name)
+
+                technical_review = {
+                    "review_type": "mode_a_artifact_review",
+                    "artifact_name": sr.name,
+                    "artifact_table": sr.table_name,
+                    "feature_memberships": feature_names,
+                    "has_prior_analysis": bool(existing_obs),
+                    "prior_analysis_keys": sorted(existing_obs.keys()) if existing_obs else [],
+                }
+
+                existing_obs["technical_review"] = technical_review
+                sr.ai_observations = json.dumps(existing_obs, sort_keys=True)
+                session.add(sr)
+                mode_a_count += 1
+
+            # ---- Sub-step 3: Mode B — assessment-wide roll-up ----
+            _set_assessment_pipeline_job_state(
+                assessment_id,
+                stage=stage,
+                status="running",
+                message="Building assessment-wide technical debt roll-up...",
+                progress_percent=75,
+            )
+
+            # Total customized artifacts grouped by table_name
+            table_counts_rows = session.exec(
+                select(ScanResult.table_name, func.count(ScanResult.id))
+                .join(Scan, ScanResult.scan_id == Scan.id)
+                .where(Scan.assessment_id == assessment_id)
+                .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
+                .group_by(ScanResult.table_name)
+            ).all()
+            customized_by_table = {row[0]: row[1] for row in table_counts_rows}
+            total_customized = sum(customized_by_table.values())
+
+            # Features count
+            features_count = len(features)
+
+            # Disposition distribution
+            disposition_dist: dict = {}
+            for feat in features:
+                disp_val = feat.disposition.value if feat.disposition else "unset"
+                disposition_dist[disp_val] = disposition_dist.get(disp_val, 0) + 1
+
+            # Best practice checks count (active definitions)
+            bp_count = session.exec(
+                select(func.count(BestPractice.id)).where(BestPractice.is_active == True)  # noqa: E712
+            ).one()
+
+            rollup_data = {
+                "rollup_type": "mode_b_assessment_wide",
+                "total_customized_artifacts": total_customized,
+                "customized_by_table": dict(sorted(customized_by_table.items())),
+                "features_created": features_count,
+                "disposition_distribution": dict(sorted(disposition_dist.items())),
+                "active_best_practice_checks": bp_count,
+                "complex_features_analyzed": len(complex_features),
+                "artifacts_reviewed_mode_a": mode_a_count,
+            }
+
+            gen_rec = GeneralRecommendation(
+                assessment_id=assessment_id,
+                title="AI Refinement \u2014 Technical Debt Roll-up",
+                category="technical_findings",
+                created_by="ai_pipeline",
+                description=json.dumps(rollup_data, sort_keys=True),
+            )
+            session.add(gen_rec)
+
+            _set_assessment_pipeline_job_state(
+                assessment_id,
+                stage=stage,
+                status="running",
+                message="Committing AI refinement results...",
+                progress_percent=95,
+            )
+            session.commit()
+
+            success_message = (
+                f"AI Refinement completed: {len(complex_features)} complex feature(s) analyzed, "
+                f"{mode_a_count} artifact(s) reviewed, assessment-wide roll-up generated."
             )
 
         elif stage == PipelineStage.recommendations.value:
