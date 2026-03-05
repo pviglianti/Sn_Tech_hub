@@ -380,27 +380,36 @@ _ASSESSMENT_PIPELINE_RUN_MODULE = "assessment"
 _ASSESSMENT_PIPELINE_RUN_TYPE = "reasoning_pipeline"
 _PIPELINE_STAGE_ORDER: List[str] = [
     PipelineStage.scans.value,
+    PipelineStage.ai_analysis.value,
     PipelineStage.engines.value,
     PipelineStage.observations.value,
     PipelineStage.review.value,
     PipelineStage.grouping.value,
+    PipelineStage.ai_refinement.value,
     PipelineStage.recommendations.value,
+    PipelineStage.report.value,
     PipelineStage.complete.value,
 ]
 _PIPELINE_STAGE_LABELS: Dict[str, str] = {
     PipelineStage.scans.value: "Scans",
+    PipelineStage.ai_analysis.value: "AI Analysis",
     PipelineStage.engines.value: "Engines",
     PipelineStage.observations.value: "Observations",
     PipelineStage.review.value: "Review",
     PipelineStage.grouping.value: "Grouping",
+    PipelineStage.ai_refinement.value: "AI Refinement",
     PipelineStage.recommendations.value: "Recommendations",
+    PipelineStage.report.value: "Report",
     PipelineStage.complete.value: "Complete",
 }
 _PIPELINE_STAGE_AUTONEXT: Dict[str, str] = {
+    PipelineStage.ai_analysis.value: PipelineStage.engines.value,
     PipelineStage.engines.value: PipelineStage.observations.value,
     PipelineStage.observations.value: PipelineStage.review.value,
-    PipelineStage.grouping.value: PipelineStage.recommendations.value,
-    PipelineStage.recommendations.value: PipelineStage.complete.value,
+    PipelineStage.grouping.value: PipelineStage.ai_refinement.value,
+    PipelineStage.ai_refinement.value: PipelineStage.recommendations.value,
+    PipelineStage.recommendations.value: PipelineStage.report.value,
+    PipelineStage.report.value: PipelineStage.complete.value,
 }
 
 
@@ -5985,11 +5994,14 @@ async def api_advance_pipeline_stage(
     target_stage = _pipeline_stage_value(raw_target_stage)
 
     allowed_targets = {
+        PipelineStage.ai_analysis.value,
         PipelineStage.engines.value,
         PipelineStage.observations.value,
         PipelineStage.review.value,
         PipelineStage.grouping.value,
+        PipelineStage.ai_refinement.value,
         PipelineStage.recommendations.value,
+        PipelineStage.report.value,
     }
     if target_stage not in allowed_targets:
         raise HTTPException(
@@ -5999,10 +6011,36 @@ async def api_advance_pipeline_stage(
 
     skip_review = bool(payload.get("skip_review", False))
     force = bool(payload.get("force", False))
+    rerun = bool(payload.get("rerun", False))
 
     current_stage = _pipeline_stage_value(assessment.pipeline_stage)
     current_index = _pipeline_stage_index(current_stage)
     target_index = _pipeline_stage_index(target_stage)
+
+    # Re-run: allow reset from complete back to ai_analysis
+    if rerun and current_stage == PipelineStage.complete.value and target_stage == PipelineStage.ai_analysis.value:
+        _set_assessment_pipeline_stage(assessment_id, PipelineStage.scans.value, session=session)
+        started = _start_assessment_pipeline_job(
+            assessment_id,
+            target_stage=target_stage,
+            skip_review=skip_review,
+        )
+        if not started:
+            raise HTTPException(
+                status_code=409,
+                detail="A pipeline stage run is already active for this assessment.",
+            )
+        pipeline_run = _get_assessment_pipeline_job_snapshot(assessment_id, session=session)
+        refreshed = session.get(Assessment, assessment_id)
+        return {
+            "success": True,
+            "assessment_id": assessment_id,
+            "requested_stage": target_stage,
+            "current_stage": _pipeline_stage_value(refreshed.pipeline_stage if refreshed else assessment.pipeline_stage),
+            "rerun": True,
+            "pipeline_run": pipeline_run,
+            "review_gate": _assessment_review_gate_summary(session, assessment_id),
+        }
 
     if not force:
         if target_index < current_index:
