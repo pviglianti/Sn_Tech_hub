@@ -6,6 +6,7 @@ Also tests pipeline stage configuration dicts and advance-pipeline endpoint.
 """
 
 import pytest
+from pathlib import Path
 from unittest.mock import patch
 
 from src.models import (
@@ -1030,3 +1031,84 @@ def test_report_handler_progress_updates(
         if c.kwargs.get("status") == "completed"
     ]
     assert len(completion_calls) == 1, "Should have exactly one completion call"
+
+
+# ---------------------------------------------------------------------------
+# Task 9-11 tests: Flow Bar UI — 10 pipeline steps + re-run button
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "src" / "web" / "templates" / "assessment_detail.html"
+
+_EXPECTED_UI_STAGES = [
+    "scans",
+    "ai_analysis",
+    "engines",
+    "observations",
+    "review",
+    "grouping",
+    "ai_refinement",
+    "recommendations",
+    "report",
+    "complete",
+]
+
+
+def _read_ui_template() -> str:
+    return _TEMPLATE_PATH.read_text(encoding="utf-8")
+
+
+def test_flow_bar_html_has_10_steps():
+    """The HTML flow bar must contain exactly 10 data-pipeline-step attributes
+    matching the expected stage names in order."""
+    html = _read_ui_template()
+    # Only match HTML div elements with data-pipeline-step (exclude JS template literals)
+    matches = _re.findall(r'<div\s+class="pipeline-step"\s+data-pipeline-step="([^"]+)"', html)
+    assert len(matches) == 10, f"Expected 10 pipeline steps, found {len(matches)}: {matches}"
+    assert matches == _EXPECTED_UI_STAGES, f"Stage order mismatch: {matches}"
+
+
+def test_flow_bar_js_stages_array_has_10_entries():
+    """The _PIPELINE_STAGES JS array must list all 10 stages."""
+    html = _read_ui_template()
+    m = _re.search(r"const _PIPELINE_STAGES\s*=\s*\[([^\]]+)\]", html)
+    assert m, "_PIPELINE_STAGES array not found in template"
+    raw = m.group(1)
+    stages = [s.strip().strip("'\"") for s in raw.split(",")]
+    assert len(stages) == 10, f"Expected 10 JS stages, found {len(stages)}: {stages}"
+    assert stages == _EXPECTED_UI_STAGES, f"JS stage order mismatch: {stages}"
+
+
+def test_flow_bar_js_has_rerun_function():
+    """Template must define the advancePipelineRerun async function."""
+    html = _read_ui_template()
+    assert "async function advancePipelineRerun" in html, (
+        "advancePipelineRerun function not found in template"
+    )
+
+
+def test_flow_bar_js_labels_has_10_entries():
+    """The _PIPELINE_LABELS dict must have entries for all 10 stages."""
+    html = _read_ui_template()
+    m = _re.search(r"const _PIPELINE_LABELS\s*=\s*\{([^}]+)\}", html)
+    assert m, "_PIPELINE_LABELS dict not found in template"
+    raw = m.group(1)
+    keys = _re.findall(r"(\w+)\s*:", raw)
+    assert len(keys) == 10, f"Expected 10 label keys, found {len(keys)}: {keys}"
+    for stage in _EXPECTED_UI_STAGES:
+        assert stage in keys, f"Missing label for stage '{stage}'"
+
+
+def test_flow_bar_js_actions_has_new_stages():
+    """The _PIPELINE_ACTIONS dict must include ai_analysis, ai_refinement, and report."""
+    html = _read_ui_template()
+    # Match the full _PIPELINE_ACTIONS block including nested objects (use };
+    # to find the end of the outer object)
+    m = _re.search(r"const _PIPELINE_ACTIONS\s*=\s*\{(.+?)\};\s*\n", html, _re.DOTALL)
+    assert m, "_PIPELINE_ACTIONS dict not found in template"
+    raw = m.group(1)
+    # Extract only top-level keys (stage names before the colon followed by {)
+    keys = _re.findall(r"(\w+)\s*:\s*\{", raw)
+    for new_stage in ["ai_analysis", "ai_refinement", "report"]:
+        assert new_stage in keys, f"Missing action for new stage '{new_stage}'"

@@ -2964,7 +2964,7 @@ h1, h2, h3, h4, h5, h6 {
     flex-direction: column;
     align-items: center;
     position: relative;
-    min-width: 100px;
+    min-width: 80px;
     text-align: center;
 }
 
@@ -2972,9 +2972,9 @@ h1, h2, h3, h4, h5, h6 {
 .pipeline-step:not(:last-child)::after {
     content: '';
     position: absolute;
-    top: 16px;
-    left: calc(50% + 18px);
-    width: calc(100% - 36px);
+    top: 14px;
+    left: calc(50% + 16px);
+    width: calc(100% - 32px);
     height: 2px;
     background: var(--border-color);
     z-index: 0;
@@ -2991,8 +2991,8 @@ h1, h2, h3, h4, h5, h6 {
 
 /* Step circle */
 .pipeline-step-circle {
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -3036,7 +3036,7 @@ h1, h2, h3, h4, h5, h6 {
 /* Step label */
 .pipeline-step-label {
     margin-top: 0.4rem;
-    font-size: 0.75rem;
+    font-size: 0.68rem;
     font-weight: 600;
     color: var(--text-muted);
     white-space: nowrap;
@@ -3100,6 +3100,17 @@ h1, h2, h3, h4, h5, h6 {
 .pipeline-step-action .btn-pipeline-skip:hover {
     background: rgba(0, 0, 0, 0.04);
     color: var(--text-color);
+}
+
+.pipeline-step-action .btn-pipeline-rerun {
+    background: var(--warning-color, #d97706);
+    border-color: var(--warning-color, #d97706);
+    color: #fff;
+}
+
+.pipeline-step-action .btn-pipeline-rerun:hover {
+    background: #b45309;
+    border-color: #b45309;
 }
 
 /* Review gate progress */

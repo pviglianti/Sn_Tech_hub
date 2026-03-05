@@ -131,20 +131,26 @@
             <div class="pipeline-step-status" data-step-status></div>
             <div class="pipeline-step-action" data-step-action></div>
         </div>
-        <div class="pipeline-step" data-pipeline-step="engines">
+        <div class="pipeline-step" data-pipeline-step="ai_analysis">
             <div class="pipeline-step-circle" data-step-circle>2</div>
+            <div class="pipeline-step-label">AI Analysis</div>
+            <div class="pipeline-step-status" data-step-status></div>
+            <div class="pipeline-step-action" data-step-action></div>
+        </div>
+        <div class="pipeline-step" data-pipeline-step="engines">
+            <div class="pipeline-step-circle" data-step-circle>3</div>
             <div class="pipeline-step-label">Engines</div>
             <div class="pipeline-step-status" data-step-status></div>
             <div class="pipeline-step-action" data-step-action></div>
         </div>
         <div class="pipeline-step" data-pipeline-step="observations">
-            <div class="pipeline-step-circle" data-step-circle>3</div>
+            <div class="pipeline-step-circle" data-step-circle>4</div>
             <div class="pipeline-step-label">Observations</div>
             <div class="pipeline-step-status" data-step-status></div>
             <div class="pipeline-step-action" data-step-action></div>
         </div>
         <div class="pipeline-step" data-pipeline-step="review">
-            <div class="pipeline-step-circle" data-step-circle>4</div>
+            <div class="pipeline-step-circle" data-step-circle>5</div>
             <div class="pipeline-step-label">Review</div>
             <div class="pipeline-step-status" data-step-status></div>
             <div class="pipeline-step-action" data-step-action></div>
@@ -154,19 +160,31 @@
             </div>
         </div>
         <div class="pipeline-step" data-pipeline-step="grouping">
-            <div class="pipeline-step-circle" data-step-circle>5</div>
+            <div class="pipeline-step-circle" data-step-circle>6</div>
             <div class="pipeline-step-label">Grouping</div>
             <div class="pipeline-step-status" data-step-status></div>
             <div class="pipeline-step-action" data-step-action></div>
         </div>
+        <div class="pipeline-step" data-pipeline-step="ai_refinement">
+            <div class="pipeline-step-circle" data-step-circle>7</div>
+            <div class="pipeline-step-label">AI Refinement</div>
+            <div class="pipeline-step-status" data-step-status></div>
+            <div class="pipeline-step-action" data-step-action></div>
+        </div>
         <div class="pipeline-step" data-pipeline-step="recommendations">
-            <div class="pipeline-step-circle" data-step-circle>6</div>
+            <div class="pipeline-step-circle" data-step-circle>8</div>
             <div class="pipeline-step-label">Recommendations</div>
             <div class="pipeline-step-status" data-step-status></div>
             <div class="pipeline-step-action" data-step-action></div>
         </div>
+        <div class="pipeline-step" data-pipeline-step="report">
+            <div class="pipeline-step-circle" data-step-circle>9</div>
+            <div class="pipeline-step-label">Report</div>
+            <div class="pipeline-step-status" data-step-status></div>
+            <div class="pipeline-step-action" data-step-action></div>
+        </div>
         <div class="pipeline-step" data-pipeline-step="complete">
-            <div class="pipeline-step-circle" data-step-circle>7</div>
+            <div class="pipeline-step-circle" data-step-circle>10</div>
             <div class="pipeline-step-label">Complete</div>
             <div class="pipeline-step-status" data-step-status></div>
             <div class="pipeline-step-action" data-step-action></div>
@@ -1318,8 +1336,7 @@ function renderCustomizationRows(rows) {
         empty.classList.remove('is-hidden');
         return;
     }
-    empty.classList.add('is-hidden');
-    tbody.innerHTML = rows.map(function (row) {
+    var html = rows.map(function (row) {
         var updated = formatDate(row.sys_updated_on);
         var originLabel = row.origin_type === 'modified_ootb' ? 'Modified OOTB'
             : row.origin_type === 'net_new_customer' ? 'Net New Customer' : (row.origin_type || '-');
@@ -1334,6 +1351,8 @@ function renderCustomizationRows(rows) {
             + '<td><a class="btn btn-sm" href="/results/' + row.scan_result_id + '">View</a></td>'
             + '</tr>';
     }).join('');
+    tbody.innerHTML = html;
+    empty.classList.toggle('is-hidden', tbody.querySelectorAll('tr').length > 0);
 }
 
 var _customizationsLoaded = false;
@@ -1450,19 +1469,23 @@ document.addEventListener('tab:activated', function(e) {
 
 // ── Pipeline Flow Bar ───────────────────────────────────────────────
 
-const _PIPELINE_STAGES = ['scans', 'engines', 'observations', 'review', 'grouping', 'recommendations', 'complete'];
+const _PIPELINE_STAGES = ['scans', 'ai_analysis', 'engines', 'observations', 'review', 'grouping', 'ai_refinement', 'recommendations', 'report', 'complete'];
 const _PIPELINE_LABELS = {
-    scans: 'Scans', engines: 'Engines', observations: 'Observations',
-    review: 'Review', grouping: 'Grouping', recommendations: 'Recommendations',
-    complete: 'Complete',
+    scans: 'Scans', ai_analysis: 'AI Analysis', engines: 'Engines',
+    observations: 'Observations', review: 'Review', grouping: 'Grouping',
+    ai_refinement: 'AI Refinement', recommendations: 'Recommendations',
+    report: 'Report', complete: 'Complete',
 };
 // Which stages have action buttons and what target_stage to send
 const _PIPELINE_ACTIONS = {
+    ai_analysis: { label: 'Run AI Analysis', target: 'ai_analysis' },
     engines: { label: 'Run Engines', target: 'engines' },
     observations: { label: 'Generate Observations', target: 'observations' },
     review: { label: 'Enter Review', target: 'review' },
     grouping: { label: 'Run Grouping', target: 'grouping' },
+    ai_refinement: { label: 'Run AI Refinement', target: 'ai_refinement' },
     recommendations: { label: 'Run Recommendations', target: 'recommendations' },
+    report: { label: 'Generate Report', target: 'report' },
 };
 const _CHECK_SVG = '<svg class="pipeline-step-check" viewBox="0 0 14 14" fill="none"><path d="M2.5 7.5L5.5 10.5L11.5 3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
@@ -1556,6 +1579,17 @@ function _renderStepActions(stage, actionEl, currentStage, isRunning, reviewGate
     const currentIndex = _PIPELINE_STAGES.indexOf(currentStage);
     const nextStage = currentIndex < _PIPELINE_STAGES.length - 1 ? _PIPELINE_STAGES[currentIndex + 1] : null;
 
+    // Re-run button when pipeline is complete
+    if (currentStage === 'complete' && stage === 'complete') {
+        const rerunBtn = document.createElement('button');
+        rerunBtn.className = 'btn-pipeline btn-pipeline-rerun';
+        rerunBtn.textContent = 'Re-run Analysis';
+        rerunBtn.disabled = _pipelineAdvancing;
+        rerunBtn.addEventListener('click', () => advancePipelineRerun());
+        actionEl.appendChild(rerunBtn);
+        return;
+    }
+
     if (!nextStage || nextStage === 'complete') return;
     if (currentStage === 'complete') return;
 
@@ -1614,6 +1648,32 @@ async function advancePipelineStage(targetStage, skipReview) {
         refreshScanStatus();
     } catch (err) {
         alert('Pipeline advance failed: ' + err.message);
+    } finally {
+        _pipelineAdvancing = false;
+    }
+}
+
+async function advancePipelineRerun() {
+    if (_pipelineAdvancing) return;
+    if (!confirm('Re-run the analysis pipeline from AI Analysis? All AI-generated data will be refreshed while preserving human edits.')) return;
+    _pipelineAdvancing = true;
+
+    try {
+        const res = await fetch(`/api/assessments/${assessmentId}/advance-pipeline`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target_stage: 'ai_analysis', rerun: true }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: 'Request failed' }));
+            alert('Re-run error: ' + (err.detail || 'Unknown error'));
+            return;
+        }
+
+        refreshScanStatus();
+    } catch (err) {
+        alert('Re-run failed: ' + err.message);
     } finally {
         _pipelineAdvancing = false;
     }
