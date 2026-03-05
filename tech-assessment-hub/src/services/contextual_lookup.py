@@ -330,6 +330,7 @@ def gather_artifact_context(
     instance_id: int,
     scan_result_id: int,
     enrichment_mode: str = "auto",
+    graph: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Gather full context for a single artifact (ScanResult).
 
@@ -428,10 +429,37 @@ def gather_artifact_context(
     # --- local table data flag ---
     has_local = check_local_table_data(session, instance_id, sr.table_name)
 
+    # --- relationship graph enrichment (optional) ---
+    graph_enrichment: Dict[str, Any] = {}
+    if graph is not None:
+        all_neighbors = graph.neighbors(scan_result_id, min_weight=0.0)
+        customized_neighbors = graph.customized_neighbors(scan_result_id, min_weight=0.0)
+
+        related_customizations = []
+        for nid in customized_neighbors:
+            n_sr = session.get(ScanResult, nid)
+            if n_sr:
+                related_customizations.append({
+                    "id": nid,
+                    "name": n_sr.name,
+                    "table": n_sr.table_name,
+                    "relationship_types": graph.edge_types(scan_result_id, nid),
+                    "weight": graph.edge_weight(scan_result_id, nid),
+                })
+
+        graph_enrichment = {
+            "related_customizations": related_customizations,
+            "cross_reference_summary": {
+                "total_neighbors": len(all_neighbors),
+                "total_related_customizations": len(customized_neighbors),
+            },
+        }
+
     return {
         "artifact": artifact_info,
         "update_sets": update_sets_info,
         "human_context": human_context,
         "references": references,
         "has_local_table_data": has_local,
+        **graph_enrichment,
     }
