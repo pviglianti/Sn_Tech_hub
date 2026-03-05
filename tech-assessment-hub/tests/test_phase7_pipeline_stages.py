@@ -798,3 +798,235 @@ def test_ai_refinement_handler_progress_updates(
         if c.kwargs.get("status") == "completed"
     ]
     assert len(completion_calls) == 1, "Should have exactly one completion call"
+
+
+# ---------------------------------------------------------------------------
+# Task 8 tests: Report pipeline stage handler
+# ---------------------------------------------------------------------------
+
+
+def _seed_assessment_for_report(db_session, *, num_customized=3, num_ootb=1, num_features=2, with_recs=True):
+    """Seed an Instance, Assessment, Scan, ScanResults, Features, and GeneralRecommendations
+    for report stage tests.
+
+    Returns (assessment, instance, list_of_features, list_of_scan_results).
+    """
+    inst = Instance(
+        name="report-test-inst",
+        url="https://report-test.service-now.com",
+        username="admin",
+        password_encrypted="encrypted",
+    )
+    db_session.add(inst)
+    db_session.flush()
+
+    asmt = Assessment(
+        instance_id=inst.id,
+        name="Report Test Assessment",
+        number="ASMT0077700",
+        assessment_type=AssessmentType.global_app,
+        state=AssessmentState.in_progress,
+        pipeline_stage=PipelineStage.report.value,
+    )
+    db_session.add(asmt)
+    db_session.flush()
+
+    scan = Scan(
+        assessment_id=asmt.id,
+        scan_type=ScanType.metadata,
+        name="report-scan",
+        status=ScanStatus.completed,
+    )
+    db_session.add(scan)
+    db_session.flush()
+
+    all_scan_results = []
+    tables = ["sys_script_include", "sys_ui_policy"]
+    for i in range(num_customized):
+        sr = ScanResult(
+            scan_id=scan.id,
+            sys_id=f"sys_rpt_custom_{i}",
+            table_name=tables[i % len(tables)],
+            name=f"ReportCustom{i}",
+            origin_type=OriginType.modified_ootb,
+        )
+        db_session.add(sr)
+        all_scan_results.append(sr)
+
+    for i in range(num_ootb):
+        sr = ScanResult(
+            scan_id=scan.id,
+            sys_id=f"sys_rpt_ootb_{i}",
+            table_name="sys_script_include",
+            name=f"ReportOotb{i}",
+            origin_type=OriginType.ootb_untouched,
+        )
+        db_session.add(sr)
+        all_scan_results.append(sr)
+
+    db_session.flush()
+
+    all_features = []
+    for fi in range(num_features):
+        feat = Feature(
+            assessment_id=asmt.id,
+            name=f"ReportFeature_{fi}",
+            description=f"Test feature for report {fi}",
+            disposition=Disposition.keep_as_is if fi % 2 == 0 else Disposition.remove,
+            recommendation="Some recommendation" if fi == 0 else None,
+            ai_summary='{"test": true}' if fi == 0 else None,
+        )
+        db_session.add(feat)
+        all_features.append(feat)
+
+    if with_recs:
+        gr1 = GeneralRecommendation(
+            assessment_id=asmt.id,
+            title="Technical Debt Roll-up",
+            category="technical_findings",
+            created_by="ai_pipeline",
+            description='{"rollup_type": "mode_b"}',
+        )
+        gr2 = GeneralRecommendation(
+            assessment_id=asmt.id,
+            title="Landscape Summary",
+            category="landscape_summary",
+            created_by="ai_pipeline",
+            description='{"summary": "test"}',
+        )
+        db_session.add(gr1)
+        db_session.add(gr2)
+
+    db_session.commit()
+    for sr in all_scan_results:
+        db_session.refresh(sr)
+    for f in all_features:
+        db_session.refresh(f)
+    db_session.refresh(asmt)
+    db_session.refresh(inst)
+    return asmt, inst, all_features, all_scan_results
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+def test_report_handler_creates_assessment_report(
+    mock_set_stage, mock_set_job, db_session, db_engine
+):
+    """Report handler should create a GeneralRecommendation with category='assessment_report'
+    containing correct JSON structure."""
+    asmt, inst, features, scan_results = _seed_assessment_for_report(db_session)
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="report")
+
+    recs = db_session.exec(
+        select(GeneralRecommendation)
+        .where(GeneralRecommendation.assessment_id == asmt.id)
+        .where(GeneralRecommendation.category == "assessment_report")
+    ).all()
+    assert len(recs) == 1, f"Expected 1 assessment_report record, got {len(recs)}"
+    rec = recs[0]
+
+    assert rec.title == "Assessment Report Data"
+    assert rec.created_by == "ai_pipeline"
+
+    report = json.loads(rec.description)
+    assert report["assessment_name"] == "Report Test Assessment"
+    assert report["assessment_number"] == "ASMT0077700"
+    assert report["instance_name"] == "report-test-inst"
+    assert "statistics" in report
+    assert "features" in report
+    assert "review_status" in report
+    assert "general_recommendations" in report
+    assert "generated_at" in report
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+def test_report_handler_replaces_existing_report(
+    mock_set_stage, mock_set_job, db_session, db_engine
+):
+    """Running report twice should replace the old report (only 1 record with category='assessment_report')."""
+    asmt, inst, features, scan_results = _seed_assessment_for_report(db_session)
+
+    from src.server import _run_assessment_pipeline_stage
+
+    # Run report stage twice
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="report")
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="report")
+
+    recs = db_session.exec(
+        select(GeneralRecommendation)
+        .where(GeneralRecommendation.assessment_id == asmt.id)
+        .where(GeneralRecommendation.category == "assessment_report")
+    ).all()
+    assert len(recs) == 1, f"Expected exactly 1 assessment_report after re-run, got {len(recs)}"
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+def test_report_handler_includes_feature_data(
+    mock_set_stage, mock_set_job, db_session, db_engine
+):
+    """Report data should include feature count and disposition distribution."""
+    asmt, inst, features, scan_results = _seed_assessment_for_report(
+        db_session, num_features=3
+    )
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="report")
+
+    recs = db_session.exec(
+        select(GeneralRecommendation)
+        .where(GeneralRecommendation.assessment_id == asmt.id)
+        .where(GeneralRecommendation.category == "assessment_report")
+    ).all()
+    assert len(recs) == 1
+    report = json.loads(recs[0].description)
+
+    assert report["features"]["total"] == 3
+    disp = report["features"]["disposition_distribution"]
+    # Features alternate: keep_as_is (0, 2), remove (1)
+    assert disp.get("keep_as_is") == 2
+    assert disp.get("remove") == 1
+    # Feature 0 has ai_summary and recommendation
+    assert report["features"]["with_ai_summary"] == 1
+    assert report["features"]["with_recommendations"] == 1
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+def test_report_handler_progress_updates(
+    mock_set_stage, mock_set_job, db_session, db_engine
+):
+    """Progress updates should be called at the expected milestones (15, 35, 55, 70, 85, 95%)."""
+    asmt, inst, features, scan_results = _seed_assessment_for_report(db_session)
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="report")
+
+    handler_calls = [
+        c for c in mock_set_job.call_args_list
+        if c.kwargs.get("stage") == "report" and c.kwargs.get("status") == "running"
+    ]
+    progress_values = [c.kwargs.get("progress_percent") for c in handler_calls]
+    for expected_pct in [15, 35, 55, 70, 85, 95]:
+        assert expected_pct in progress_values, (
+            f"{expected_pct}% progress not found in {progress_values}"
+        )
+
+    # Final completion call
+    completion_calls = [
+        c for c in mock_set_job.call_args_list
+        if c.kwargs.get("status") == "completed"
+    ]
+    assert len(completion_calls) == 1, "Should have exactly one completion call"

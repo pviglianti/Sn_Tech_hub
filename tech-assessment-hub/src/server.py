@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 from sqlalchemy import func, desc, text, case, or_
+import collections
 import threading
 import time
 import os
@@ -1706,6 +1707,160 @@ def _run_assessment_pipeline_stage(
                 success_message = f"Review gate bypassed; marked {reviewed_count} result(s) as reviewed."
             else:
                 success_message = "Review gate satisfied."
+
+        elif stage == PipelineStage.report.value:
+            # --- Report: aggregate assessment data for final report ---
+
+            # 1. Gather assessment statistics
+            _set_assessment_pipeline_job_state(
+                assessment_id,
+                stage=stage,
+                status="running",
+                message="Gathering assessment statistics...",
+                progress_percent=15,
+            )
+
+            all_scan_results = session.exec(
+                select(ScanResult)
+                .join(Scan, ScanResult.scan_id == Scan.id)
+                .where(Scan.assessment_id == assessment_id)
+            ).all()
+
+            total_count = len(all_scan_results)
+            customized_count = sum(
+                1 for sr in all_scan_results
+                if sr.origin_type in list(_CUSTOMIZED_ORIGIN_VALUES)
+            )
+            table_counter = collections.Counter(sr.table_name for sr in all_scan_results if sr.table_name)
+            origin_counter = collections.Counter(sr.origin_type for sr in all_scan_results if sr.origin_type)
+
+            # 2. Gather feature data
+            _set_assessment_pipeline_job_state(
+                assessment_id,
+                stage=stage,
+                status="running",
+                message="Gathering feature data...",
+                progress_percent=35,
+            )
+
+            features = session.exec(
+                select(Feature).where(Feature.assessment_id == assessment_id)
+            ).all()
+            feature_count = len(features)
+            feat_disp_counter = collections.Counter(
+                (f.disposition.value if f.disposition else "unset") for f in features
+            )
+            ai_summary_count = sum(1 for f in features if f.ai_summary)
+            reco_count = sum(1 for f in features if f.recommendation)
+
+            # 3. Gather recommendation data
+            _set_assessment_pipeline_job_state(
+                assessment_id,
+                stage=stage,
+                status="running",
+                message="Gathering recommendation data...",
+                progress_percent=55,
+            )
+
+            gen_recs = session.exec(
+                select(GeneralRecommendation)
+                .where(GeneralRecommendation.assessment_id == assessment_id)
+            ).all()
+            gr_total = len(gen_recs)
+            gr_category_counter = collections.Counter(
+                (gr.category or "uncategorized") for gr in gen_recs
+            )
+
+            # 4. Gather review status
+            _set_assessment_pipeline_job_state(
+                assessment_id,
+                stage=stage,
+                status="running",
+                message="Gathering review status...",
+                progress_percent=70,
+            )
+
+            reviewed_count = sum(
+                1 for sr in all_scan_results
+                if sr.origin_type in list(_CUSTOMIZED_ORIGIN_VALUES)
+                and sr.review_status == ReviewStatus.reviewed
+            )
+            disp_counter = collections.Counter(
+                (sr.disposition.value if sr.disposition else "unset")
+                for sr in all_scan_results
+                if sr.origin_type in list(_CUSTOMIZED_ORIGIN_VALUES)
+            )
+
+            # 5. Build report data dict
+            _set_assessment_pipeline_job_state(
+                assessment_id,
+                stage=stage,
+                status="running",
+                message="Building report data...",
+                progress_percent=85,
+            )
+
+            instance = session.get(Instance, assessment.instance_id)
+
+            report_data = {
+                "assessment_name": assessment.name,
+                "assessment_number": assessment.number,
+                "instance_name": instance.name if instance else None,
+                "statistics": {
+                    "total_artifacts": total_count,
+                    "customized_artifacts": customized_count,
+                    "table_breakdown": dict(table_counter),
+                    "origin_breakdown": dict(origin_counter),
+                },
+                "features": {
+                    "total": feature_count,
+                    "disposition_distribution": dict(feat_disp_counter),
+                    "with_ai_summary": ai_summary_count,
+                    "with_recommendations": reco_count,
+                },
+                "review_status": {
+                    "reviewed": reviewed_count,
+                    "total_customized": customized_count,
+                    "disposition_distribution": dict(disp_counter),
+                },
+                "general_recommendations": {
+                    "total": gr_total,
+                    "by_category": dict(gr_category_counter),
+                },
+                "generated_at": datetime.utcnow().isoformat(),
+            }
+
+            # 6. Store as GeneralRecommendation (delete existing report first)
+            _set_assessment_pipeline_job_state(
+                assessment_id,
+                stage=stage,
+                status="running",
+                message="Storing report data...",
+                progress_percent=95,
+            )
+
+            existing_reports = session.exec(
+                select(GeneralRecommendation)
+                .where(GeneralRecommendation.assessment_id == assessment_id)
+                .where(GeneralRecommendation.category == "assessment_report")
+            ).all()
+            for old_report in existing_reports:
+                session.delete(old_report)
+
+            report_rec = GeneralRecommendation(
+                assessment_id=assessment_id,
+                title="Assessment Report Data",
+                category="assessment_report",
+                created_by="ai_pipeline",
+                description=json.dumps(report_data, sort_keys=True, indent=2),
+            )
+            session.add(report_rec)
+            session.commit()
+
+            success_message = (
+                f"Report stage completed: {customized_count} customized artifacts, "
+                f"{feature_count} feature(s), {gr_total} recommendation(s) summarized."
+            )
 
         next_stage = _PIPELINE_STAGE_AUTONEXT.get(stage)
         if next_stage:
