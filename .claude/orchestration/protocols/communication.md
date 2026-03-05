@@ -24,6 +24,7 @@ All inline updates in plan MD use:
 | `[FIX]` | Fixing issues from review/cross-test | Devs |
 | `[SIGN_OFF]` | Final approval | Anyone signing off |
 | `[FEEDBACK]` | Post-review feedback | Architect, PM |
+| `[ORCH_HEARTBEAT]` | Orchestrator monitor-loop heartbeat line | Orchestrator monitor loop |
 
 ## Channels
 

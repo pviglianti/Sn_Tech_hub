@@ -35,6 +35,7 @@ All launches should be streamable to `.jsonl` logs so Codex can steer in real ti
 Watcher runs are snapshot-based (one-shot): the orchestrator decides when to re-launch, and never tells the watcher to poll/wait.
 Optional scribe runs are also snapshot-based and never block build progress.
 Gate scripts enforce critical safety checks (bootstrap ACK coverage and target worktree/branch context for cross-tests).
+A persistent monitor loop (`orchestrator_monitor_loop.sh`) should run during Build/Cross-Test and write heartbeat/alerts to `orchestration_run/logs/orchestrator_heartbeat.log`.
 
 Model / reasoning guidance:
 - Architect stays on `opus` with highest reasoning (`--effort high` / ultrathink-equivalent).

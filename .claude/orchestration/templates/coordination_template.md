@@ -43,6 +43,7 @@ Record every backgrounded orchestration launch here before moving to the next st
 | Reviewer | sonnet | medium | — | orchestration_run/logs/reviewer_stream.jsonl | — | — |
 | Watcher (snapshot) | haiku | low | — | orchestration_run/logs/live_watch_*.jsonl | — | — |
 | Scribe (optional snapshot) | haiku | low | — | orchestration_run/logs/scribe_*.jsonl | — | — |
+| Orchestrator Monitor Loop | shell | n/a | — | orchestration_run/logs/orchestrator_heartbeat.log | — | — |
 
 ## Checkpoint Status
 

@@ -15,6 +15,7 @@ This is your copy-paste reference. Follow phases in order. Do NOT skip checkpoin
 9. **Memory hygiene:** Instruct Arch + PM to continuously consolidate their memory — remove duplicates, merge similar items, keep it under ~200 lines. All key points must survive but the file must not bloat.
 10. **Flexible Arch/PM usage:** Between phases, you can repurpose Architect for code review, testing assistance, or stepping in to help. They are your most capable agents — use them.
 11. **Record launch decisions.** For every backgrounded role, record the chosen model, effort, PID, and log file in `orchestration_run/coordination.md` before moving on.
+12. **Monitor loop is mandatory during Build/Cross-Test.** Run a persistent orchestrator heartbeat loop and treat stale heartbeat as a process failure.
 
 ## Model / Effort Triage
 
@@ -56,12 +57,17 @@ mkdir -p orchestration_run/logs
 cp .claude/orchestration/templates/project_plan_template.md orchestration_run/plan.md
 cp .claude/orchestration/templates/coordination_template.md orchestration_run/coordination.md
 cp .claude/orchestration/templates/findings_template.md orchestration_run/findings.md
+rm -f orchestration_run/.stop_monitor_loop
 
 # 5. Create feature branch
 git checkout -b feature/<name>
 
 # 6. Set team size once per run (must match plan + coordination)
 NUM_DEVS=2
+
+# 7. Monitor policy
+MONITOR_POLL_SECONDS=30
+MONITOR_STALL_SECONDS=300
 ```
 
 ---
@@ -282,11 +288,24 @@ fi
 ### Step 9: Monitor (orchestrator polling loop)
 
 ```bash
+# Start persistent monitor loop (mandatory during Build/Cross-Test)
+MONITOR_LOOP_SCRIPT="$PROJECT_ROOT/.claude/orchestration/scripts/orchestrator_monitor_loop.sh"
+"$MONITOR_LOOP_SCRIPT" \
+  "$PROJECT_ROOT" \
+  "$NUM_DEVS" \
+  "$MONITOR_POLL_SECONDS" \
+  "$MONITOR_STALL_SECONDS" \
+  > "$PROJECT_ROOT/orchestration_run/logs/orchestrator_monitor_stream.log" 2>&1 &
+MONITOR_PID=$!
+
 # Watch all streams
 tail -f orchestration_run/logs/*_stream.jsonl &
 
 # Watch findings
 tail -f orchestration_run/findings.md &
+
+# Watch orchestrator heartbeat
+tail -f orchestration_run/logs/orchestrator_heartbeat.log &
 
 # Check process health
 ps aux | grep claude
@@ -308,12 +327,14 @@ First `[DONE]` response gate (time-boxed to 2 minutes):
 - Launch watcher snapshot
 - Launch optional scribe snapshot (if enabled)
 - If any tester is idle, launch a rolling cross-test lane immediately (do NOT wait for all devs)
+- Verify `orchestration_run/logs/orchestrator_heartbeat.log` received a fresh heartbeat within 2x poll interval
 
 **Intervention triggers:**
 - Reviewer flags CRITICAL → tighten the dev prompt first; escalate model/effort only if the stream still shows misses
 - Dev stalled 5+ min → kill → relaunch with narrower prompt
 - Stream size not growing → check `wc -l orchestration_run/logs/*.jsonl`
 - Crosstester posts `[CROSS_TEST_BLOCKED]` → relaunch crosstester from correct target worktree/branch
+- Heartbeat stale (no new heartbeat for >2x poll interval) → restart monitor loop immediately, then re-check active launches
 
 Guardrail:
 - During Build phase, do not do unrelated housekeeping updates (for example todo journaling). Stay on monitoring, gating, nudges, and checkpoint progression.
@@ -334,6 +355,7 @@ This runs in parallel with remaining implementation work and reduces end-of-phas
 - [ ] Reviewer launched within 2 minutes of first `[DONE]`
 - [ ] Watcher snapshot launched within 2 minutes of first `[DONE]`
 - [ ] Rolling cross-test lane launched when tester is idle
+- [ ] Monitor heartbeat active (fresh line within 2x poll interval)
 
 ### CHECKPOINT 2 — Implementation Complete
 - [ ] All devs posted `[DONE]` with passing tests
@@ -457,18 +479,20 @@ Repeat until both sign off.
 
 ```bash
 # Prefer recorded PIDs from orchestration_run/coordination.md or your current shell.
+touch orchestration_run/.stop_monitor_loop
 for dev in $(seq 1 "$NUM_DEVS"); do
   eval "kill \${DEV_${dev}_PID:-} 2>/dev/null || true"
 done
 for pid_var in $(compgen -A variable | grep '^CROSSTEST_.*_PID$' || true); do
   kill "${!pid_var:-}" 2>/dev/null || true
 done
-kill "${WATCHER_PID:-}" "${SCRIBE_PID:-}" 2>/dev/null || true
+kill "${WATCHER_PID:-}" "${SCRIBE_PID:-}" "${MONITOR_PID:-}" 2>/dev/null || true
 
 # Fallback only if a PID was not recorded:
 pkill -f "claude.*dev_"
 pkill -f "claude.*live_watch"
 pkill -f "claude.*scribe"
+pkill -f "orchestrator_monitor_loop.sh"
 ```
 
 ### Step 13: Wait for reviewer to finish findings.md

@@ -46,6 +46,11 @@ watcher_relaunch_triggers:
   - findings_updated
   - suspected_stall
 
+monitor_loop_script: .claude/orchestration/scripts/orchestrator_monitor_loop.sh
+monitor_poll_seconds: 30
+monitor_stall_seconds: 300
+monitor_heartbeat_log: orchestration_run/logs/orchestrator_heartbeat.log
+
 scribe_enabled_default: false
 scribe_model: haiku
 scribe_effort: low

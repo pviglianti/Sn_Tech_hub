@@ -37,6 +37,7 @@ Formal phase transitions. The orchestrator MUST verify all gates before proceedi
 - [ ] Reviewer launched within 2 minutes of the first `[DONE]`
 - [ ] One-shot watcher snapshot launched within 2 minutes of the first `[DONE]`
 - [ ] If any tester is idle, at least one rolling cross-test lane launched
+- [ ] Orchestrator heartbeat fresh (`orchestration_run/logs/orchestrator_heartbeat.log` updated within 2x poll interval)
 
 **Action:** Keep Build active while cross-test/patch loops run in parallel.
 
@@ -99,5 +100,6 @@ Formal phase transitions. The orchestrator MUST verify all gates before proceedi
 - Skipping the ACK gate script before execution launch
 - Launching reviewer before any dev has completed work
 - Waiting for ALL devs to finish when an idle tester can start rolling cross-test earlier
+- Allowing monitor heartbeat to go stale (orchestrator effectively asleep)
 - Merging before ALL sign-offs are complete
 - Skipping memory-write at session end
