@@ -25,6 +25,7 @@ SECTION_PREFLIGHT = "Assessment / Preflight"
 SECTION_FETCH = "Integration / Fetch"
 SECTION_REASONING = "Reasoning / Engines"
 SECTION_OBSERVATIONS = "Observations"
+SECTION_AI_ANALYSIS = "AI Analysis"
 
 SECTION_ORDER: List[str] = [
     SECTION_GENERAL,
@@ -32,6 +33,7 @@ SECTION_ORDER: List[str] = [
     SECTION_FETCH,
     SECTION_REASONING,
     SECTION_OBSERVATIONS,
+    SECTION_AI_ANALYSIS,
 ]
 
 # ---------------------------------------------------------------------------
@@ -65,6 +67,10 @@ OBSERVATIONS_USAGE_LOOKBACK_MONTHS = "observations.usage_lookback_months"
 OBSERVATIONS_BATCH_SIZE = "observations.batch_size"
 OBSERVATIONS_INCLUDE_USAGE_QUERIES = "observations.include_usage_queries"
 OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT = "observations.max_usage_queries_per_result"
+
+# AI Analysis pipeline keys
+AI_ANALYSIS_BATCH_SIZE = "ai_analysis.batch_size"
+AI_ANALYSIS_CONTEXT_ENRICHMENT = "ai_analysis.context_enrichment"
 
 # Common IANA timezone choices for the select dropdown
 TIMEZONE_OPTIONS: List[Tuple[str, str]] = [
@@ -114,6 +120,13 @@ class ObservationProperties:
     batch_size: int = 10
     include_usage_queries: str = "auto"
     max_usage_queries_per_result: int = 2
+
+
+@dataclass(frozen=True)
+class AIAnalysisProperties:
+    """Typed AI analysis stage properties loaded from app_config."""
+    batch_size: int = 0  # 0 = all at once, 50+ for batching
+    context_enrichment: str = "auto"  # "auto", "always", "never"
 
 
 @dataclass(frozen=True)
@@ -173,6 +186,9 @@ PROPERTY_DEFAULTS: Dict[str, str] = {
     OBSERVATIONS_BATCH_SIZE: "10",
     OBSERVATIONS_INCLUDE_USAGE_QUERIES: "auto",
     OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT: "2",
+    # AI Analysis pipeline defaults
+    AI_ANALYSIS_BATCH_SIZE: "0",
+    AI_ANALYSIS_CONTEXT_ENRICHMENT: "auto",
 }
 
 PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
@@ -487,6 +503,41 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         section=SECTION_OBSERVATIONS,
         min_value=0,
         max_value=10,
+    ),
+    # ----- AI Analysis properties -----
+    AI_ANALYSIS_BATCH_SIZE: IntegrationPropertyDefinition(
+        key=AI_ANALYSIS_BATCH_SIZE,
+        label="AI Analysis Batch Size",
+        description=(
+            "Number of artifacts to process per AI analysis batch. "
+            "0 = all at once. Set to 50+ for large assessments."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[AI_ANALYSIS_BATCH_SIZE],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_analysis",
+        section=SECTION_AI_ANALYSIS,
+        min_value=0,
+        max_value=1000,
+    ),
+    AI_ANALYSIS_CONTEXT_ENRICHMENT: IntegrationPropertyDefinition(
+        key=AI_ANALYSIS_CONTEXT_ENRICHMENT,
+        label="Context Enrichment Mode",
+        description=(
+            "When to query ServiceNow for additional context. "
+            "auto = only when references detected and not cached locally. "
+            "always = query for every artifact. never = local data only."
+        ),
+        value_type="select",
+        default=PROPERTY_DEFAULTS[AI_ANALYSIS_CONTEXT_ENRICHMENT],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_analysis",
+        section=SECTION_AI_ANALYSIS,
+        options=[
+            ("auto", "Auto"),
+            ("always", "Always"),
+            ("never", "Never"),
+        ],
     ),
 }
 
@@ -811,4 +862,28 @@ def load_observation_properties(
             defaults.max_usage_queries_per_result,
             instance_id=instance_id,
         ),
+    )
+
+
+def load_ai_analysis_properties(
+    session: Session,
+    instance_id: Optional[int] = None,
+) -> AIAnalysisProperties:
+    """Load typed AI analysis properties from app_config."""
+    defaults = AIAnalysisProperties()
+    context_enrichment = (
+        _read_property(session, AI_ANALYSIS_CONTEXT_ENRICHMENT, instance_id=instance_id)
+        or PROPERTY_DEFAULTS[AI_ANALYSIS_CONTEXT_ENRICHMENT]
+    ).strip().lower()
+    if context_enrichment not in {"auto", "always", "never"}:
+        context_enrichment = defaults.context_enrichment
+
+    return AIAnalysisProperties(
+        batch_size=_get_int(
+            session,
+            AI_ANALYSIS_BATCH_SIZE,
+            defaults.batch_size,
+            instance_id=instance_id,
+        ),
+        context_enrichment=context_enrichment,
     )

@@ -225,3 +225,42 @@ def test_advance_pipeline_backwards_blocked_without_rerun(client, db_session):
         json={"target_stage": "ai_analysis"},
     )
     assert resp.status_code == 409, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Task 5 tests: AI Analysis properties (batch_size + context_enrichment)
+# ---------------------------------------------------------------------------
+
+def test_ai_analysis_batch_size_property_registered():
+    from src.services.integration_properties import (
+        AI_ANALYSIS_BATCH_SIZE,
+        SECTION_AI_ANALYSIS,
+        PROPERTY_DEFINITIONS,
+    )
+    assert AI_ANALYSIS_BATCH_SIZE == "ai_analysis.batch_size"
+    assert AI_ANALYSIS_BATCH_SIZE in PROPERTY_DEFINITIONS
+    defn = PROPERTY_DEFINITIONS[AI_ANALYSIS_BATCH_SIZE]
+    assert defn.section == SECTION_AI_ANALYSIS
+    assert defn.default == "0"
+
+
+def test_ai_analysis_context_enrichment_property_registered():
+    from src.services.integration_properties import (
+        AI_ANALYSIS_CONTEXT_ENRICHMENT,
+        PROPERTY_DEFINITIONS,
+    )
+    assert AI_ANALYSIS_CONTEXT_ENRICHMENT == "ai_analysis.context_enrichment"
+    assert AI_ANALYSIS_CONTEXT_ENRICHMENT in PROPERTY_DEFINITIONS
+    defn = PROPERTY_DEFINITIONS[AI_ANALYSIS_CONTEXT_ENRICHMENT]
+    assert defn.default == "auto"
+
+
+def test_load_ai_analysis_properties_defaults(db_session):
+    from src.services.integration_properties import (
+        load_ai_analysis_properties,
+        AIAnalysisProperties,
+    )
+    props = load_ai_analysis_properties(db_session)
+    assert isinstance(props, AIAnalysisProperties)
+    assert props.batch_size == 0
+    assert props.context_enrichment == "auto"
