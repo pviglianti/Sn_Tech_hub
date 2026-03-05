@@ -1,7 +1,7 @@
 # server.py - FastAPI Application
 
 from fastapi import FastAPI, Request, Depends, Form, HTTPException, Query, Body
-from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
@@ -109,6 +109,14 @@ import requests
 from urllib.parse import urlencode, urlparse
 
 logger = logging.getLogger(__name__)
+
+# Feature color palette — 20 deterministic colors for feature visualization
+FEATURE_COLORS = [
+    "#4A90D9", "#E67E22", "#2ECC71", "#E74C3C", "#9B59B6",
+    "#1ABC9C", "#F1C40F", "#3498DB", "#E91E63", "#00BCD4",
+    "#FF9800", "#8BC34A", "#795548", "#607D8B", "#FF5722",
+    "#673AB7", "#009688", "#CDDC39", "#F44336", "#2196F3",
+]
 
 @dataclass
 class _DataPullJob:
@@ -6258,6 +6266,7 @@ def _build_result_grouping_evidence_payload(session: Session, *, result_id: int)
                 "created_at": link.created_at.isoformat() if link.created_at else None,
                 "notes": link.notes,
                 "evidence": _safe_json(link.evidence_json, {}),
+                "feature_color_hex": FEATURE_COLORS[(feature.id or 0) % len(FEATURE_COLORS)] if feature.id else None,
             }
         )
         if feature.id is not None:
@@ -6379,6 +6388,7 @@ def _build_result_grouping_evidence_payload(session: Session, *, result_id: int)
                 "assignment_confidence": link.assignment_confidence,
                 "iteration_number": link.iteration_number,
                 "evidence": _safe_json(link.evidence_json, {}),
+                "feature_color_hex": FEATURE_COLORS[(feature.id or 0) % len(FEATURE_COLORS)] if feature.id else None,
             }
             if _is_customized_result(related_result):
                 if related_result.id in seen_customized_ids:
@@ -6400,6 +6410,7 @@ def _build_result_grouping_evidence_payload(session: Session, *, result_id: int)
                         "iteration_number": link.iteration_number,
                         "assignment_source": link.assignment_source,
                         "evidence": _safe_json(link.evidence_json, {}),
+                        "feature_color_hex": FEATURE_COLORS[(feature.id or 0) % len(FEATURE_COLORS)] if feature.id else None,
                     }
                 )
 
@@ -6425,6 +6436,7 @@ def _build_result_grouping_evidence_payload(session: Session, *, result_id: int)
                     "confidence": context.confidence,
                     "iteration_number": context.iteration_number,
                     "evidence": _safe_json(context.evidence_json, {}),
+                    "feature_color_hex": FEATURE_COLORS[(feature.id or 0) % len(FEATURE_COLORS)] if feature.id else None,
                 }
             )
 
@@ -9927,6 +9939,39 @@ async def api_scan_feature_hierarchy(
         assessment_id=scan.assessment_id,
         scan_id=scan_id,
     )
+
+
+@app.get("/api/assessments/{assessment_id}/feature-colors")
+async def api_assessment_feature_colors(
+    assessment_id: int,
+    session: Session = Depends(get_session),
+):
+    """Return features with their color assignments for UI rendering."""
+    assessment = session.get(Assessment, assessment_id)
+    if not assessment:
+        return JSONResponse({"error": "Assessment not found"}, status_code=404)
+
+    features = session.exec(
+        select(Feature).where(Feature.assessment_id == assessment_id)
+    ).all()
+
+    result = []
+    for feat in features:
+        member_count = session.exec(
+            select(func.count(FeatureScanResult.id))
+            .where(FeatureScanResult.feature_id == feat.id)
+        ).one()
+        color_hex = FEATURE_COLORS[(feat.id or 0) % len(FEATURE_COLORS)]
+        result.append({
+            "feature_id": feat.id,
+            "feature_name": feat.name,
+            "color_hex": color_hex,
+            "color_index": (feat.id or 0) % len(FEATURE_COLORS),
+            "member_count": member_count,
+            "disposition": feat.disposition.value if feat.disposition else None,
+        })
+
+    return {"features": result, "palette": FEATURE_COLORS}
 
 
 @app.get("/api/features/{feature_id}/recommendations")

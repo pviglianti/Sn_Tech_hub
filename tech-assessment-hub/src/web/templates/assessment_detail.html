@@ -627,6 +627,7 @@
                     <span class="table-spinner"></span>
                 </div>
                 <div id="featureTreeMeta" class="filter-meta muted" style="margin-bottom: 0.5rem;">Loading features...</div>
+                <div id="featureColorLegend" class="feature-color-legend" style="display:none;"></div>
                 <div id="featureTreeContainer"></div>
             </div>
             <div class="is-hidden" id="featureTreeEmpty">
@@ -1464,6 +1465,27 @@ var featureTree = new FeatureHierarchyTree({
 });
 let _featuresLoaded = false;
 
+function loadFeatureColorLegend() {
+    fetch('/api/assessments/' + assessmentId + '/feature-colors', { cache: 'no-store' })
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(data) {
+            if (!data || !data.features || !data.features.length) return;
+            var container = document.getElementById('featureColorLegend');
+            if (!container) return;
+            var html = '';
+            data.features.forEach(function(f) {
+                html += '<div class="feature-color-legend-item">';
+                html += '<span class="feature-color-dot" style="background:' + f.color_hex + '"></span>';
+                html += '<span>' + f.feature_name + '</span>';
+                html += '<span class="member-count">(' + f.member_count + ')</span>';
+                html += '</div>';
+            });
+            container.innerHTML = html;
+            container.style.display = 'flex';
+        })
+        .catch(function() {});
+}
+
 // ── Grouping Signals Panel ──────────────────────────────────────────
 var signalsPanel = new GroupingSignalsPanel({
     containerId: 'groupingSignalsContainer',
@@ -1540,6 +1562,7 @@ document.addEventListener('tab:activated', function(e) {
     if (e.detail.tabName === 'features' && !_featuresLoaded) {
         _featuresLoaded = true;
         featureTree.refresh();
+        loadFeatureColorLegend();
     }
     if (e.detail.tabName === 'grouping-signals' && !_signalsLoaded) {
         _signalsLoaded = true;

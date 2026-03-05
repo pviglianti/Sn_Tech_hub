@@ -629,6 +629,9 @@ class Feature(SQLModel, table=True):
     date_range_end: Optional[datetime] = None
     pass_number: Optional[int] = None
 
+    # ---- Visual styling ----
+    color_index: Optional[int] = None
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
