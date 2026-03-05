@@ -39,10 +39,17 @@ crosstester_escalation_effort: medium
 
 watcher_model: haiku
 watcher_effort: low
+watcher_mode: one_shot
+watcher_snapshot_interval_minutes: 10
+watcher_relaunch_triggers:
+  - first_done
+  - findings_updated
+  - suspected_stall
 ui_tester_model: sonnet
 ui_tester_effort: low
 bootstrap_model: haiku
 bootstrap_effort: low
+bootstrap_ack_gate_script: .claude/orchestration/scripts/require_bootstrap_ack.sh
 
 escalation_model: opus
 escalation_effort: high

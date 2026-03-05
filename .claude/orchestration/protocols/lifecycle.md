@@ -25,7 +25,7 @@ Phase 6: MEMORY      → Arch+PM write session memory, verify all orchestration 
 | Dev (cross-test) | After review | Test results | `[CROSS_TEST_PASS/FAIL]` | New `-p` if re-verify needed |
 | Dev (patch) | When issues found | Fix in worktree | `[FIX]` posted | New `-p` if fix rejected |
 | Code Reviewer | After first `[DONE]` | `findings.md` | Findings delivered | No — single run |
-| Live Watcher | With reviewer | Actionable items | Phase 4 (workers down) | No — single run |
+| Live Watcher | After first `[DONE]` and on monitor triggers | Snapshot of actionable items | Each snapshot exits immediately | YES — one-shot relaunches by orchestrator |
 
 ## Deliver Then Die
 
@@ -35,7 +35,7 @@ Every role runs as a fresh `claude -p` call, produces its deliverable, and exits
 
 ## Spindown Order
 
-1. Phase 4 step 2: Kill devs, cross-testers, live watcher; verify recorded PIDs are gone
+1. Phase 4 step 2: Kill devs and cross-testers; if a watcher snapshot is still running, kill it too. Verify recorded PIDs are gone.
 2. Phase 4 step 5: Kill Reviewer after findings.md complete
 3. Phase 5: No worker process remains alive while orchestrator merges/tests/commits
 4. Phase 6: Arch + PM re-launch for memory writes if needed
@@ -47,6 +47,7 @@ The orchestrator is the ONLY thing that polls. Agents NEVER poll or wait.
 
 **Pattern:**
 - Orchestrator watches streams (`tail -f`)
+- Orchestrator re-launches watcher snapshots when trigger conditions are hit
 - Orchestrator detects when an agent should act
 - Orchestrator sends prompt/nudge to that agent
 - Agent does work, posts output, stops

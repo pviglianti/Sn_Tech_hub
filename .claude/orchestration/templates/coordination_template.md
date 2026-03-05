@@ -46,7 +46,7 @@ Record every backgrounded orchestration launch here before moving to the next st
 | Checkpoint | Gate | Status | Passed At |
 |-----------|------|--------|-----------|
 | 0 — Plan Locked | Plan + coordination exist | [ ] | — |
-| 1 — Devs Launched | All ACKs received | [ ] | — |
+| 1 — Bootstrap ACK Complete | All ACKs + gate script passed | [ ] | — |
 | 2 — Implementation Complete | All [DONE] + reviewed | [ ] | — |
 | 3 — Cross-Test Complete | All sign-offs | [ ] | — |
 | 4 — Feedback Complete | Arch+PM feedback posted | [ ] | — |

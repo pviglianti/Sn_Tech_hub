@@ -19,6 +19,7 @@ Orchestrator (Codex)
   ├── Creates worktrees (1 per dev)
   ├── Launches Devs in parallel → implement in worktrees
   ├── Launches Reviewer after first [DONE] → constrained reviewer
+  ├── Launches one-shot watcher snapshots on monitor triggers
   ├── Re-launches Devs as cross-testers
   ├── Sends findings to Arch + PM for feedback
   ├── Merges worktrees → runs full tests → commits
@@ -30,6 +31,7 @@ Shared orchestration docs live only in the ROOT `orchestration_run/` directory. 
 Architect and PM do not require open tabs between prompts. They are re-launched as fresh `claude -p` runs, with continuity carried by shared docs and memory files.
 
 All launches should be streamable to `.jsonl` logs so Codex can steer in real time.
+Watcher runs are snapshot-based (one-shot): the orchestrator decides when to re-launch, and never tells the watcher to poll/wait.
 
 Model / reasoning guidance:
 - Architect stays on `opus` with highest reasoning (`--effort high` / ultrathink-equivalent).
@@ -44,6 +46,7 @@ Model / reasoning guidance:
 ├── README.md           ← you are here
 ├── config.md           ← team size, models, paths, tool restrictions
 ├── playbook.md         ← step-by-step for the orchestrator
+├── scripts/            ← helper gates (for example bootstrap ACK enforcement)
 ├── roles/              ← self-contained prompts for each agent
 ├── protocols/          ← communication, checkpoints, lifecycle
 └── templates/          ← blank docs copied into each run

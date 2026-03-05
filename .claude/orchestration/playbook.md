@@ -9,11 +9,12 @@ This is your copy-paste reference. Follow phases in order. Do NOT skip checkpoin
 3. **You are the event loop.** Agents never poll — you watch streams and nudge them.
 4. **Every launch should be streamable.** Default to `stream-json` logs for Architect, PM, devs, reviewer, cross-testers, feedback, and memory writes.
 5. **Deliver then die.** Workers produce output and exit. Architect + PM persist through memory files and shared docs, not open tabs.
-6. **Steer before you escalate.** Since the run is streamed, tighten the prompt first. Raise model/effort only when the stream shows the current tier is not enough.
-7. **Arch + PM own memory.** They absorb reviewer findings, refactor their memory files to stay compact, and carry context forward. Before planning the next round, they account for all issues/findings from previous phases.
-8. **Memory hygiene:** Instruct Arch + PM to continuously consolidate their memory — remove duplicates, merge similar items, keep it under ~200 lines. All key points must survive but the file must not bloat.
-9. **Flexible Arch/PM usage:** Between phases, you can repurpose Architect for code review, testing assistance, or stepping in to help. They are your most capable agents — use them.
-10. **Record launch decisions.** For every backgrounded role, record the chosen model, effort, PID, and log file in `orchestration_run/coordination.md` before moving on.
+6. **Live watcher is snapshot-based.** Each watcher run is one-shot; orchestrator re-launches snapshots on triggers.
+7. **Steer before you escalate.** Since the run is streamed, tighten the prompt first. Raise model/effort only when the stream shows the current tier is not enough.
+8. **Arch + PM own memory.** They absorb reviewer findings, refactor their memory files to stay compact, and carry context forward. Before planning the next round, they account for all issues/findings from previous phases.
+9. **Memory hygiene:** Instruct Arch + PM to continuously consolidate their memory — remove duplicates, merge similar items, keep it under ~200 lines. All key points must survive but the file must not bloat.
+10. **Flexible Arch/PM usage:** Between phases, you can repurpose Architect for code review, testing assistance, or stepping in to help. They are your most capable agents — use them.
+11. **Record launch decisions.** For every backgrounded role, record the chosen model, effort, PID, and log file in `orchestration_run/coordination.md` before moving on.
 
 ## Model / Effort Triage
 
@@ -148,9 +149,20 @@ claude -p --verbose --model haiku --effort low \
 
 **Wait for:** `[ACK]` in each dev's notes section.
 
-### CHECKPOINT 1 — Devs Launched
+### CHECKPOINT 1 — Bootstrap ACK Complete
 - [ ] All worktrees created
 - [ ] All dev ACKs received
+
+Run the hard gate script before launching Step 6:
+
+```bash
+# Usage: require_bootstrap_ack.sh <plan_path> <expected_dev_count>
+$PROJECT_ROOT/.claude/orchestration/scripts/require_bootstrap_ack.sh \
+  "$PROJECT_ROOT/orchestration_run/plan.md" \
+  2
+```
+
+If the script exits non-zero, do NOT launch execution prompts yet.
 
 ### Step 6: Launch dev execution prompts (streamed, parallel)
 
@@ -228,11 +240,15 @@ FINDINGS OUTPUT: $PROJECT_ROOT/orchestration_run/findings.md" \
 REVIEWER_PID=$!
 ```
 
-### Step 8: Launch Live Watcher (streamed, read-only)
+### Step 8: Launch Watcher Snapshot (streamed, read-only, one-shot)
+
+Use the same trigger as reviewer launch (after first `[DONE]`).
+This run is a snapshot and exits. Re-launch on triggers in Step 9.
 
 ```bash
 WATCHER_MODEL=haiku
 WATCHER_EFFORT=low
+WATCH_TS=$(date +%Y%m%d_%H%M%S)
 
 claude -p --verbose --model "$WATCHER_MODEL" --effort "$WATCHER_EFFORT" \
   --dangerously-skip-permissions --disable-slash-commands \
@@ -242,8 +258,9 @@ claude -p --verbose --model "$WATCHER_MODEL" --effort "$WATCHER_EFFORT" \
 - orchestration_run/findings.md (reviewer findings as written)
 - orchestration_run/plan.md (status changes)
 Return top 5 commit-readiness actions with exact file paths.
+Do NOT wait or poll. Exit after posting one snapshot.
 Only run: git status --short, git diff --stat in worktrees." \
-  > orchestration_run/logs/live_watch_stream.jsonl 2>&1 &
+  > "orchestration_run/logs/live_watch_${WATCH_TS}.jsonl" 2>&1 &
 WATCHER_PID=$!
 ```
 
@@ -264,10 +281,19 @@ git -C .worktrees/dev_1 status --short
 git -C .worktrees/dev_2 status --short
 ```
 
+Watcher re-launch policy (snapshot runs):
+- Relaunch after first `[DONE]` (if not already run)
+- Relaunch when reviewer updates `findings.md`
+- Relaunch when stall is suspected (no stream growth, no status updates)
+- Relaunch every 10 minutes while dev execution is active
+
 **Intervention triggers:**
 - Reviewer flags CRITICAL → tighten the dev prompt first; escalate model/effort only if the stream still shows misses
 - Dev stalled 5+ min → kill → relaunch with narrower prompt
 - Stream size not growing → check `wc -l orchestration_run/logs/*.jsonl`
+
+Guardrail:
+- During Build phase, do not do unrelated housekeeping updates (for example todo journaling). Stay on monitoring, gating, nudges, and checkpoint progression.
 
 ### CHECKPOINT 2 — Implementation Complete
 - [ ] All devs posted `[DONE]` with passing tests

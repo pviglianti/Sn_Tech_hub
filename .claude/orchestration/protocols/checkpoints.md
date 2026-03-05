@@ -18,13 +18,14 @@ Formal phase transitions. The orchestrator MUST verify all gates before proceedi
 
 ---
 
-## Checkpoint 1 — Devs Launched
+## Checkpoint 1 — Bootstrap ACK Complete
 
 **Gate:**
 - [ ] All worktrees created (1 per dev)
 - [ ] All dev bootstrap ACKs received (`[ACK]` in plan MD)
+- [ ] ACK gate script passed (`.claude/orchestration/scripts/require_bootstrap_ack.sh orchestration_run/plan.md <num_devs>`)
 
-**Action:** Orchestrator sends execution prompts. After the first dev posts `[DONE]`, launch reviewer + live watcher.
+**Action:** Orchestrator sends execution prompts. After the first dev posts `[DONE]`, launch reviewer + one-shot watcher snapshot.
 
 **Unblocks:** Build phase
 
@@ -82,6 +83,7 @@ Formal phase transitions. The orchestrator MUST verify all gates before proceedi
 ## Anti-Patterns
 
 - Launching devs before Checkpoint 0 passes
+- Skipping the ACK gate script before execution launch
 - Launching reviewer before any dev has completed work
 - Proceeding to cross-test before ALL devs are done
 - Merging before ALL sign-offs are complete
