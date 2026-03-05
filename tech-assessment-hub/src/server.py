@@ -77,6 +77,8 @@ from .seed_data import run_seed
 from .mcp.server import handle_request as handle_mcp_request
 from .mcp.tools.pipeline.run_engines import handle as run_preprocessing_engines_handle
 from .mcp.tools.pipeline.seed_feature_groups import handle as seed_feature_groups_handle
+from .services.relationship_graph import build_relationship_graph
+from .services.depth_first_analyzer import run_depth_first_analysis
 from .mcp.tools.pipeline.run_feature_reasoning import handle as run_feature_reasoning_handle
 from .mcp.tools.pipeline.generate_observations import handle as generate_observations_handle
 from .mcp.bridge import (
@@ -104,7 +106,7 @@ from .web.routes.customizations import customizations_router
 from .web.routes.pulls import create_pulls_router
 import json
 import requests
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -1589,135 +1591,189 @@ def _run_assessment_pipeline_stage(
             pipeline_prompt_props = load_pipeline_prompt_properties(session, instance_id=assessment.instance_id)
             instance_id = assessment.instance_id
 
-            # Query customized ScanResults via Scan -> ScanResult join
-            customized = session.exec(
-                select(ScanResult)
-                .join(Scan, ScanResult.scan_id == Scan.id)
-                .where(Scan.assessment_id == assessment_id)
-                .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
-                .order_by(ScanResult.id.asc())
-            ).all()
+            if ai_props.analysis_mode == "depth_first":
+                # --- Depth-first relationship-driven analysis ---
+                graph = build_relationship_graph(session, assessment_id)
 
-            total = len(customized)
-            phase_progress = start_phase_progress(
-                session,
-                assessment_id,
-                stage,
-                total_items=total,
-                allow_resume=True,
-                checkpoint={"total_items": total},
-                commit=False,
-            )
-            resume_from = min(max(0, int(phase_progress.resume_from_index or 0)), total)
-            analyzed_count = 0
-            if total == 0:
-                success_message = "AI Analysis stage completed (0 customized artifacts found)."
-                complete_phase_progress(
-                    session,
-                    assessment_id,
-                    stage,
-                    checkpoint={"completed_items": 0, "resume_from_index": 0},
-                    commit=False,
-                )
-            elif resume_from >= total:
-                success_message = (
-                    f"AI Analysis stage already complete ({total}/{total} customized artifacts analyzed)."
-                )
-                complete_phase_progress(
-                    session,
-                    assessment_id,
-                    stage,
-                    checkpoint={"completed_items": total, "resume_from_index": total},
-                    commit=False,
-                )
-            else:
-                for i, sr in enumerate(customized[resume_from:], start=resume_from):
-                    # Gather context via the contextual lookup service.
-                    # Keep this baseline JSON shape stable for downstream stages/tests.
-                    ctx = gather_artifact_context(
-                        session, instance_id, sr.id, ai_props.context_enrichment
-                    )
-
-                    references = ctx.get("references") or []
-                    human_ctx = ctx.get("human_context") or {}
-                    artifact_info = ctx.get("artifact") or {}
-
-                    human_context_present = bool(
-                        human_ctx.get("observations")
-                        or human_ctx.get("disposition")
-                        or human_ctx.get("features")
-                    )
-
-                    analysis_result = {
-                        "artifact_name": artifact_info.get("name") or sr.name,
-                        "artifact_table": artifact_info.get("table_name") or sr.table_name,
-                        "context_enrichment_mode": ai_props.context_enrichment,
-                        "references_found": sum(1 for r in references if r.get("resolved")),
-                        "has_local_data": ctx.get("has_local_table_data", False),
-                        "human_context_present": human_context_present,
-                        "update_sets_count": len(ctx.get("update_sets") or []),
-                    }
-
-                    if pipeline_prompt_props.use_registered_prompts:
-                        prompt_text, prompt_error = _try_registered_prompt_text(
-                            session,
-                            prompt_name="artifact_analyzer",
-                            arguments={
-                                "result_id": str(sr.id),
-                                "assessment_id": str(assessment_id),
-                            },
-                        )
-                        if prompt_text:
-                            analysis_result["registered_prompt"] = "artifact_analyzer"
-                            analysis_result["prompt_context"] = prompt_text
-                        if prompt_error:
-                            analysis_result["registered_prompt_error"] = prompt_error
-
-                    sr.ai_observations = json.dumps(analysis_result, sort_keys=True)
-                    session.add(sr)
-                    analyzed_count += 1
-
+                def dfs_checkpoint_cb(visited_count, total, checkpoint_data):
                     checkpoint_phase_progress(
-                        session,
-                        assessment_id,
-                        stage,
-                        completed_items=i + 1,
-                        last_item_id=int(sr.id) if sr.id is not None else None,
-                        status="running",
-                        checkpoint={
-                            "resume_from_index": i + 1,
-                            "last_item_name": sr.name,
-                            "context_enrichment": ai_props.context_enrichment,
-                        },
-                        commit=False,
+                        session, assessment_id, stage,
+                        completed_items=visited_count, total_items=total,
+                        status="running", checkpoint=checkpoint_data, commit=False,
                     )
                     session.commit()
 
-                    # Update progress
-                    progress = 15 + int((i + 1) / total * 80)
+                def dfs_progress_cb(visited_count, total, message):
+                    progress = 15 + int(visited_count / max(total, 1) * 80)
                     _set_assessment_pipeline_job_state(
-                        assessment_id,
-                        stage=stage,
-                        status="running",
-                        message=f"Analyzing artifact {i + 1}/{total}...",
-                        progress_percent=progress,
+                        assessment_id, stage=stage, status="running",
+                        message=message, progress_percent=progress,
                     )
 
+                result = run_depth_first_analysis(
+                    session, assessment_id, instance_id, graph,
+                    max_rabbit_hole_depth=ai_props.max_rabbit_hole_depth,
+                    max_neighbors_per_hop=ai_props.max_neighbors_per_hop,
+                    min_edge_weight=ai_props.min_edge_weight_for_traversal,
+                    context_enrichment=ai_props.context_enrichment,
+                    use_registered_prompts=pipeline_prompt_props.use_registered_prompts,
+                    checkpoint_callback=dfs_checkpoint_cb,
+                    progress_callback=dfs_progress_cb,
+                )
+
                 complete_phase_progress(
-                    session,
-                    assessment_id,
-                    stage,
-                    checkpoint={"completed_items": total, "resume_from_index": total},
+                    session, assessment_id, stage,
+                    checkpoint={
+                        "mode": "depth_first",
+                        "analyzed": result.analyzed,
+                        "features_created": result.features_created,
+                        "features_updated": result.features_updated,
+                        "total_customized": result.total_customized,
+                    },
                     commit=False,
                 )
                 success_message = (
-                    f"AI Analysis stage completed ({resume_from + analyzed_count}/{total} customized artifacts analyzed)."
+                    f"Depth-first analysis complete: {result.analyzed}/{result.total_customized} artifacts, "
+                    f"{result.features_created} features created, {result.features_updated} updated"
                 )
-            telemetry_details["ai_analysis"] = {
-                "customized_total": total,
-                "resume_from_index": resume_from,
-                "analyzed_count": analyzed_count,
-            }
+                telemetry_details["ai_analysis"] = {
+                    "mode": "depth_first",
+                    "customized_total": result.total_customized,
+                    "analyzed_count": result.analyzed,
+                    "features_created": result.features_created,
+                    "features_updated": result.features_updated,
+                }
+            else:
+                # --- Sequential analysis (default) ---
+                # Query customized ScanResults via Scan -> ScanResult join
+                customized = session.exec(
+                    select(ScanResult)
+                    .join(Scan, ScanResult.scan_id == Scan.id)
+                    .where(Scan.assessment_id == assessment_id)
+                    .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
+                    .order_by(ScanResult.id.asc())
+                ).all()
+
+                total = len(customized)
+                phase_progress = start_phase_progress(
+                    session,
+                    assessment_id,
+                    stage,
+                    total_items=total,
+                    allow_resume=True,
+                    checkpoint={"total_items": total},
+                    commit=False,
+                )
+                resume_from = min(max(0, int(phase_progress.resume_from_index or 0)), total)
+                analyzed_count = 0
+                if total == 0:
+                    success_message = "AI Analysis stage completed (0 customized artifacts found)."
+                    complete_phase_progress(
+                        session,
+                        assessment_id,
+                        stage,
+                        checkpoint={"completed_items": 0, "resume_from_index": 0},
+                        commit=False,
+                    )
+                elif resume_from >= total:
+                    success_message = (
+                        f"AI Analysis stage already complete ({total}/{total} customized artifacts analyzed)."
+                    )
+                    complete_phase_progress(
+                        session,
+                        assessment_id,
+                        stage,
+                        checkpoint={"completed_items": total, "resume_from_index": total},
+                        commit=False,
+                    )
+                else:
+                    for i, sr in enumerate(customized[resume_from:], start=resume_from):
+                        # Gather context via the contextual lookup service.
+                        # Keep this baseline JSON shape stable for downstream stages/tests.
+                        ctx = gather_artifact_context(
+                            session, instance_id, sr.id, ai_props.context_enrichment
+                        )
+
+                        references = ctx.get("references") or []
+                        human_ctx = ctx.get("human_context") or {}
+                        artifact_info = ctx.get("artifact") or {}
+
+                        human_context_present = bool(
+                            human_ctx.get("observations")
+                            or human_ctx.get("disposition")
+                            or human_ctx.get("features")
+                        )
+
+                        analysis_result = {
+                            "artifact_name": artifact_info.get("name") or sr.name,
+                            "artifact_table": artifact_info.get("table_name") or sr.table_name,
+                            "context_enrichment_mode": ai_props.context_enrichment,
+                            "references_found": sum(1 for r in references if r.get("resolved")),
+                            "has_local_data": ctx.get("has_local_table_data", False),
+                            "human_context_present": human_context_present,
+                            "update_sets_count": len(ctx.get("update_sets") or []),
+                        }
+
+                        if pipeline_prompt_props.use_registered_prompts:
+                            prompt_text, prompt_error = _try_registered_prompt_text(
+                                session,
+                                prompt_name="artifact_analyzer",
+                                arguments={
+                                    "result_id": str(sr.id),
+                                    "assessment_id": str(assessment_id),
+                                },
+                            )
+                            if prompt_text:
+                                analysis_result["registered_prompt"] = "artifact_analyzer"
+                                analysis_result["prompt_context"] = prompt_text
+                            if prompt_error:
+                                analysis_result["registered_prompt_error"] = prompt_error
+
+                        sr.ai_observations = json.dumps(analysis_result, sort_keys=True)
+                        session.add(sr)
+                        analyzed_count += 1
+
+                        checkpoint_phase_progress(
+                            session,
+                            assessment_id,
+                            stage,
+                            completed_items=i + 1,
+                            last_item_id=int(sr.id) if sr.id is not None else None,
+                            status="running",
+                            checkpoint={
+                                "resume_from_index": i + 1,
+                                "last_item_name": sr.name,
+                                "context_enrichment": ai_props.context_enrichment,
+                            },
+                            commit=False,
+                        )
+                        session.commit()
+
+                        # Update progress
+                        progress = 15 + int((i + 1) / total * 80)
+                        _set_assessment_pipeline_job_state(
+                            assessment_id,
+                            stage=stage,
+                            status="running",
+                            message=f"Analyzing artifact {i + 1}/{total}...",
+                            progress_percent=progress,
+                        )
+
+                    complete_phase_progress(
+                        session,
+                        assessment_id,
+                        stage,
+                        checkpoint={"completed_items": total, "resume_from_index": total},
+                        commit=False,
+                    )
+                    success_message = (
+                        f"AI Analysis stage completed ({resume_from + analyzed_count}/{total} customized artifacts analyzed)."
+                    )
+                telemetry_details["ai_analysis"] = {
+                    "customized_total": total,
+                    "resume_from_index": resume_from,
+                    "analyzed_count": analyzed_count,
+                }
 
         elif stage == PipelineStage.engines.value:
             start_phase_progress(
@@ -1825,6 +1881,9 @@ def _run_assessment_pipeline_stage(
             }
 
         elif stage == PipelineStage.grouping.value:
+            # Load AI analysis properties to check mode
+            ai_props_grouping = load_ai_analysis_properties(session, instance_id=assessment.instance_id)
+
             phase_progress = start_phase_progress(
                 session,
                 assessment_id,
@@ -1836,7 +1895,13 @@ def _run_assessment_pipeline_stage(
             )
             if skip_review:
                 _mark_remaining_customizations_reviewed(session, assessment_id)
-            result = seed_feature_groups_handle({"assessment_id": assessment_id}, session)
+
+            # In depth-first mode, features already exist -- run in merge mode (don't reset)
+            grouping_params = {"assessment_id": assessment_id}
+            if ai_props_grouping.analysis_mode == "depth_first":
+                grouping_params["reset_existing"] = False
+
+            result = seed_feature_groups_handle(grouping_params, session)
             if not result.get("success"):
                 raise RuntimeError(result.get("error") or "Feature grouping failed.")
             features_created = int(result.get("features_created") or 0)
@@ -3971,6 +4036,7 @@ _GRAPH_EDGE_LABELS: Dict[str, str] = {
     "feature_member": "Feature Member",
     "feature_context": "Feature Context",
     "table_member": "Table Member",
+    "dev_chain": "Development Chain",
 }
 
 def _graph_result_node_id(result_id: int) -> str:
@@ -3983,6 +4049,150 @@ def _graph_feature_node_id(feature_id: int) -> str:
 
 def _graph_table_node_id(table_name: str) -> str:
     return f"table:{table_name}"
+
+
+def _graph_dev_node_id(kind: str, record_id: int) -> str:
+    return f"dev:{kind}:{record_id}"
+
+
+def _build_url(path: str, params: Optional[Dict[str, Any]] = None) -> str:
+    if not params:
+        return path
+    filtered: Dict[str, Any] = {}
+    for key, value in params.items():
+        if value is None:
+            continue
+        text = str(value).strip() if isinstance(value, str) else value
+        if text == "":
+            continue
+        filtered[key] = value
+    if not filtered:
+        return path
+    return f"{path}?{urlencode(filtered)}"
+
+
+def _graph_browse_table_url(
+    *,
+    table_name: Optional[str],
+    instance_id: Optional[int],
+    assessment_id: Optional[int] = None,
+) -> Optional[str]:
+    if not table_name or instance_id is None:
+        return None
+    return _build_url(
+        f"/browse/{table_name}",
+        {
+            "instance_id": instance_id,
+            "assessment_id": assessment_id,
+        },
+    )
+
+
+def _graph_browse_record_url(
+    *,
+    table_name: Optional[str],
+    sys_id: Optional[str],
+    instance_id: Optional[int],
+) -> Optional[str]:
+    if not table_name or not sys_id or instance_id is None:
+        return None
+    return _build_url(
+        f"/browse/{table_name}/record/{sys_id}",
+        {"instance_id": instance_id},
+    )
+
+
+def _graph_result_links(
+    *,
+    result_id: Optional[int],
+    assessment_id: Optional[int],
+    instance_id: Optional[int],
+    scan_id: Optional[int],
+    table_name: Optional[str],
+    sys_id: Optional[str],
+) -> Dict[str, str]:
+    links: Dict[str, str] = {}
+    if result_id is not None:
+        links["result"] = f"/results/{result_id}"
+        links["graph"] = _build_url(
+            "/relationship-graph",
+            {
+                "result_id": result_id,
+                "assessment_id": assessment_id,
+                "instance_id": instance_id,
+                "scan_id": scan_id,
+            },
+        )
+    if assessment_id is not None:
+        links["assessment"] = f"/assessments/{assessment_id}"
+    artifact_record_url = _graph_browse_record_url(
+        table_name=table_name,
+        sys_id=sys_id,
+        instance_id=instance_id,
+    )
+    if artifact_record_url:
+        links["artifact_record"] = artifact_record_url
+    artifact_table_url = _graph_browse_table_url(
+        table_name=table_name,
+        instance_id=instance_id,
+        assessment_id=assessment_id,
+    )
+    if artifact_table_url:
+        links["artifact_table"] = artifact_table_url
+    return links
+
+
+def _graph_feature_links(
+    *,
+    feature_id: Optional[int],
+    assessment_id: Optional[int],
+    instance_id: Optional[int],
+    scan_id: Optional[int],
+) -> Dict[str, str]:
+    links: Dict[str, str] = {}
+    if feature_id is not None:
+        links["graph"] = _build_url(
+            "/relationship-graph",
+            {
+                "feature_id": feature_id,
+                "assessment_id": assessment_id,
+                "instance_id": instance_id,
+                "scan_id": scan_id,
+            },
+        )
+    if assessment_id is not None:
+        links["assessment"] = f"/assessments/{assessment_id}"
+    return links
+
+
+def _graph_table_links(
+    *,
+    table_name: Optional[str],
+    assessment_id: Optional[int],
+    instance_id: Optional[int],
+    scan_id: Optional[int],
+) -> Dict[str, str]:
+    links: Dict[str, str] = {}
+    table_url = _graph_browse_table_url(
+        table_name=table_name,
+        instance_id=instance_id,
+        assessment_id=assessment_id,
+    )
+    if table_url:
+        links["table"] = table_url
+    if table_name:
+        links["graph"] = _build_url(
+            "/relationship-graph",
+            {
+                "table_name": table_name,
+                "assessment_id": assessment_id,
+                "instance_id": instance_id,
+                "scan_id": scan_id,
+            },
+        )
+    if assessment_id is not None:
+        links["assessment"] = f"/assessments/{assessment_id}"
+    return links
 
 
 _SYS_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
@@ -4289,6 +4499,7 @@ def _build_graph_artifact_node_payload(
     return {
         "id": _graph_result_node_id(int(result.id or 0)),
         "node_type": "artifact",
+        "artifact_kind": "scan_result",
         "result_id": result.id,
         "scan_id": result.scan_id,
         "assessment_id": assessment_id,
@@ -4303,6 +4514,14 @@ def _build_graph_artifact_node_payload(
         "feature_ids": feature_ids,
         "feature_names": feature_names,
         "feature_refs": refs,
+        "links": _graph_result_links(
+            result_id=result.id,
+            assessment_id=assessment_id,
+            instance_id=instance_id,
+            scan_id=result.scan_id,
+            table_name=result.table_name,
+            sys_id=result.sys_id,
+        ),
     }
 
 
@@ -4527,6 +4746,460 @@ def _append_graph_intragroup_edges(
                         detail=f"Dictionary entry for table {table_name}",
                         metadata={"table_name": table_name},
                     )
+
+
+def _graph_data_browser_record_url(*, instance_id: int, data_type: DataPullType, record_id: int) -> str:
+    return (
+        f"/data-browser/record?instance_id={instance_id}"
+        f"&data_type={data_type.value}&record_id={record_id}"
+    )
+
+
+def _resolve_related_customer_update_for_result(
+    session: Session,
+    *,
+    result: ScanResult,
+    instance_id: int,
+) -> Optional[CustomerUpdateXML]:
+    related_customer_update: Optional[CustomerUpdateXML] = None
+    if result.customer_update_xml_id:
+        related_customer_update = session.get(CustomerUpdateXML, result.customer_update_xml_id)
+
+    if related_customer_update is None and result.sys_update_name:
+        related_customer_update = session.exec(
+            select(CustomerUpdateXML)
+            .where(CustomerUpdateXML.instance_id == instance_id)
+            .where(CustomerUpdateXML.name == result.sys_update_name)
+            .order_by(desc(CustomerUpdateXML.sys_recorded_at), desc(CustomerUpdateXML.sys_updated_on), desc(CustomerUpdateXML.id))
+        ).first()
+
+    if related_customer_update is None and result.sys_id:
+        related_customer_update = session.exec(
+            select(CustomerUpdateXML)
+            .where(CustomerUpdateXML.instance_id == instance_id)
+            .where(CustomerUpdateXML.target_sys_id == result.sys_id)
+            .order_by(desc(CustomerUpdateXML.sys_recorded_at), desc(CustomerUpdateXML.sys_updated_on), desc(CustomerUpdateXML.id))
+        ).first()
+
+    return related_customer_update
+
+
+def _resolve_related_update_set_for_result(
+    session: Session,
+    *,
+    result: ScanResult,
+    customer_update: Optional[CustomerUpdateXML],
+    instance_id: int,
+) -> Optional[UpdateSet]:
+    related_update_set_id = result.update_set_id
+    if related_update_set_id is None and customer_update and customer_update.update_set_id:
+        related_update_set_id = customer_update.update_set_id
+
+    if related_update_set_id:
+        return session.get(UpdateSet, related_update_set_id)
+
+    if customer_update and customer_update.update_set_sn_sys_id:
+        return session.exec(
+            select(UpdateSet)
+            .where(UpdateSet.instance_id == instance_id)
+            .where(UpdateSet.sn_sys_id == customer_update.update_set_sn_sys_id)
+            .order_by(desc(UpdateSet.sys_updated_on), desc(UpdateSet.id))
+        ).first()
+
+    return None
+
+
+def _resolve_related_version_history_for_result(
+    session: Session,
+    *,
+    result: ScanResult,
+    customer_update: Optional[CustomerUpdateXML],
+    instance_id: int,
+) -> List[VersionHistory]:
+    clauses: List[Any] = []
+    if result.sys_update_name:
+        clauses.append(VersionHistory.sys_update_name == result.sys_update_name)
+    if result.sys_id:
+        clauses.append(VersionHistory.customer_update_sys_id == result.sys_id)
+    if result.current_version_sys_id:
+        clauses.append(VersionHistory.sn_sys_id == result.current_version_sys_id)
+    if customer_update and customer_update.update_guid:
+        clauses.append(VersionHistory.update_guid == customer_update.update_guid)
+
+    if not clauses:
+        return []
+
+    return session.exec(
+        select(VersionHistory)
+        .where(VersionHistory.instance_id == instance_id)
+        .where(or_(*clauses))
+        .order_by(
+            case((func.lower(VersionHistory.state) == "current", 0), else_=1),
+            desc(VersionHistory.sys_recorded_at),
+            desc(VersionHistory.sys_updated_on),
+            desc(VersionHistory.id),
+        )
+    ).all()
+
+
+def _resolve_related_metadata_customization_for_result(
+    session: Session,
+    *,
+    result: ScanResult,
+    instance_id: int,
+) -> Optional[MetadataCustomization]:
+    if not result.sys_id and not result.sys_update_name:
+        return None
+    return session.exec(
+        select(MetadataCustomization)
+        .where(MetadataCustomization.instance_id == instance_id)
+        .where(
+            or_(
+                MetadataCustomization.sys_metadata_sys_id == result.sys_id,
+                MetadataCustomization.sys_update_name == result.sys_update_name,
+            )
+        )
+        .order_by(desc(MetadataCustomization.sys_updated_on), desc(MetadataCustomization.id))
+    ).first()
+
+
+def _append_relationship_graph_dev_chain(
+    session: Session,
+    *,
+    center_result: ScanResult,
+    assessment_id: int,
+    instance_id: int,
+    scan_id: Optional[int],
+    nodes: List[Dict[str, Any]],
+    edges: List[Dict[str, Any]],
+    edge_ids: set,
+) -> Dict[str, Any]:
+    if center_result.id is None:
+        return {"node_count": 0, "version_history_count": 0}
+
+    center_result_id = int(center_result.id)
+    center_node_id = _graph_result_node_id(center_result_id)
+    node_ids = {str(node.get("id")) for node in nodes if node.get("id")}
+    added_nodes = 0
+
+    def _add_node(node_payload: Dict[str, Any]) -> Optional[str]:
+        nonlocal added_nodes
+        node_id = str(node_payload.get("id") or "")
+        if not node_id or node_id in node_ids:
+            return None
+        nodes.append(node_payload)
+        node_ids.add(node_id)
+        added_nodes += 1
+        return node_id
+
+    # A synthetic node for the ServiceNow artifact record itself so the graph can
+    # visually distinguish "scan result row" from "artifact/config record".
+    artifact_record_node_id = _add_node({
+        "id": _graph_dev_node_id("artifact_record", center_result_id),
+        "node_type": "dev_record",
+        "dev_kind": "artifact_record",
+        "dev_chain_role": "artifact_record",
+        "dev_chain_anchor": center_node_id,
+        "seed_result_id": center_result_id,
+        "assessment_id": assessment_id,
+        "instance_id": instance_id,
+        "scan_id": scan_id,
+        "label": center_result.name or f"Artifact {center_result_id}",
+        "table_name": center_result.table_name,
+        "sys_id": center_result.sys_id,
+        "links": {
+            "record": _graph_browse_record_url(
+                table_name=center_result.table_name,
+                sys_id=center_result.sys_id,
+                instance_id=instance_id,
+            ),
+            "table": _graph_browse_table_url(
+                table_name=center_result.table_name,
+                instance_id=instance_id,
+                assessment_id=assessment_id,
+            ),
+            "result": f"/results/{center_result_id}",
+            "assessment": f"/assessments/{assessment_id}",
+        },
+    })
+    if artifact_record_node_id:
+        _append_graph_edge(
+            edges=edges,
+            edge_ids=edge_ids,
+            edge_id=f"dev_chain:artifact_record:{center_result_id}",
+            source=center_node_id,
+            target=artifact_record_node_id,
+            edge_type="dev_chain",
+            detail="Scan result maps to artifact/config record",
+        )
+
+    related_customer_update = _resolve_related_customer_update_for_result(
+        session,
+        result=center_result,
+        instance_id=instance_id,
+    )
+    related_update_set = _resolve_related_update_set_for_result(
+        session,
+        result=center_result,
+        customer_update=related_customer_update,
+        instance_id=instance_id,
+    )
+    version_history_rows = _resolve_related_version_history_for_result(
+        session,
+        result=center_result,
+        customer_update=related_customer_update,
+        instance_id=instance_id,
+    )
+    related_metadata = _resolve_related_metadata_customization_for_result(
+        session,
+        result=center_result,
+        instance_id=instance_id,
+    )
+
+    customer_node_id: Optional[str] = None
+    if related_customer_update and related_customer_update.id is not None:
+        customer_node_id = _add_node({
+            "id": _graph_dev_node_id("customer_update_xml", int(related_customer_update.id)),
+            "node_type": "dev_record",
+            "dev_kind": "customer_update_xml",
+            "dev_chain_role": "customer_update_xml",
+            "dev_chain_anchor": center_node_id,
+            "seed_result_id": center_result_id,
+            "assessment_id": assessment_id,
+            "instance_id": instance_id,
+            "scan_id": scan_id,
+            "label": related_customer_update.name or f"Customer Update {related_customer_update.id}",
+            "table_name": "sys_update_xml",
+            "sys_id": related_customer_update.sn_sys_id,
+            "record_id": related_customer_update.id,
+            "links": {
+                "record": _graph_browse_record_url(
+                    table_name="sys_update_xml",
+                    sys_id=related_customer_update.sn_sys_id,
+                    instance_id=instance_id,
+                ),
+                "table": _graph_browse_table_url(
+                    table_name="sys_update_xml",
+                    instance_id=instance_id,
+                    assessment_id=assessment_id,
+                ),
+                "data_record": _graph_data_browser_record_url(
+                    instance_id=instance_id,
+                    data_type=DataPullType.customer_update_xml,
+                    record_id=int(related_customer_update.id),
+                ),
+                "result": f"/results/{center_result_id}",
+                "assessment": f"/assessments/{assessment_id}",
+            },
+        })
+        if customer_node_id:
+            _append_graph_edge(
+                edges=edges,
+                edge_ids=edge_ids,
+                edge_id=f"dev_chain:customer_update_xml:{center_result_id}:{related_customer_update.id}",
+                source=center_node_id,
+                target=customer_node_id,
+                edge_type="dev_chain",
+                detail="Current customer update XML record",
+            )
+
+    update_set_node_id: Optional[str] = None
+    if related_update_set and related_update_set.id is not None:
+        update_set_node_id = _add_node({
+            "id": _graph_dev_node_id("update_set", int(related_update_set.id)),
+            "node_type": "dev_record",
+            "dev_kind": "update_set",
+            "dev_chain_role": "update_set",
+            "dev_chain_anchor": center_node_id,
+            "seed_result_id": center_result_id,
+            "assessment_id": assessment_id,
+            "instance_id": instance_id,
+            "scan_id": scan_id,
+            "label": related_update_set.name or f"Update Set {related_update_set.id}",
+            "table_name": "sys_update_set",
+            "sys_id": related_update_set.sn_sys_id,
+            "record_id": related_update_set.id,
+            "links": {
+                "record": _graph_browse_record_url(
+                    table_name="sys_update_set",
+                    sys_id=related_update_set.sn_sys_id,
+                    instance_id=instance_id,
+                ),
+                "table": _graph_browse_table_url(
+                    table_name="sys_update_set",
+                    instance_id=instance_id,
+                    assessment_id=assessment_id,
+                ),
+                "data_record": _graph_data_browser_record_url(
+                    instance_id=instance_id,
+                    data_type=DataPullType.update_sets,
+                    record_id=int(related_update_set.id),
+                ),
+                "assessment": f"/assessments/{assessment_id}",
+            },
+        })
+        if update_set_node_id:
+            _append_graph_edge(
+                edges=edges,
+                edge_ids=edge_ids,
+                edge_id=f"dev_chain:update_set:{center_result_id}:{related_update_set.id}",
+                source=customer_node_id or center_node_id,
+                target=update_set_node_id,
+                edge_type="dev_chain",
+                detail="Belongs to update set",
+            )
+
+    if related_metadata and related_metadata.id is not None:
+        metadata_node_id = _add_node({
+            "id": _graph_dev_node_id("metadata_customization", int(related_metadata.id)),
+            "node_type": "dev_record",
+            "dev_kind": "metadata_customization",
+            "dev_chain_role": "metadata_customization",
+            "dev_chain_anchor": center_node_id,
+            "seed_result_id": center_result_id,
+            "assessment_id": assessment_id,
+            "instance_id": instance_id,
+            "scan_id": scan_id,
+            "label": related_metadata.sys_update_name or f"Metadata Customization {related_metadata.id}",
+            "table_name": "sys_metadata_customization",
+            "sys_id": related_metadata.sn_sys_id,
+            "record_id": related_metadata.id,
+            "links": {
+                "record": _graph_browse_record_url(
+                    table_name="sys_metadata_customization",
+                    sys_id=related_metadata.sn_sys_id,
+                    instance_id=instance_id,
+                ),
+                "table": _graph_browse_table_url(
+                    table_name="sys_metadata_customization",
+                    instance_id=instance_id,
+                    assessment_id=assessment_id,
+                ),
+                "data_record": _graph_data_browser_record_url(
+                    instance_id=instance_id,
+                    data_type=DataPullType.metadata_customization,
+                    record_id=int(related_metadata.id),
+                ),
+                "result": f"/results/{center_result_id}",
+                "assessment": f"/assessments/{assessment_id}",
+            },
+        })
+        if metadata_node_id:
+            _append_graph_edge(
+                edges=edges,
+                edge_ids=edge_ids,
+                edge_id=f"dev_chain:metadata_customization:{center_result_id}:{related_metadata.id}",
+                source=center_node_id,
+                target=metadata_node_id,
+                edge_type="dev_chain",
+                detail="Metadata customization provenance",
+            )
+
+    visible_versions = version_history_rows
+    hidden_versions = 0
+    if len(version_history_rows) > 8:
+        visible_versions = version_history_rows[:4]
+        hidden_versions = len(version_history_rows) - len(visible_versions)
+
+    for version in visible_versions:
+        if version.id is None:
+            continue
+        version_node_id = _add_node({
+            "id": _graph_dev_node_id("version_history", int(version.id)),
+            "node_type": "dev_record",
+            "dev_kind": "version_history",
+            "dev_chain_role": "version_history",
+            "dev_chain_anchor": center_node_id,
+            "seed_result_id": center_result_id,
+            "assessment_id": assessment_id,
+            "instance_id": instance_id,
+            "scan_id": scan_id,
+            "label": version.record_name or version.name or f"Version {version.id}",
+            "table_name": "sys_update_version",
+            "sys_id": version.sn_sys_id,
+            "record_id": version.id,
+            "state": version.state,
+            "links": {
+                "record": _graph_browse_record_url(
+                    table_name="sys_update_version",
+                    sys_id=version.sn_sys_id,
+                    instance_id=instance_id,
+                ),
+                "table": _graph_browse_table_url(
+                    table_name="sys_update_version",
+                    instance_id=instance_id,
+                    assessment_id=assessment_id,
+                ),
+                "data_record": _graph_data_browser_record_url(
+                    instance_id=instance_id,
+                    data_type=DataPullType.version_history,
+                    record_id=int(version.id),
+                ),
+                "result": f"/results/{center_result_id}",
+                "assessment": f"/assessments/{assessment_id}",
+            },
+        })
+        if not version_node_id:
+            continue
+        _append_graph_edge(
+            edges=edges,
+            edge_ids=edge_ids,
+            edge_id=f"dev_chain:version_history:{center_result_id}:{version.id}",
+            source=customer_node_id or center_node_id,
+            target=version_node_id,
+            edge_type="dev_chain",
+            detail=f"Version history ({version.state or 'historical'})",
+        )
+        if update_set_node_id and (version.source_table or "").lower() == "sys_update_set":
+            _append_graph_edge(
+                edges=edges,
+                edge_ids=edge_ids,
+                edge_id=f"dev_chain:version_update_set:{version.id}:{update_set_node_id}",
+                source=version_node_id,
+                target=update_set_node_id,
+                edge_type="dev_chain",
+                detail="Version sourced from update set",
+            )
+
+    if hidden_versions > 0:
+        version_group_node_id = _add_node({
+            "id": _graph_dev_node_id("version_history_group", center_result_id),
+            "node_type": "dev_group",
+            "dev_kind": "version_history_group",
+            "dev_chain_role": "version_history_group",
+            "dev_chain_anchor": center_node_id,
+            "seed_result_id": center_result_id,
+            "assessment_id": assessment_id,
+            "instance_id": instance_id,
+            "scan_id": scan_id,
+            "label": f"Version History (+{hidden_versions})",
+            "table_name": "sys_update_version",
+            "links": {
+                "table": _graph_browse_table_url(
+                    table_name="sys_update_version",
+                    instance_id=instance_id,
+                    assessment_id=assessment_id,
+                ),
+                "assessment": f"/assessments/{assessment_id}",
+            },
+            "hidden_count": hidden_versions,
+            "total_count": len(version_history_rows),
+        })
+        if version_group_node_id:
+            _append_graph_edge(
+                edges=edges,
+                edge_ids=edge_ids,
+                edge_id=f"dev_chain:version_history_group:{center_result_id}",
+                source=customer_node_id or center_node_id,
+                target=version_group_node_id,
+                edge_type="dev_chain",
+                detail=f"{hidden_versions} additional version history rows grouped",
+            )
+
+    return {
+        "node_count": added_nodes,
+        "version_history_count": len(version_history_rows),
+    }
 
 
 def _build_relationship_graph_artifact_payload(
@@ -4854,6 +5527,17 @@ def _build_relationship_graph_artifact_payload(
             detail=", ".join(shared_feature_names) if shared_feature_names else "Shared grouped feature",
         )
 
+    dev_chain_summary = _append_relationship_graph_dev_chain(
+        session,
+        center_result=center_result,
+        assessment_id=effective_assessment_id,
+        instance_id=effective_instance_id,
+        scan_id=scan_id,
+        nodes=nodes,
+        edges=edges,
+        edge_ids=edge_ids,
+    )
+
     return {
         "mode": "artifact",
         "scope": {
@@ -4874,6 +5558,8 @@ def _build_relationship_graph_artifact_payload(
                 "reference_inferred": len(inferred_neighbor_ids),
                 "same_update_set": len(update_set_neighbor_ids),
                 "same_table": len(same_table_neighbor_ids),
+                "dev_chain_nodes": int(dev_chain_summary.get("node_count") or 0),
+                "dev_chain_versions": int(dev_chain_summary.get("version_history_count") or 0),
             },
             "generated_at": datetime.utcnow().isoformat(),
         },
@@ -4961,12 +5647,19 @@ def _build_relationship_graph_feature_payload(
         "feature_id": feature_id,
         "assessment_id": feature.assessment_id,
         "instance_id": assessment.instance_id,
+        "scan_id": scan_id,
         "label": feature.name or f"Feature {feature_id}",
         "name": feature.name,
         "description": feature.description,
         "disposition": feature.disposition.value if feature.disposition else None,
         "confidence_score": feature.confidence_score,
         "confidence_level": feature.confidence_level,
+        "links": _graph_feature_links(
+            feature_id=feature_id,
+            assessment_id=feature.assessment_id,
+            instance_id=assessment.instance_id,
+            scan_id=scan_id,
+        ),
     }
 
     edges: List[Dict[str, Any]] = []
@@ -5093,8 +5786,15 @@ def _build_relationship_graph_table_payload(
         "table_name": normalized_table,
         "assessment_id": effective_assessment_id,
         "instance_id": effective_instance_id,
+        "scan_id": effective_scan_id,
         "label": normalized_table,
         "name": normalized_table,
+        "links": _graph_table_links(
+            table_name=normalized_table,
+            assessment_id=effective_assessment_id,
+            instance_id=effective_instance_id,
+            scan_id=effective_scan_id,
+        ),
     }
 
     edges: List[Dict[str, Any]] = []
