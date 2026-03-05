@@ -7,13 +7,18 @@ This is your copy-paste reference. Follow phases in order. Do NOT skip checkpoin
 1. **Arch launches first at full power.** Architect always uses `opus` + `--effort high`.
 2. **Nothing else spins up until the plan drops** (Checkpoint 0).
 3. **You are the event loop.** Agents never poll — you watch streams and nudge them.
-4. **Every launch should be streamable.** Default to `stream-json` logs for Architect, PM, devs, reviewer, cross-testers, feedback, and memory writes.
+4. **Every launch should be streamable.** Default to `stream-json` logs for Architect, PM, devs, reviewer, watcher/scribe snapshots, cross-testers, feedback, and memory writes.
 5. **Deliver then die.** Workers produce output and exit. Architect + PM persist through memory files and shared docs, not open tabs.
-6. **Steer before you escalate.** Since the run is streamed, tighten the prompt first. Raise model/effort only when the stream shows the current tier is not enough.
-7. **Arch + PM own memory.** They absorb reviewer findings, refactor their memory files to stay compact, and carry context forward. Before planning the next round, they account for all issues/findings from previous phases.
-8. **Memory hygiene:** Instruct Arch + PM to continuously consolidate their memory — remove duplicates, merge similar items, keep it under ~200 lines. All key points must survive but the file must not bloat.
-9. **Flexible Arch/PM usage:** Between phases, you can repurpose Architect for code review, testing assistance, or stepping in to help. They are your most capable agents — use them.
-10. **Record launch decisions.** For every backgrounded role, record the chosen model, effort, PID, and log file in `orchestration_run/coordination.md` before moving on.
+6. **Live watcher is snapshot-based.** Each watcher run is one-shot; orchestrator re-launches snapshots on triggers.
+7. **Steer before you escalate.** Since the run is streamed, tighten the prompt first. Raise model/effort only when the stream shows the current tier is not enough.
+8. **Arch + PM own memory.** They absorb reviewer findings, refactor their memory files to stay compact, and carry context forward. Before planning the next round, they account for all issues/findings from previous phases.
+9. **Memory hygiene:** Instruct Arch + PM to continuously consolidate their memory — remove duplicates, merge similar items, keep it under ~200 lines. All key points must survive but the file must not bloat.
+10. **Flexible Arch/PM usage:** Between phases, you can repurpose Architect for code review, testing assistance, or stepping in to help. They are your most capable agents — use them.
+11. **Record launch decisions.** For every backgrounded role, record the chosen model, effort, PID, and log file in `orchestration_run/coordination.md` before moving on.
+12. **Monitor loop is mandatory during Build/Cross-Test.** Run a persistent orchestrator heartbeat loop and treat stale heartbeat as a process failure.
+13. **Orchestrator leaves an audit trail.** Course corrections, gate misses, and model/reasoning escalations are written to `orchestration_run/coordination.md`, not `findings.md`.
+14. **Technical course corrections need ratification.** If orchestrator changes task boundaries, scope, or tiering assumptions, log it and trigger an Architect heartbeat snapshot.
+15. **Process failures become work.** If unclear docs, wrong command order, or repeated missed gates caused waste during the run, log `[PROCESS_FIX_REQUIRED]` in `coordination.md` and resolve it through a docs patch or explicit backlog/memory carry-forward before the next similar run.
 
 ## Model / Effort Triage
 
@@ -21,7 +26,7 @@ Use the cheapest tier that is likely to succeed, except Architect which is fixed
 
 | Tier | Use For | Default Model / Effort | Notes |
 |------|---------|------------------------|-------|
-| Tier A | ACK/bootstrap, live watcher, exact checklist reruns, simple cross-tests | `haiku` / low | Use when the task is tightly prescribed and failure is easy to spot in-stream |
+| Tier A | ACK/bootstrap, watcher/scribe snapshots, exact checklist reruns, simple cross-tests | `haiku` / low | Use when the task is tightly prescribed and failure is easy to spot in-stream |
 | Tier B | PM formatting/refinement, most dev tasks, reviewer passes, UI checks | `sonnet` / medium | Default starting point for non-architect work |
 | Tier C | Architect, ambiguous dev work, risky refactors, migrations, security/transaction/perf review, repeated misses | `opus` / high | Use when architecture or deep reasoning matters |
 
@@ -55,9 +60,17 @@ mkdir -p orchestration_run/logs
 cp .claude/orchestration/templates/project_plan_template.md orchestration_run/plan.md
 cp .claude/orchestration/templates/coordination_template.md orchestration_run/coordination.md
 cp .claude/orchestration/templates/findings_template.md orchestration_run/findings.md
+rm -f orchestration_run/.stop_monitor_loop
 
 # 5. Create feature branch
 git checkout -b feature/<name>
+
+# 6. Set team size once per run (must match plan + coordination)
+NUM_DEVS=2
+
+# 7. Monitor policy
+MONITOR_POLL_SECONDS=30
+MONITOR_STALL_SECONDS=300
 ```
 
 ---
@@ -121,9 +134,10 @@ git commit -m "orchestration: lock plan for $(date +%Y-%m-%d)"
 ### Step 4: Create worktrees (1 per dev)
 
 ```bash
-# For each dev (example: 2 devs)
-git worktree add .worktrees/dev_1 -b dev_1/feature feature/<name>
-git worktree add .worktrees/dev_2 -b dev_2/feature feature/<name>
+# For each dev (works for 2, 3, ... N)
+for dev in $(seq 1 "$NUM_DEVS"); do
+  git worktree add ".worktrees/dev_${dev}" -b "dev_${dev}/feature" feature/<name>
+done
 ```
 
 ### Step 5: Bootstrap devs (ACK — fast, cheap)
@@ -131,26 +145,31 @@ git worktree add .worktrees/dev_2 -b dev_2/feature feature/<name>
 Use `haiku` for bootstrap unless the ACK prompt itself proves too brittle:
 
 ```bash
-# Dev-1 bootstrap
-claude -p --verbose --model haiku --effort low \
-  --dangerously-skip-permissions --disable-slash-commands \
-  --output-format stream-json --include-partial-messages \
-  "Role: Dev-1. Read plan at $PROJECT_ROOT/orchestration_run/plan.md. Read your task (Task 1). Post [ACK] to your Dev-1 Notes section there. Exit." \
-  > orchestration_run/logs/dev_1_bootstrap.jsonl 2>&1
-
-# Dev-2 bootstrap
-claude -p --verbose --model haiku --effort low \
-  --dangerously-skip-permissions --disable-slash-commands \
-  --output-format stream-json --include-partial-messages \
-  "Role: Dev-2. Read plan at $PROJECT_ROOT/orchestration_run/plan.md. Read your task (Task 2). Post [ACK] to your Dev-2 Notes section there. Exit." \
-  > orchestration_run/logs/dev_2_bootstrap.jsonl 2>&1
+for dev in $(seq 1 "$NUM_DEVS"); do
+  claude -p --verbose --model haiku --effort low \
+    --dangerously-skip-permissions --disable-slash-commands \
+    --output-format stream-json --include-partial-messages \
+    "Role: Dev-${dev}. Read plan at $PROJECT_ROOT/orchestration_run/plan.md. Read your task (Task ${dev}). Post [ACK] to your Dev-${dev} Notes section there. Exit." \
+    > "orchestration_run/logs/dev_${dev}_bootstrap.jsonl" 2>&1
+done
 ```
 
 **Wait for:** `[ACK]` in each dev's notes section.
 
-### CHECKPOINT 1 — Devs Launched
+### CHECKPOINT 1 — Bootstrap ACK Complete
 - [ ] All worktrees created
 - [ ] All dev ACKs received
+
+Run the hard gate script before launching Step 6:
+
+```bash
+# Usage: require_bootstrap_ack.sh <plan_path> <expected_dev_count>
+$PROJECT_ROOT/.claude/orchestration/scripts/require_bootstrap_ack.sh \
+  "$PROJECT_ROOT/orchestration_run/plan.md" \
+  "$NUM_DEVS"
+```
+
+If the script exits non-zero, do NOT launch execution prompts yet.
 
 ### Step 6: Launch dev execution prompts (streamed, parallel)
 
@@ -162,44 +181,39 @@ Streamed with log capture — these run in parallel:
 # - simple/prescribed task: haiku + low or sonnet + medium
 # - standard implementation: sonnet + medium
 # - ambiguous/risky task: opus + high
+# IMPORTANT: define model/effort for every Dev-1..Dev-N and launch every dev.
+# Skipping one dev launch means that task never starts.
 DEV_1_MODEL=sonnet
 DEV_1_EFFORT=medium
 DEV_2_MODEL=opus
 DEV_2_EFFORT=high
+# DEV_3_MODEL=sonnet
+# DEV_3_EFFORT=medium
 
-# Dev-1 execution (streamed — runs in worktree)
-cd .worktrees/dev_1 && \
-claude -p --verbose --model "$DEV_1_MODEL" --effort "$DEV_1_EFFORT" \
-  --dangerously-skip-permissions --disable-slash-commands \
-  --output-format stream-json --include-partial-messages \
-  "$(cat $PROJECT_ROOT/.claude/orchestration/roles/dev.md)
+for dev in $(seq 1 "$NUM_DEVS"); do
+  model_var="DEV_${dev}_MODEL"
+  effort_var="DEV_${dev}_EFFORT"
+  model="${!model_var:-sonnet}"
+  effort="${!effort_var:-medium}"
+
+  (
+    cd "$PROJECT_ROOT/.worktrees/dev_${dev}"
+    claude -p --verbose --model "$model" --effort "$effort" \
+      --dangerously-skip-permissions --disable-slash-commands \
+      --output-format stream-json --include-partial-messages \
+      "$(cat $PROJECT_ROOT/.claude/orchestration/roles/dev.md)
 
 TASK ASSIGNMENT:
-Task: 1
-Files owned: [list from plan]
+Task: ${dev}
+Files owned: [list from plan for Task ${dev}]
 Test command: [from plan]
 Done criteria: [from plan]
 Plan location: $PROJECT_ROOT/orchestration_run/plan.md
-Worktree: $PROJECT_ROOT/.worktrees/dev_1" \
-  > "$PROJECT_ROOT/orchestration_run/logs/dev_1_stream.jsonl" 2>&1 &
-DEV_1_PID=$!
-
-# Dev-2 execution (streamed — runs in worktree)
-cd .worktrees/dev_2 && \
-claude -p --verbose --model "$DEV_2_MODEL" --effort "$DEV_2_EFFORT" \
-  --dangerously-skip-permissions --disable-slash-commands \
-  --output-format stream-json --include-partial-messages \
-  "$(cat $PROJECT_ROOT/.claude/orchestration/roles/dev.md)
-
-TASK ASSIGNMENT:
-Task: 2
-Files owned: [list from plan]
-Test command: [from plan]
-Done criteria: [from plan]
-Plan location: $PROJECT_ROOT/orchestration_run/plan.md
-Worktree: $PROJECT_ROOT/.worktrees/dev_2" \
-  > "$PROJECT_ROOT/orchestration_run/logs/dev_2_stream.jsonl" 2>&1 &
-DEV_2_PID=$!
+Worktree: $PROJECT_ROOT/.worktrees/dev_${dev}" \
+      > "$PROJECT_ROOT/orchestration_run/logs/dev_${dev}_stream.jsonl" 2>&1
+  ) &
+  eval "DEV_${dev}_PID=$!"
+done
 
 # Record model/effort/PID/log choices in orchestration_run/coordination.md
 ```
@@ -213,6 +227,7 @@ Wait until the first dev posts `[DONE]` in the shared plan, then choose the revi
 ```bash
 REVIEWER_MODEL=sonnet
 REVIEWER_EFFORT=medium
+WORKTREE_LIST=$(printf ".worktrees/dev_%s, " $(seq 1 "$NUM_DEVS") | sed 's/, $//')
 
 cd "$PROJECT_ROOT" && \
 claude -p --verbose --model "$REVIEWER_MODEL" --effort "$REVIEWER_EFFORT" \
@@ -221,18 +236,22 @@ claude -p --verbose --model "$REVIEWER_MODEL" --effort "$REVIEWER_EFFORT" \
   --output-format stream-json --include-partial-messages \
   "$(cat .claude/orchestration/roles/code_reviewer.md)
 
-WORKTREES: .worktrees/dev_1, .worktrees/dev_2
+WORKTREES: $WORKTREE_LIST
 PLAN: $PROJECT_ROOT/orchestration_run/plan.md
 FINDINGS OUTPUT: $PROJECT_ROOT/orchestration_run/findings.md" \
   > orchestration_run/logs/reviewer_stream.jsonl 2>&1 &
 REVIEWER_PID=$!
 ```
 
-### Step 8: Launch Live Watcher (streamed, read-only)
+### Step 8: Launch Watcher Snapshot (streamed, read-only, one-shot)
+
+Use the same trigger as reviewer launch (after first `[DONE]`).
+This run is a snapshot and exits. Re-launch on triggers in Step 9.
 
 ```bash
 WATCHER_MODEL=haiku
 WATCHER_EFFORT=low
+WATCH_TS=$(date +%Y%m%d_%H%M%S)
 
 claude -p --verbose --model "$WATCHER_MODEL" --effort "$WATCHER_EFFORT" \
   --dangerously-skip-permissions --disable-slash-commands \
@@ -242,32 +261,162 @@ claude -p --verbose --model "$WATCHER_MODEL" --effort "$WATCHER_EFFORT" \
 - orchestration_run/findings.md (reviewer findings as written)
 - orchestration_run/plan.md (status changes)
 Return top 5 commit-readiness actions with exact file paths.
+Do NOT wait or poll. Exit after posting one snapshot.
 Only run: git status --short, git diff --stat in worktrees." \
-  > orchestration_run/logs/live_watch_stream.jsonl 2>&1 &
+  > "orchestration_run/logs/live_watch_${WATCH_TS}.jsonl" 2>&1 &
 WATCHER_PID=$!
+```
+
+### Step 8b: Launch Scribe Snapshot (optional, one-shot)
+
+Use when the run has 3+ devs, long duration, or frequent handoffs.
+
+```bash
+SCRIBE_ENABLED=${SCRIBE_ENABLED:-false}
+if [[ "$SCRIBE_ENABLED" == "true" ]]; then
+  SCRIBE_MODEL=haiku
+  SCRIBE_EFFORT=low
+  SCRIBE_TS=$(date +%Y%m%d_%H%M%S)
+
+  claude -p --verbose --model "$SCRIBE_MODEL" --effort "$SCRIBE_EFFORT" \
+    --dangerously-skip-permissions --disable-slash-commands \
+    --tools Read,Edit,Bash \
+    --output-format stream-json --include-partial-messages \
+    "$(cat .claude/orchestration/roles/scribe.md)" \
+    > "orchestration_run/logs/scribe_${SCRIBE_TS}.jsonl" 2>&1 &
+  SCRIBE_PID=$!
+fi
 ```
 
 ### Step 9: Monitor (orchestrator polling loop)
 
 ```bash
+# Start persistent monitor loop (mandatory during Build/Cross-Test)
+MONITOR_LOOP_SCRIPT="$PROJECT_ROOT/.claude/orchestration/scripts/orchestrator_monitor_loop.sh"
+"$MONITOR_LOOP_SCRIPT" \
+  "$PROJECT_ROOT" \
+  "$NUM_DEVS" \
+  "$MONITOR_POLL_SECONDS" \
+  "$MONITOR_STALL_SECONDS" \
+  > "$PROJECT_ROOT/orchestration_run/logs/orchestrator_monitor_stream.log" 2>&1 &
+MONITOR_PID=$!
+
 # Watch all streams
 tail -f orchestration_run/logs/*_stream.jsonl &
 
 # Watch findings
 tail -f orchestration_run/findings.md &
 
+# Watch orchestrator heartbeat
+tail -f orchestration_run/logs/orchestrator_heartbeat.log &
+
 # Check process health
 ps aux | grep claude
 
 # Check worktree changes
-git -C .worktrees/dev_1 status --short
-git -C .worktrees/dev_2 status --short
+for dev in $(seq 1 "$NUM_DEVS"); do
+  git -C ".worktrees/dev_${dev}" status --short
+done
 ```
+
+Watcher re-launch policy (snapshot runs):
+- Relaunch after first `[DONE]` (if not already run)
+- Relaunch when reviewer updates `findings.md`
+- Relaunch when stall is suspected (no stream growth, no status updates)
+- Relaunch every 10 minutes while dev execution is active
+
+Architect heartbeat triggers (one-shot snapshots):
+- First reviewer finding
+- First critical finding
+- Dependency unblock
+- Repeated dev miss after prompt tightening
+- Before merge
+- Before memory write
+
+PM heartbeat triggers (one-shot snapshots):
+- First `[DONE]`
+- Missed gate or handoff
+- Stalled task
+- Cross-test fail
+- Phase transition
+
+First `[DONE]` response gate (time-boxed to 2 minutes):
+- Launch reviewer (if not already running)
+- Launch watcher snapshot
+- Launch optional scribe snapshot (if enabled)
+- Launch PM heartbeat snapshot
+- If any tester is idle, launch a rolling cross-test lane immediately (do NOT wait for all devs)
+- Verify `orchestration_run/logs/orchestrator_heartbeat.log` received a fresh heartbeat within 2x poll interval
 
 **Intervention triggers:**
 - Reviewer flags CRITICAL → tighten the dev prompt first; escalate model/effort only if the stream still shows misses
 - Dev stalled 5+ min → kill → relaunch with narrower prompt
 - Stream size not growing → check `wc -l orchestration_run/logs/*.jsonl`
+- Crosstester posts `[CROSS_TEST_BLOCKED]` → relaunch crosstester from correct target worktree/branch
+- Heartbeat stale (no new heartbeat for >2x poll interval) → restart monitor loop immediately, then re-check active launches
+
+Every orchestrator intervention is appended to `coordination.md` under `## Orchestrator Intervention Log`:
+- `[COURSE_CORRECT]` for prompt/flow correction
+- `[MODEL_ESCALATION]` for tier/model/effort changes
+- `[GATE_MISS]` for late launches or missed handoffs
+- `[ARCH_RATIFY_REQUIRED]` when a technical correction needs Architect confirmation
+
+If the run exposed an orchestration/doc/process gap that should not recur:
+- Append `[PROCESS_FIX_REQUIRED]` to the `## Process Improvement Queue` in `coordination.md`
+- Trigger a PM heartbeat snapshot
+- Trigger an Architect heartbeat snapshot if task boundaries, scope, or model tiering were part of the failure
+- Do not start the next similar run until the item is patched in `.claude/orchestration/*` or explicitly carried in memory/backlog
+
+Guardrail:
+- During Build phase, do not do unrelated housekeeping updates (for example todo journaling). Stay on monitoring, gating, nudges, and checkpoint progression.
+
+### Step 9b: Rolling Cross-Test + Patch Loop (while build is still active)
+
+When some devs are done and at least one dev is still implementing, start validation early:
+
+1. Task posts `[DONE]` and reviewer has begun coverage for that task
+2. Pick an idle tester from the matrix
+3. Launch crosstester in the target dev's worktree immediately
+4. If `[CROSS_TEST_FAIL]`, relaunch original dev for fix immediately
+5. Relaunch crosstester for re-verify
+
+This runs in parallel with remaining implementation work and reduces end-of-phase pileups.
+
+### Step 9c: Launch Heartbeat Snapshots (one-shot, orchestrator-triggered)
+
+Do not keep Architect or PM open as polling agents. Re-launch only the snapshot whose trigger fired.
+
+```bash
+# PM heartbeat snapshot (launch when a PM trigger fires)
+PM_HB_MODEL=sonnet
+PM_HB_EFFORT=low
+PM_HB_TS=$(date +%Y%m%d_%H%M%S)
+
+claude -p --verbose --model "$PM_HB_MODEL" --effort "$PM_HB_EFFORT" \
+  --dangerously-skip-permissions --disable-slash-commands \
+  --tools Read,Edit,Bash \
+  --output-format stream-json --include-partial-messages \
+  "$(cat .claude/orchestration/roles/pm_heartbeat.md)" \
+  > "orchestration_run/logs/pm_heartbeat_${PM_HB_TS}.jsonl" 2>&1 &
+
+# Architect heartbeat snapshot (launch when an Architect trigger fires)
+ARCH_HB_MODEL=opus
+ARCH_HB_EFFORT=medium
+ARCH_HB_TS=$(date +%Y%m%d_%H%M%S)
+
+claude -p --verbose --model "$ARCH_HB_MODEL" --effort "$ARCH_HB_EFFORT" \
+  --dangerously-skip-permissions --disable-slash-commands \
+  --tools Read,Edit,Bash \
+  --output-format stream-json --include-partial-messages \
+  "$(cat .claude/orchestration/roles/architect_heartbeat.md)" \
+  > "orchestration_run/logs/architect_heartbeat_${ARCH_HB_TS}.jsonl" 2>&1 &
+```
+
+### CHECKPOINT 1.5 — First `[DONE]` Response
+- [ ] Reviewer launched within 2 minutes of first `[DONE]`
+- [ ] Watcher snapshot launched within 2 minutes of first `[DONE]`
+- [ ] Rolling cross-test lane launched when tester is idle
+- [ ] Monitor heartbeat active (fresh line within 2x poll interval)
 
 ### CHECKPOINT 2 — Implementation Complete
 - [ ] All devs posted `[DONE]` with passing tests
@@ -277,24 +426,32 @@ git -C .worktrees/dev_2 status --short
 
 ## Phase 3: CROSS-TEST (worktrees, code read-only)
 
-### Step 10: Re-launch devs as cross-testers
+### Step 10: Launch Remaining Cross-Tests (if not already closed in rolling loop)
 
 Streamed, code read-only (`Read,Edit,Bash` so the tester can append only to the shared thread):
+Use one launch per tester→target pair from the round-robin matrix (examples below show a 2-dev pair).
 
 ```bash
+# If rolling cross-test already closed a task, skip launching that lane again.
 # Simple checklist reruns can start at haiku + low.
 # If the test requires diagnosis, multi-step reasoning, or ambiguous validation, move to sonnet + medium or higher.
 CROSSTEST_1_MODEL=haiku
 CROSSTEST_1_EFFORT=low
 CROSSTEST_2_MODEL=sonnet
 CROSSTEST_2_EFFORT=medium
+WORKTREE_GATE_SCRIPT="$PROJECT_ROOT/.claude/orchestration/scripts/require_worktree_context.sh"
 
 # Dev-1 tests Dev-2's work
-claude -p --verbose --model "$CROSSTEST_1_MODEL" --effort "$CROSSTEST_1_EFFORT" \
-  --dangerously-skip-permissions --disable-slash-commands \
-  --tools Read,Edit,Bash \
-  --output-format stream-json --include-partial-messages \
-  "$(cat .claude/orchestration/roles/dev_crosstester.md)
+TARGET_DEV=2
+TARGET_WORKTREE="$PROJECT_ROOT/.worktrees/dev_${TARGET_DEV}"
+(
+  cd "$TARGET_WORKTREE"
+  "$WORKTREE_GATE_SCRIPT" "$TARGET_WORKTREE" "dev_${TARGET_DEV}/"
+  claude -p --verbose --model "$CROSSTEST_1_MODEL" --effort "$CROSSTEST_1_EFFORT" \
+    --dangerously-skip-permissions --disable-slash-commands \
+    --tools Read,Edit,Bash \
+    --output-format stream-json --include-partial-messages \
+    "$(cat $PROJECT_ROOT/.claude/orchestration/roles/dev_crosstester.md)
 
 CROSS-TEST ASSIGNMENT:
 You are Dev-1. Test Dev-2's Task 2.
@@ -302,15 +459,21 @@ Worktree: .worktrees/dev_2
 Test command: [from plan]
 Verify: [acceptance criteria from plan]
 Post results to Cross-Test Thread for Task 2 in $PROJECT_ROOT/orchestration_run/plan.md" \
-  > orchestration_run/logs/dev_1_crosstest.jsonl 2>&1 &
+    > "$PROJECT_ROOT/orchestration_run/logs/dev_1_crosstest.jsonl" 2>&1
+) &
 CROSSTEST_1_PID=$!
 
 # Dev-2 tests Dev-1's work
-claude -p --verbose --model "$CROSSTEST_2_MODEL" --effort "$CROSSTEST_2_EFFORT" \
-  --dangerously-skip-permissions --disable-slash-commands \
-  --tools Read,Edit,Bash \
-  --output-format stream-json --include-partial-messages \
-  "$(cat .claude/orchestration/roles/dev_crosstester.md)
+TARGET_DEV=1
+TARGET_WORKTREE="$PROJECT_ROOT/.worktrees/dev_${TARGET_DEV}"
+(
+  cd "$TARGET_WORKTREE"
+  "$WORKTREE_GATE_SCRIPT" "$TARGET_WORKTREE" "dev_${TARGET_DEV}/"
+  claude -p --verbose --model "$CROSSTEST_2_MODEL" --effort "$CROSSTEST_2_EFFORT" \
+    --dangerously-skip-permissions --disable-slash-commands \
+    --tools Read,Edit,Bash \
+    --output-format stream-json --include-partial-messages \
+    "$(cat $PROJECT_ROOT/.claude/orchestration/roles/dev_crosstester.md)
 
 CROSS-TEST ASSIGNMENT:
 You are Dev-2. Test Dev-1's Task 1.
@@ -318,7 +481,8 @@ Worktree: .worktrees/dev_1
 Test command: [from plan]
 Verify: [acceptance criteria from plan]
 Post results to Cross-Test Thread for Task 1 in $PROJECT_ROOT/orchestration_run/plan.md" \
-  > orchestration_run/logs/dev_2_crosstest.jsonl 2>&1 &
+    > "$PROJECT_ROOT/orchestration_run/logs/dev_2_crosstest.jsonl" 2>&1
+) &
 CROSSTEST_2_PID=$!
 ```
 
@@ -333,26 +497,33 @@ FIX_MODEL=sonnet
 FIX_EFFORT=medium
 VERIFY_MODEL=haiku
 VERIFY_EFFORT=low
+WORKTREE_GATE_SCRIPT="$PROJECT_ROOT/.claude/orchestration/scripts/require_worktree_context.sh"
+TARGET_DEV=N  # replace N with the actual task owner number
 
 # Re-launch original dev to fix (full tools, in their worktree)
-cd .worktrees/dev_N && \
+cd ".worktrees/dev_${TARGET_DEV}" && \
 claude -p --verbose --model "$FIX_MODEL" --effort "$FIX_EFFORT" \
   --dangerously-skip-permissions --disable-slash-commands \
   --output-format stream-json --include-partial-messages \
   "$(cat $PROJECT_ROOT/.claude/orchestration/roles/dev.md)
 
 FIX REQUEST:
-Cross-tester found issues in your Task N. Read the Cross-Test Thread in $PROJECT_ROOT/orchestration_run/plan.md.
-Fix the issues, re-run tests, post [FIX] to your Dev-N Notes section." \
-  > "$PROJECT_ROOT/orchestration_run/logs/dev_N_fix.jsonl" 2>&1
+Cross-tester found issues in your Task ${TARGET_DEV}. Read the Cross-Test Thread in $PROJECT_ROOT/orchestration_run/plan.md.
+Fix the issues, re-run tests, post [FIX] to your Dev-${TARGET_DEV} Notes section." \
+  > "$PROJECT_ROOT/orchestration_run/logs/dev_${TARGET_DEV}_fix.jsonl" 2>&1
 
 # After fix posted, re-launch cross-tester to verify
-claude -p --verbose --model "$VERIFY_MODEL" --effort "$VERIFY_EFFORT" \
-  --dangerously-skip-permissions --disable-slash-commands \
-  --tools Read,Edit,Bash \
-  --output-format stream-json --include-partial-messages \
-  "Dev-N posted [FIX]. Re-verify in .worktrees/dev_N. Post [CROSS_TEST_PASS] or [CROSS_TEST_FAIL] to the shared Cross-Test Thread in $PROJECT_ROOT/orchestration_run/plan.md." \
-  > "$PROJECT_ROOT/orchestration_run/logs/dev_N_reverify.jsonl" 2>&1
+TARGET_WORKTREE="$PROJECT_ROOT/.worktrees/dev_${TARGET_DEV}"
+(
+  cd "$TARGET_WORKTREE"
+  "$WORKTREE_GATE_SCRIPT" "$TARGET_WORKTREE" "dev_${TARGET_DEV}/"
+  claude -p --verbose --model "$VERIFY_MODEL" --effort "$VERIFY_EFFORT" \
+    --dangerously-skip-permissions --disable-slash-commands \
+    --tools Read,Edit,Bash \
+    --output-format stream-json --include-partial-messages \
+    "Dev-${TARGET_DEV} posted [FIX]. Re-verify in .worktrees/dev_${TARGET_DEV}. Post [CROSS_TEST_PASS], [CROSS_TEST_FAIL], or [CROSS_TEST_BLOCKED] to the shared Cross-Test Thread in $PROJECT_ROOT/orchestration_run/plan.md." \
+    > "$PROJECT_ROOT/orchestration_run/logs/dev_${TARGET_DEV}_reverify.jsonl" 2>&1
+)
 ```
 
 Repeat until both sign off.
@@ -369,12 +540,20 @@ Repeat until both sign off.
 
 ```bash
 # Prefer recorded PIDs from orchestration_run/coordination.md or your current shell.
-kill "$DEV_1_PID" "$DEV_2_PID" "$CROSSTEST_1_PID" "$CROSSTEST_2_PID" "$WATCHER_PID" 2>/dev/null
-ps -p "$DEV_1_PID" "$DEV_2_PID" "$CROSSTEST_1_PID" "$CROSSTEST_2_PID" "$WATCHER_PID"
+touch orchestration_run/.stop_monitor_loop
+for dev in $(seq 1 "$NUM_DEVS"); do
+  eval "kill \${DEV_${dev}_PID:-} 2>/dev/null || true"
+done
+for pid_var in $(compgen -A variable | grep '^CROSSTEST_.*_PID$' || true); do
+  kill "${!pid_var:-}" 2>/dev/null || true
+done
+kill "${WATCHER_PID:-}" "${SCRIBE_PID:-}" "${MONITOR_PID:-}" 2>/dev/null || true
 
 # Fallback only if a PID was not recorded:
 pkill -f "claude.*dev_"
 pkill -f "claude.*live_watch"
+pkill -f "claude.*scribe"
+pkill -f "orchestrator_monitor_loop.sh"
 ```
 
 ### Step 13: Wait for reviewer to finish findings.md
@@ -477,8 +656,9 @@ Orchestrator asks: "Arch + PM are idle. Prep next sprint, do a deep review, or w
 
 ```bash
 # Merge each dev's worktree branch
-git merge dev_1/feature --no-edit
-git merge dev_2/feature --no-edit
+for dev in $(seq 1 "$NUM_DEVS"); do
+  git merge "dev_${dev}/feature" --no-edit
+done
 ```
 
 ### Step 17: Run full test suite
@@ -545,7 +725,8 @@ claude -p --verbose --model opus --effort high \
 1. Architecture decisions → servicenow_global_tech_assessment_mcp/00_admin/insights.md (Active Decisions section)
 2. Session summary → servicenow_global_tech_assessment_mcp/00_admin/run_log.md (append)
 3. Update servicenow_global_tech_assessment_mcp/00_admin/context.md if direction changed
-4. Write role memory → orchestration_run/architect_memory.md" \
+4. Read orchestration_run/coordination.md and absorb any [ARCH_RATIFY_REQUIRED] or architecture-impacting [PROCESS_FIX_REQUIRED] items
+5. Write role memory → orchestration_run/architect_memory.md" \
   > orchestration_run/logs/architect_memory_stream.jsonl 2>&1
 ```
 
@@ -558,14 +739,41 @@ claude -p --verbose --model sonnet --effort medium \
   "You are the PM. Write session memory:
 1. New backlog items → servicenow_global_tech_assessment_mcp/00_admin/todos.md (Backlog section)
 2. Session summary → servicenow_global_tech_assessment_mcp/00_admin/run_log.md (append)
-3. Write role memory → orchestration_run/pm_memory.md" \
+3. Read orchestration_run/coordination.md and convert any [PROCESS_FIX_REQUIRED] items into explicit backlog items or resolved process notes
+4. Write role memory → orchestration_run/pm_memory.md" \
   > orchestration_run/logs/pm_memory_stream.jsonl 2>&1
+```
+
+### Step 21b: Architect final synthesis digest
+
+Architect reconciles technical memory after PM writes process memory. PM remains source-of-truth for process/backlog meaning.
+
+```bash
+claude -p --verbose --model opus --effort medium \
+  --dangerously-skip-permissions --disable-slash-commands \
+  --output-format stream-json --include-partial-messages \
+  "You are the Architect. Read:
+1. orchestration_run/architect_memory.md
+2. orchestration_run/pm_memory.md
+3. orchestration_run/findings.md
+4. orchestration_run/coordination.md
+
+Write a short deduped technical digest to orchestration_run/architect_digest.md.
+Include only:
+- durable technical decisions
+- design debt worth carrying forward
+- architectural implications for next sprint
+
+Do NOT rewrite PM's operational meaning. Keep under ~120 lines." \
+  > orchestration_run/logs/architect_digest_stream.jsonl 2>&1
 ```
 
 ### CHECKPOINT 5 — Session Memory Written
 - [ ] `orchestration_run/architect_memory.md` exists
 - [ ] `orchestration_run/pm_memory.md` exists
+- [ ] `orchestration_run/architect_digest.md` exists
 - [ ] Admin files updated
+- [ ] Any `[PROCESS_FIX_REQUIRED]` items were patched or carried into backlog/memory for the next similar run
 
 ### Step 22: Verify all orchestration processes are down
 
@@ -588,11 +796,14 @@ ps aux | grep claude
 | Dev bootstrap | haiku | Yes (`.jsonl`) | Full | Root branch |
 | Dev execution | task-dependent: haiku/sonnet/opus | Yes (`.jsonl`) | Full | `.worktrees/dev_N` |
 | Code Reviewer | task-dependent: sonnet/opus | Yes (`.jsonl`) | Read,Edit,Bash | Root branch |
+| Architect Heartbeat | opus | Yes (`.jsonl`) | Read,Edit,Bash | Root branch |
+| PM Heartbeat | sonnet | Yes (`.jsonl`) | Read,Edit,Bash | Root branch |
 | Cross-tester | task-dependent: haiku/sonnet/opus | Yes (`.jsonl`) | Read,Edit,Bash | Root branch (reads worktree) |
 | Live Watcher | haiku | Yes (`.jsonl`) | Read,Bash | Root branch |
 | Feedback (Arch) | opus | Yes (`.jsonl`) | Full | Root branch |
 | Feedback (PM) | sonnet | Yes (`.jsonl`) | Full | Root branch |
 | Memory write | task-dependent: opus/sonnet | Yes (`.jsonl`) | Full | Root branch |
+| Architect Digest | opus | Yes (`.jsonl`) | Full | Root branch |
 
 Record the chosen model, effort, PID, and log path for each launch in `orchestration_run/coordination.md`.
 

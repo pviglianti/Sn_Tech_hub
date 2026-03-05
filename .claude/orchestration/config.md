@@ -20,6 +20,27 @@ architect_effort: high  # always highest reasoning for architecture work
 pm_model: sonnet
 pm_effort: medium
 
+architect_heartbeat_model: opus
+architect_heartbeat_effort: medium
+architect_heartbeat_mode: one_shot
+architect_heartbeat_triggers:
+  - first_reviewer_finding
+  - critical_finding
+  - dependency_unblock
+  - repeated_dev_miss
+  - before_merge
+  - before_memory_write
+
+pm_heartbeat_model: sonnet
+pm_heartbeat_effort: low
+pm_heartbeat_mode: one_shot
+pm_heartbeat_triggers:
+  - first_done
+  - gate_miss
+  - stalled_task
+  - cross_test_fail
+  - phase_transition
+
 dev_default_model: sonnet
 dev_default_effort: medium
 dev_simple_model: haiku
@@ -39,13 +60,42 @@ crosstester_escalation_effort: medium
 
 watcher_model: haiku
 watcher_effort: low
+watcher_mode: one_shot
+watcher_snapshot_interval_minutes: 10
+watcher_relaunch_triggers:
+  - first_done
+  - findings_updated
+  - suspected_stall
+
+monitor_loop_script: .claude/orchestration/scripts/orchestrator_monitor_loop.sh
+monitor_poll_seconds: 30
+monitor_stall_seconds: 300
+monitor_heartbeat_log: orchestration_run/logs/orchestrator_heartbeat.log
+
+scribe_enabled_default: false
+scribe_model: haiku
+scribe_effort: low
+scribe_mode: one_shot
+scribe_snapshot_interval_minutes: 15
+scribe_relaunch_triggers:
+  - first_done
+  - checkpoint_change
+
+cross_test_start_policy: rolling_when_tester_idle
+cross_test_target_context_required: true
+worktree_context_gate_script: .claude/orchestration/scripts/require_worktree_context.sh
 ui_tester_model: sonnet
 ui_tester_effort: low
 bootstrap_model: haiku
 bootstrap_effort: low
+bootstrap_ack_gate_script: .claude/orchestration/scripts/require_bootstrap_ack.sh
 
 escalation_model: opus
 escalation_effort: high
+
+architect_reconciliation_owner: technical
+pm_reconciliation_owner: delivery_process
+architect_final_digest_file: orchestration_run/architect_digest.md
 ```
 
 ## Paths

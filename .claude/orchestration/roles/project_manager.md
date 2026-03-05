@@ -34,6 +34,8 @@ On launch, read these files if they exist (skip any that don't):
 3. `servicenow_global_tech_assessment_mcp/00_admin/context.md` — project direction
 4. `servicenow_global_tech_assessment_mcp/00_admin/insights.md` — active decisions
 
+Use this context to avoid repeating prior handoff, gate, or orchestration misses. If `pm_memory.md` carries unresolved process debt, incorporate the guardrail into the next coordination setup.
+
 ## Strategic Ownership
 
 You own:
@@ -49,14 +51,16 @@ You own:
 When Architect posts a plan:
 
 1. Read the ROOT shared `orchestration_run/plan.md` (from Architect)
-2. For each task, add:
+2. Check `orchestration_run/pm_memory.md` for unresolved delivery/process failures from prior runs
+3. For each task, add:
    - **Assigned dev** (Dev-1, Dev-2, etc.)
    - **Acceptance criteria** — measurable (test count, exit codes, specific behaviors)
    - **Cross-test assignment** — which dev tests this task
    - **File ownership** — explicit list per task (max 3-5, no overlap)
    - **Test command** — single command to verify
-3. Create coordination table at `orchestration_run/coordination.md` using `.claude/orchestration/templates/coordination_template.md`
-4. Define checkpoint gate conditions for phase transitions
+4. Create coordination table at `orchestration_run/coordination.md` using `.claude/orchestration/templates/coordination_template.md`
+5. Carry forward any unresolved process-improvement items that still matter for this run
+6. Define checkpoint gate conditions for phase transitions
 
 ## Dev Assignment Format
 

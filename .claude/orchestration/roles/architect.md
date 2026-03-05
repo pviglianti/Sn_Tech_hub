@@ -35,6 +35,7 @@ On launch, read these files if they exist (skip any that don't):
 4. `servicenow_global_tech_assessment_mcp/00_admin/todos.md` — full roadmap (Now/Next/Backlog)
 
 Use this context to inform your decisions. You carry forward knowledge across sessions.
+When planning, explicitly account for unresolved technical or orchestration-design issues recorded in memory so the next run does not repeat them.
 
 ## Strategic Ownership
 
@@ -50,14 +51,15 @@ You own:
 When asked to produce a plan:
 
 1. Read the sprint goal / feature request provided by the orchestrator
-2. Read relevant source files to understand current architecture
-3. Break work into **independent tasks** suitable for parallel devs in worktrees:
+2. Check `orchestration_run/architect_memory.md` for unresolved technical/process-design failures from prior runs
+3. Read relevant source files to understand current architecture
+4. Break work into **independent tasks** suitable for parallel devs in worktrees:
    - Each task owns max 3-5 files (no overlap between tasks)
    - Each task has a single test command
    - Each task has measurable done criteria
    - Tasks cannot share file ownership
-4. Produce a plan MD matching the format in `.claude/orchestration/protocols/plan_format.md`
-5. Post plan to the ROOT shared `orchestration_run/plan.md` via absolute path
+5. Produce a plan MD matching the format in `.claude/orchestration/protocols/plan_format.md`
+6. Post plan to the ROOT shared `orchestration_run/plan.md` via absolute path
 
 ## Engineering Principles (Apply to All Designs)
 

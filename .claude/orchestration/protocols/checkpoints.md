@@ -18,15 +18,30 @@ Formal phase transitions. The orchestrator MUST verify all gates before proceedi
 
 ---
 
-## Checkpoint 1 — Devs Launched
+## Checkpoint 1 — Bootstrap ACK Complete
 
 **Gate:**
 - [ ] All worktrees created (1 per dev)
 - [ ] All dev bootstrap ACKs received (`[ACK]` in plan MD)
+- [ ] ACK gate script passed (`.claude/orchestration/scripts/require_bootstrap_ack.sh orchestration_run/plan.md <num_devs>`)
 
-**Action:** Orchestrator sends execution prompts. After the first dev posts `[DONE]`, launch reviewer + live watcher.
+**Action:** Orchestrator sends execution prompts. After the first dev posts `[DONE]`, launch reviewer + one-shot watcher snapshot.
 
 **Unblocks:** Build phase
+
+---
+
+## Checkpoint 1.5 — First `[DONE]` Response (Timing Gate)
+
+**Gate:**
+- [ ] Reviewer launched within 2 minutes of the first `[DONE]`
+- [ ] One-shot watcher snapshot launched within 2 minutes of the first `[DONE]`
+- [ ] If any tester is idle, at least one rolling cross-test lane launched
+- [ ] Orchestrator heartbeat fresh (`orchestration_run/logs/orchestrator_heartbeat.log` updated within 2x poll interval)
+
+**Action:** Keep Build active while cross-test/patch loops run in parallel.
+
+**Unblocks:** Parallel build + rolling validation
 
 ---
 
@@ -36,7 +51,7 @@ Formal phase transitions. The orchestrator MUST verify all gates before proceedi
 - [ ] All devs posted `[DONE]` with passing tests
 - [ ] Reviewer has reviewed ALL tasks (posted findings per task)
 
-**Action:** Orchestrator re-launches devs as cross-testers
+**Action:** Orchestrator closes any remaining cross-tests/sign-offs not already finished during rolling lanes.
 
 **Unblocks:** Cross-test phase (Phase 3)
 
@@ -72,6 +87,7 @@ Formal phase transitions. The orchestrator MUST verify all gates before proceedi
 - [ ] Architect wrote to `orchestration_run/architect_memory.md`
 - [ ] PM wrote to `orchestration_run/pm_memory.md`
 - [ ] Admin files updated (`servicenow_global_tech_assessment_mcp/00_admin/insights.md`, `servicenow_global_tech_assessment_mcp/00_admin/todos.md`, `servicenow_global_tech_assessment_mcp/00_admin/run_log.md`)
+- [ ] Any `[PROCESS_FIX_REQUIRED]` items were either patched in `.claude/orchestration/*` or converted into explicit backlog/memory items for the next run
 
 **Action:** Verify no orchestration process remains running. Session complete.
 
@@ -82,7 +98,9 @@ Formal phase transitions. The orchestrator MUST verify all gates before proceedi
 ## Anti-Patterns
 
 - Launching devs before Checkpoint 0 passes
+- Skipping the ACK gate script before execution launch
 - Launching reviewer before any dev has completed work
-- Proceeding to cross-test before ALL devs are done
+- Waiting for ALL devs to finish when an idle tester can start rolling cross-test earlier
+- Allowing monitor heartbeat to go stale (orchestrator effectively asleep)
 - Merging before ALL sign-offs are complete
 - Skipping memory-write at session end

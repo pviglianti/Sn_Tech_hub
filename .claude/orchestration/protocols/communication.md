@@ -20,9 +20,17 @@ All inline updates in plan MD use:
 | `[CROSS_TEST_START]` | Starting cross-test | Cross-testers |
 | `[CROSS_TEST_PASS]` | Cross-test verified | Cross-testers |
 | `[CROSS_TEST_FAIL]` | Cross-test found issues | Cross-testers |
+| `[CROSS_TEST_BLOCKED]` | Cross-test could not start due to wrong worktree/branch or missing prereq | Cross-testers |
 | `[FIX]` | Fixing issues from review/cross-test | Devs |
 | `[SIGN_OFF]` | Final approval | Anyone signing off |
 | `[FEEDBACK]` | Post-review feedback | Architect, PM |
+| `[ORCH_HEARTBEAT]` | Orchestrator monitor-loop heartbeat line | Orchestrator monitor loop |
+| `[COURSE_CORRECT]` | Orchestrator changed prompts/flow to recover the run | Orchestrator |
+| `[MODEL_ESCALATION]` | Orchestrator raised model or effort tier | Orchestrator |
+| `[GATE_MISS]` | Required launch/checkpoint/handoff was missed | Orchestrator, PM heartbeat |
+| `[ARCH_RATIFY_REQUIRED]` | Technical course correction needs Architect confirmation | Orchestrator, Architect heartbeat |
+| `[DELIVERY_NOTE]` | Delivery/process note from orchestrator or PM heartbeat | Orchestrator, PM heartbeat |
+| `[PROCESS_FIX_REQUIRED]` | Run exposed an orchestration/doc/process gap that must be patched or backlogged before the next similar run | Orchestrator, PM, Architect |
 
 ## Channels
 
@@ -30,7 +38,7 @@ All inline updates in plan MD use:
 |---------|---------|------------|-----------|
 | `.jsonl` stream logs | Real-time observability | Each role (auto) | Orchestrator (`tail -f`), Reviewer |
 | Plan MD (inline sections) | Status, findings, sign-offs | Architect, PM, Devs, Reviewer, Cross-testers (own section only) | Everyone |
-| Coordination MD | Task table, checkpoints, runtime registry | PM (initial), Orchestrator (updates) | Everyone |
+| Coordination MD | Task table, checkpoints, runtime registry, orchestrator intervention log, heartbeat snapshots, ratification queue, process improvement queue | PM (initial), Orchestrator (updates), heartbeat snapshots | Everyone |
 | `findings.md` | Reviewer summary | Reviewer only | Architect, PM, Orchestrator |
 
 ## Shared Root Rule
@@ -42,8 +50,9 @@ Devs in worktrees must edit those files via absolute `$PROJECT_ROOT/...` paths a
 
 - **Devs** write ONLY to their `Dev-N Notes` and `Cross-Test Thread` sections in the ROOT shared plan
 - **Reviewer** writes ONLY to `Reviewer Findings` sections and `findings.md` in the ROOT shared docs
+- **Heartbeat snapshots** write ONLY to `Heartbeat Snapshots` and `Ratification Queue` sections in ROOT `coordination.md`
 - **No one** edits or overwrites another role's messages — append only
-- **Orchestrator** updates top-level Status fields and Sign-off checkboxes
+- **Orchestrator** updates top-level Status fields, Sign-off checkboxes, the `Orchestrator Intervention Log`, and the `Process Improvement Queue` in ROOT `coordination.md`
 
 ## Back-and-Forth Protocol
 
