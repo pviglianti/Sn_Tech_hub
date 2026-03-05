@@ -211,6 +211,13 @@ window.openTab = function openTab(evt, tabName) {
     document.dispatchEvent(new CustomEvent('tab:activated', { detail: { tabName: tabName } }));
 };
 
+window.stopDictPullMonitor = function stopDictPullMonitor() {
+    if (window.__dictPullMonitor && window.__dictPullMonitor.timerId) {
+        clearInterval(window.__dictPullMonitor.timerId);
+    }
+    window.__dictPullMonitor = null;
+};
+
 window.startDictPullMonitor = function startDictPullMonitor(instanceId) {
     const modal       = document.getElementById('dict-pull-modal');
     const statusText  = document.getElementById('dict-pull-status-text');
@@ -219,6 +226,13 @@ window.startDictPullMonitor = function startDictPullMonitor(instanceId) {
     const etaSpan     = document.getElementById('dict-pull-eta');
 
     if (!modal) return;
+
+    if (window.__dictPullMonitor && window.__dictPullMonitor.instanceId === instanceId) {
+        return;
+    }
+    if (window.stopDictPullMonitor) {
+        window.stopDictPullMonitor();
+    }
 
     // Show the modal
     modal.style.display = 'flex';
@@ -229,6 +243,7 @@ window.startDictPullMonitor = function startDictPullMonitor(instanceId) {
 
     const POLL_INTERVAL_MS = 3000;
     let timerId = null;
+    window.__dictPullMonitor = { instanceId: instanceId, timerId: null };
 
     function formatEta(seconds) {
         if (seconds == null || seconds < 0) return '';
@@ -271,8 +286,14 @@ window.startDictPullMonitor = function startDictPullMonitor(instanceId) {
                 progressBar.style.width = '100%';
                 etaSpan.textContent     = '';
                 clearInterval(timerId);
+                if (window.__dictPullMonitor) {
+                    window.__dictPullMonitor.timerId = null;
+                }
                 setTimeout(function () {
                     modal.style.display = 'none';
+                    if (window.stopDictPullMonitor) {
+                        window.stopDictPullMonitor();
+                    }
                     // Reload page if we're on instances page to update status
                     if (window.location.pathname === '/instances') {
                         window.location.reload();
@@ -281,6 +302,24 @@ window.startDictPullMonitor = function startDictPullMonitor(instanceId) {
             } else if (data.status === 'failed') {
                 statusText.textContent = 'Pull failed: ' + (data.error || 'unknown error');
                 clearInterval(timerId);
+                if (window.__dictPullMonitor) {
+                    window.__dictPullMonitor.timerId = null;
+                }
+                setTimeout(function () {
+                    modal.style.display = 'none';
+                    if (window.stopDictPullMonitor) {
+                        window.stopDictPullMonitor();
+                    }
+                }, 2500);
+            } else if (data.status !== 'running') {
+                clearInterval(timerId);
+                if (window.__dictPullMonitor) {
+                    window.__dictPullMonitor.timerId = null;
+                }
+                modal.style.display = 'none';
+                if (window.stopDictPullMonitor) {
+                    window.stopDictPullMonitor();
+                }
             }
         } catch (err) {
             statusText.textContent = 'Polling error: ' + err.message;
@@ -290,4 +329,7 @@ window.startDictPullMonitor = function startDictPullMonitor(instanceId) {
     // First poll immediately, then every 3 seconds
     poll();
     timerId = setInterval(poll, POLL_INTERVAL_MS);
+    if (window.__dictPullMonitor) {
+        window.__dictPullMonitor.timerId = timerId;
+    }
 };

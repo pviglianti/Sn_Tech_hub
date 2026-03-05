@@ -15,6 +15,15 @@
             </div>
         </div>
         <div class="assessment-actions">
+            <a
+                href="/relationship-graph?result_id={{ result.id }}{% if assessment %}&assessment_id={{ assessment.id }}{% endif %}{% if scan %}&scan_id={{ scan.id }}{% endif %}"
+                class="btn btn-secondary"
+                title="Open dependency graph centered on this artifact."
+                target="_blank"
+                rel="noopener noreferrer"
+            >
+                Relationship Graph
+            </a>
             {% if scan %}
             <a href="/scans/{{ scan.id }}" class="btn btn-secondary">Back to Scan</a>
             {% endif %}
@@ -658,6 +667,7 @@ function loadGroupingEvidence() {
             var html = '';
             var totalSignals = 0;
             var esc = function(s) { if (s == null) return ''; var d = document.createElement('div'); d.appendChild(document.createTextNode(String(s))); return d.innerHTML; };
+            var safeHex = function(c) { return /^#[0-9A-Fa-f]{3,8}$/.test(c) ? c : '#ccc'; };
 
             // Feature assignments
             if (data.feature_assignments && data.feature_assignments.length) {
@@ -667,7 +677,11 @@ function loadGroupingEvidence() {
                 html += '</tr></thead><tbody>';
                 data.feature_assignments.forEach(function (fa) {
                     html += '<tr>';
-                    html += '<td><a href="/features/' + fa.feature_id + '">' + esc(fa.feature_name || '-') + '</a></td>';
+                    html += '<td>';
+                    if (fa.feature_color_hex) {
+                        html += '<span class="feature-color-dot" style="background:' + safeHex(fa.feature_color_hex) + '"></span>';
+                    }
+                    html += '<a href="/features/' + fa.feature_id + '">' + esc(fa.feature_name || '-') + '</a></td>';
                     html += '<td>' + esc((fa.membership_type || 'primary').replace(/_/g, ' ')) + '</td>';
                     html += '<td><span class="fht-badge fht-source-' + (fa.assignment_source || 'engine') + '">' + esc(fa.assignment_source || '-') + '</span></td>';
                     html += '<td>' + (fa.assignment_confidence != null ? Math.round(fa.assignment_confidence * 100) + '%' : '-') + '</td>';
@@ -741,9 +755,14 @@ function loadGroupingEvidence() {
                 html += '</tr></thead><tbody>';
                 customized.forEach(function (ca) {
                     var sr = ca.scan_result || {};
-                    html += '<tr>';
-                    html += '<td><a href="/features/' + ca.feature_id + '">' + esc(ca.feature_name || '-') + '</a></td>';
-                    html += '<td><a href="/results/' + (sr.id || '') + '">' + esc(sr.id || '-') + '</a></td>';
+                    html += '<tr class="is-assessment-customization">';
+                    html += '<td>';
+                    if (ca.feature_color_hex) {
+                        html += '<span class="feature-color-dot" style="background:' + safeHex(ca.feature_color_hex) + '"></span>';
+                    }
+                    html += '<a href="/features/' + ca.feature_id + '">' + esc(ca.feature_name || '-') + '</a></td>';
+                    html += '<td><a href="/results/' + (sr.id || '') + '">' + esc(sr.name || sr.id || '-') + '</a>';
+                    html += ' <span class="customization-badge">Customization</span></td>';
                     html += '</tr>';
                 });
                 html += '</tbody></table></div>';
@@ -756,8 +775,12 @@ function loadGroupingEvidence() {
                 ctxArt.forEach(function (ca) {
                     var sr = ca.scan_result || {};
                     html += '<tr>';
-                    html += '<td><a href="/features/' + ca.feature_id + '">' + esc(ca.feature_name || '-') + '</a></td>';
-                    html += '<td><a href="/results/' + (sr.id || '') + '">' + esc(sr.id || '-') + '</a></td>';
+                    html += '<td>';
+                    if (ca.feature_color_hex) {
+                        html += '<span class="feature-color-dot" style="background:' + safeHex(ca.feature_color_hex) + '"></span>';
+                    }
+                    html += '<a href="/features/' + ca.feature_id + '">' + esc(ca.feature_name || '-') + '</a></td>';
+                    html += '<td><a href="/results/' + (sr.id || '') + '">' + esc(sr.name || sr.id || '-') + '</a></td>';
                     html += '<td>' + esc((ca.context_type || '').replace(/_/g, ' ')) + '</td>';
                     html += '<td>' + (ca.confidence != null ? Math.round(ca.confidence * 100) + '%' : '-') + '</td>';
                     html += '</tr>';

@@ -25,6 +25,8 @@ SECTION_PREFLIGHT = "Assessment / Preflight"
 SECTION_FETCH = "Integration / Fetch"
 SECTION_REASONING = "Reasoning / Engines"
 SECTION_OBSERVATIONS = "Observations"
+SECTION_AI_ANALYSIS = "AI Analysis"
+SECTION_AI_RUNTIME = "AI / LLM Runtime"
 
 SECTION_ORDER: List[str] = [
     SECTION_GENERAL,
@@ -32,6 +34,8 @@ SECTION_ORDER: List[str] = [
     SECTION_FETCH,
     SECTION_REASONING,
     SECTION_OBSERVATIONS,
+    SECTION_AI_ANALYSIS,
+    SECTION_AI_RUNTIME,
 ]
 
 # ---------------------------------------------------------------------------
@@ -46,6 +50,11 @@ FETCH_DEFAULT_BATCH_SIZE = "integration.fetch.default_batch_size"
 FETCH_INTER_BATCH_DELAY = "integration.fetch.inter_batch_delay"
 FETCH_REQUEST_TIMEOUT = "integration.fetch.request_timeout"
 FETCH_MAX_BATCHES = "integration.fetch.max_batches"
+
+# Pull optimization keys
+PULL_ORDER_DESC = "integration.pull.order_desc"
+PULL_MAX_RECORDS = "integration.pull.max_records"
+PULL_BAIL_UNCHANGED_RUN = "integration.pull.bail_unchanged_run"
 
 # Reasoning engine keys
 REASONING_US_MIN_SHARED_RECORDS = "reasoning.us.min_shared_records"
@@ -66,6 +75,27 @@ OBSERVATIONS_BATCH_SIZE = "observations.batch_size"
 OBSERVATIONS_INCLUDE_USAGE_QUERIES = "observations.include_usage_queries"
 OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT = "observations.max_usage_queries_per_result"
 
+# AI Analysis pipeline keys
+AI_ANALYSIS_BATCH_SIZE = "ai_analysis.batch_size"
+AI_ANALYSIS_CONTEXT_ENRICHMENT = "ai_analysis.context_enrichment"
+AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH = "ai_analysis.max_rabbit_hole_depth"
+AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP = "ai_analysis.max_neighbors_per_hop"
+AI_ANALYSIS_MIN_EDGE_WEIGHT = "ai_analysis.min_edge_weight_for_traversal"
+
+# Pipeline prompt integration keys
+PIPELINE_USE_REGISTERED_PROMPTS = "pipeline.use_registered_prompts"
+
+# AI / LLM runtime + budget keys
+AI_RUNTIME_MODE = "ai.runtime.mode"
+AI_RUNTIME_PROVIDER = "ai.runtime.provider"
+AI_RUNTIME_MODEL = "ai.runtime.model"
+AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD = "ai.budget.assessment_soft_limit_usd"
+AI_BUDGET_ASSESSMENT_HARD_LIMIT_USD = "ai.budget.assessment_hard_limit_usd"
+AI_BUDGET_MONTHLY_HARD_LIMIT_USD = "ai.budget.monthly_hard_limit_usd"
+AI_BUDGET_STOP_ON_HARD_LIMIT = "ai.budget.stop_on_hard_limit"
+AI_BUDGET_MAX_INPUT_TOKENS_PER_CALL = "ai.budget.max_input_tokens_per_call"
+AI_BUDGET_MAX_OUTPUT_TOKENS_PER_CALL = "ai.budget.max_output_tokens_per_call"
+
 # Common IANA timezone choices for the select dropdown
 TIMEZONE_OPTIONS: List[Tuple[str, str]] = [
     ("America/New_York", "Eastern (ET)"),
@@ -80,7 +110,6 @@ TIMEZONE_OPTIONS: List[Tuple[str, str]] = [
     ("Asia/Tokyo", "Tokyo (JST)"),
     ("Australia/Sydney", "Sydney (AEST)"),
 ]
-
 
 @dataclass(frozen=True)
 class FetchProperties:
@@ -117,6 +146,36 @@ class ObservationProperties:
 
 
 @dataclass(frozen=True)
+class AIAnalysisProperties:
+    """Typed AI analysis stage properties loaded from app_config."""
+    batch_size: int = 0  # 0 = all at once, 50+ for batching
+    context_enrichment: str = "auto"  # "auto", "always", "never"
+    max_rabbit_hole_depth: int = 10
+    max_neighbors_per_hop: int = 20
+    min_edge_weight_for_traversal: float = 2.0
+
+
+@dataclass(frozen=True)
+class AIRuntimeProperties:
+    """Typed AI runtime/provider/budget properties loaded from app_config."""
+    mode: str = "local_subscription"
+    provider: str = "openai"
+    model: str = "gpt-5-mini"
+    assessment_soft_limit_usd: float = 10.0
+    assessment_hard_limit_usd: float = 25.0
+    monthly_hard_limit_usd: float = 200.0
+    stop_on_hard_limit: bool = True
+    max_input_tokens_per_call: int = 200000
+    max_output_tokens_per_call: int = 40000
+
+
+@dataclass(frozen=True)
+class PipelinePromptProperties:
+    """Typed pipeline prompt integration properties loaded from app_config."""
+    use_registered_prompts: bool = False
+
+
+@dataclass(frozen=True)
 class IntegrationPropertyDefinition:
     key: str
     label: str
@@ -149,6 +208,30 @@ BOOL_OPTIONS: List[Tuple[str, str]] = [
     ("false", "No"),
 ]
 
+AI_RUNTIME_MODE_OPTIONS: List[Tuple[str, str]] = [
+    ("local_subscription", "Local Subscription (Recommended)"),
+    ("api_key", "API Key"),
+    ("disabled", "Disabled"),
+]
+
+AI_RUNTIME_PROVIDER_OPTIONS: List[Tuple[str, str]] = [
+    ("openai", "OpenAI"),
+    ("anthropic", "Anthropic"),
+    ("google_gemini", "Google Gemini"),
+    ("deepseek", "DeepSeek"),
+    ("openai_compatible_custom", "OpenAI-Compatible Custom"),
+]
+
+AI_RUNTIME_MODEL_OPTIONS: List[Tuple[str, str]] = [
+    ("gpt-5-mini", "GPT-5 mini"),
+    ("gpt-5.2", "GPT-5.2"),
+    ("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+    ("claude-haiku-4-5", "Claude Haiku 4.5"),
+    ("gemini-2.5-pro", "Gemini 2.5 Pro"),
+    ("deepseek-chat", "DeepSeek Chat"),
+    ("custom", "Custom / Provider Default"),
+]
+
 PROPERTY_DEFAULTS: Dict[str, str] = {
     PREFLIGHT_CONCURRENT_TYPES: "version_history,customer_update_xml",
     GENERAL_DISPLAY_TIMEZONE: "America/New_York",
@@ -156,6 +239,10 @@ PROPERTY_DEFAULTS: Dict[str, str] = {
     FETCH_INTER_BATCH_DELAY: "0.5",
     FETCH_REQUEST_TIMEOUT: "60",
     FETCH_MAX_BATCHES: "5000",
+    # Pull optimization defaults
+    PULL_ORDER_DESC: "true",
+    PULL_MAX_RECORDS: "5000",
+    PULL_BAIL_UNCHANGED_RUN: "50",
     # Reasoning engine defaults
     REASONING_US_MIN_SHARED_RECORDS: "1",
     REASONING_US_NAME_SIMILARITY_MIN_TOKENS: "2",
@@ -173,6 +260,24 @@ PROPERTY_DEFAULTS: Dict[str, str] = {
     OBSERVATIONS_BATCH_SIZE: "10",
     OBSERVATIONS_INCLUDE_USAGE_QUERIES: "auto",
     OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT: "2",
+    # AI Analysis pipeline defaults
+    AI_ANALYSIS_BATCH_SIZE: "0",
+    AI_ANALYSIS_CONTEXT_ENRICHMENT: "auto",
+    AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH: "10",
+    AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP: "20",
+    AI_ANALYSIS_MIN_EDGE_WEIGHT: "2.0",
+    # Pipeline prompt integration defaults
+    PIPELINE_USE_REGISTERED_PROMPTS: "false",
+    # AI runtime + budget defaults
+    AI_RUNTIME_MODE: "local_subscription",
+    AI_RUNTIME_PROVIDER: "openai",
+    AI_RUNTIME_MODEL: "gpt-5-mini",
+    AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD: "10",
+    AI_BUDGET_ASSESSMENT_HARD_LIMIT_USD: "25",
+    AI_BUDGET_MONTHLY_HARD_LIMIT_USD: "200",
+    AI_BUDGET_STOP_ON_HARD_LIMIT: "true",
+    AI_BUDGET_MAX_INPUT_TOKENS_PER_CALL: "200000",
+    AI_BUDGET_MAX_OUTPUT_TOKENS_PER_CALL: "40000",
 }
 
 PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
@@ -265,6 +370,54 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         section=SECTION_FETCH,
         min_value=10,
         max_value=50000,
+    ),
+    PULL_ORDER_DESC: IntegrationPropertyDefinition(
+        key=PULL_ORDER_DESC,
+        label="Pull Order: Newest First",
+        description=(
+            "Order all data pulls newest-first (ORDERBYDESC). "
+            "Enables bail-out to stop early once local counts match remote "
+            "and consecutive unchanged upserts exceed the bail threshold. "
+            "Recommended for large tables on re-pull scenarios."
+        ),
+        value_type="select",
+        default=PROPERTY_DEFAULTS[PULL_ORDER_DESC],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="all_sync",
+        section=SECTION_FETCH,
+        options=BOOL_OPTIONS,
+    ),
+    PULL_MAX_RECORDS: IntegrationPropertyDefinition(
+        key=PULL_MAX_RECORDS,
+        label="Max Records Per Pull",
+        description=(
+            "Maximum total records to retrieve per pull run across all batches. "
+            "Acts as an independent safety cap. When reached, the pull stops "
+            "regardless of count or content gates."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[PULL_MAX_RECORDS],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="all_sync",
+        section=SECTION_FETCH,
+        min_value=100,
+        max_value=500000,
+    ),
+    PULL_BAIL_UNCHANGED_RUN: IntegrationPropertyDefinition(
+        key=PULL_BAIL_UNCHANGED_RUN,
+        label="Bail-Out: Consecutive Unchanged Upserts",
+        description=(
+            "Number of consecutive unchanged upserts required (along with the "
+            "count gate) to trigger early bail-out during a re-pull. "
+            "A lower value exits sooner; a higher value is more thorough."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[PULL_BAIL_UNCHANGED_RUN],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="all_sync",
+        section=SECTION_FETCH,
+        min_value=1,
+        max_value=10000,
     ),
     # ----- Reasoning engine properties -----
     REASONING_US_MIN_SHARED_RECORDS: IntegrationPropertyDefinition(
@@ -488,6 +641,238 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         min_value=0,
         max_value=10,
     ),
+    # ----- AI Analysis properties -----
+    AI_ANALYSIS_BATCH_SIZE: IntegrationPropertyDefinition(
+        key=AI_ANALYSIS_BATCH_SIZE,
+        label="AI Analysis Batch Size",
+        description=(
+            "Number of artifacts to process per AI analysis batch. "
+            "0 = all at once. Set to 50+ for large assessments."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[AI_ANALYSIS_BATCH_SIZE],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_analysis",
+        section=SECTION_AI_ANALYSIS,
+        min_value=0,
+        max_value=1000,
+    ),
+    AI_ANALYSIS_CONTEXT_ENRICHMENT: IntegrationPropertyDefinition(
+        key=AI_ANALYSIS_CONTEXT_ENRICHMENT,
+        label="Context Enrichment Mode",
+        description=(
+            "When to query ServiceNow for additional context. "
+            "auto = only when references detected and not cached locally. "
+            "always = query for every artifact. never = local data only."
+        ),
+        value_type="select",
+        default=PROPERTY_DEFAULTS[AI_ANALYSIS_CONTEXT_ENRICHMENT],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_analysis",
+        section=SECTION_AI_ANALYSIS,
+        options=[
+            ("auto", "Auto"),
+            ("always", "Always"),
+            ("never", "Never"),
+        ],
+    ),
+    AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH: IntegrationPropertyDefinition(
+        key=AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH,
+        label="Max Traversal Depth",
+        description=(
+            "Maximum depth to follow relationship chains in depth-first mode. "
+            "Prevents runaway traversal. Items beyond this depth are analyzed "
+            "when reached from the main queue."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_analysis",
+        section=SECTION_AI_ANALYSIS,
+        min_value=1,
+        max_value=50,
+    ),
+    AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP: IntegrationPropertyDefinition(
+        key=AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP,
+        label="Max Neighbors Per Hop",
+        description=(
+            "Maximum number of related customizations to follow from each artifact "
+            "in depth-first mode. Prevents explosion on highly-connected artifacts."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_analysis",
+        section=SECTION_AI_ANALYSIS,
+        min_value=1,
+        max_value=100,
+    ),
+    AI_ANALYSIS_MIN_EDGE_WEIGHT: IntegrationPropertyDefinition(
+        key=AI_ANALYSIS_MIN_EDGE_WEIGHT,
+        label="Min Edge Weight for Traversal",
+        description=(
+            "Minimum relationship weight to follow in depth-first mode. "
+            "Higher values mean only strong relationships (code refs, update set overlaps) "
+            "trigger depth-first traversal."
+        ),
+        value_type="float",
+        default=PROPERTY_DEFAULTS[AI_ANALYSIS_MIN_EDGE_WEIGHT],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_analysis",
+        section=SECTION_AI_ANALYSIS,
+        min_value=0.0,
+        max_value=10.0,
+    ),
+    # ----- Pipeline prompt integration -----
+    PIPELINE_USE_REGISTERED_PROMPTS: IntegrationPropertyDefinition(
+        key=PIPELINE_USE_REGISTERED_PROMPTS,
+        label="Use Registered MCP Prompts",
+        description=(
+            "When enabled, pipeline AI handlers call registered MCP prompt "
+            "handlers (artifact_analyzer, relationship_tracer, technical_architect, report_writer) "
+            "to build rich context instead of storing simple JSON summaries."
+        ),
+        value_type="select",
+        default=PROPERTY_DEFAULTS[PIPELINE_USE_REGISTERED_PROMPTS],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="pipeline",
+        section=SECTION_AI_ANALYSIS,
+        options=BOOL_OPTIONS,
+    ),
+    # ----- AI runtime + budget properties -----
+    AI_RUNTIME_MODE: IntegrationPropertyDefinition(
+        key=AI_RUNTIME_MODE,
+        label="AI Runtime Mode",
+        description=(
+            "How AI runs are executed. local_subscription uses a local MCP-capable "
+            "client session (no API key in this app). api_key uses server-side API "
+            "credentials for headless automation. disabled blocks AI stage execution."
+        ),
+        value_type="select",
+        default=PROPERTY_DEFAULTS[AI_RUNTIME_MODE],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_runtime",
+        section=SECTION_AI_RUNTIME,
+        options=AI_RUNTIME_MODE_OPTIONS,
+    ),
+    AI_RUNTIME_PROVIDER: IntegrationPropertyDefinition(
+        key=AI_RUNTIME_PROVIDER,
+        label="AI Provider",
+        description=(
+            "Target LLM provider used in API mode. This does not guarantee full "
+            "compatibility by itself; provider adapters and tool-calling support "
+            "must also exist in the app runtime."
+        ),
+        value_type="select",
+        default=PROPERTY_DEFAULTS[AI_RUNTIME_PROVIDER],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_runtime",
+        section=SECTION_AI_RUNTIME,
+        options=AI_RUNTIME_PROVIDER_OPTIONS,
+    ),
+    AI_RUNTIME_MODEL: IntegrationPropertyDefinition(
+        key=AI_RUNTIME_MODEL,
+        label="AI Model",
+        description=(
+            "Model identifier used for AI runs. Pick a preset model name or use "
+            "'Custom / Provider Default' to let the provider adapter choose."
+        ),
+        value_type="select",
+        default=PROPERTY_DEFAULTS[AI_RUNTIME_MODEL],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_runtime",
+        section=SECTION_AI_RUNTIME,
+        options=AI_RUNTIME_MODEL_OPTIONS,
+    ),
+    AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD: IntegrationPropertyDefinition(
+        key=AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD,
+        label="Assessment Soft Budget (USD)",
+        description=(
+            "Warning threshold per assessment when using API mode. Exceeding this "
+            "limit should surface warnings but does not have to stop execution."
+        ),
+        value_type="float",
+        default=PROPERTY_DEFAULTS[AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_runtime",
+        section=SECTION_AI_RUNTIME,
+        min_value=0.0,
+        max_value=100000.0,
+    ),
+    AI_BUDGET_ASSESSMENT_HARD_LIMIT_USD: IntegrationPropertyDefinition(
+        key=AI_BUDGET_ASSESSMENT_HARD_LIMIT_USD,
+        label="Assessment Hard Budget (USD)",
+        description=(
+            "Absolute per-assessment budget cap for API mode. When stop-on-hard-limit "
+            "is enabled, the app should stop AI execution once this threshold is hit."
+        ),
+        value_type="float",
+        default=PROPERTY_DEFAULTS[AI_BUDGET_ASSESSMENT_HARD_LIMIT_USD],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_runtime",
+        section=SECTION_AI_RUNTIME,
+        min_value=0.0,
+        max_value=100000.0,
+    ),
+    AI_BUDGET_MONTHLY_HARD_LIMIT_USD: IntegrationPropertyDefinition(
+        key=AI_BUDGET_MONTHLY_HARD_LIMIT_USD,
+        label="Monthly Hard Budget (USD)",
+        description=(
+            "Monthly cross-assessment API spend cap. Use this as a tenant-level "
+            "safety valve in addition to per-assessment limits."
+        ),
+        value_type="float",
+        default=PROPERTY_DEFAULTS[AI_BUDGET_MONTHLY_HARD_LIMIT_USD],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_runtime",
+        section=SECTION_AI_RUNTIME,
+        min_value=0.0,
+        max_value=1000000.0,
+    ),
+    AI_BUDGET_STOP_ON_HARD_LIMIT: IntegrationPropertyDefinition(
+        key=AI_BUDGET_STOP_ON_HARD_LIMIT,
+        label="Stop On Hard Budget Limit",
+        description=(
+            "When enabled, AI runs in API mode stop immediately once hard budget "
+            "limits are reached."
+        ),
+        value_type="select",
+        default=PROPERTY_DEFAULTS[AI_BUDGET_STOP_ON_HARD_LIMIT],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_runtime",
+        section=SECTION_AI_RUNTIME,
+        options=BOOL_OPTIONS,
+    ),
+    AI_BUDGET_MAX_INPUT_TOKENS_PER_CALL: IntegrationPropertyDefinition(
+        key=AI_BUDGET_MAX_INPUT_TOKENS_PER_CALL,
+        label="Max Input Tokens Per Call",
+        description=(
+            "Hard guardrail for prompt/input size in API mode. Prevents accidental "
+            "high-cost requests caused by oversized payloads."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[AI_BUDGET_MAX_INPUT_TOKENS_PER_CALL],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_runtime",
+        section=SECTION_AI_RUNTIME,
+        min_value=1000,
+        max_value=2000000,
+    ),
+    AI_BUDGET_MAX_OUTPUT_TOKENS_PER_CALL: IntegrationPropertyDefinition(
+        key=AI_BUDGET_MAX_OUTPUT_TOKENS_PER_CALL,
+        label="Max Output Tokens Per Call",
+        description=(
+            "Hard guardrail for completion/output size in API mode. Keeps long "
+            "responses from driving unexpected cost spikes."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[AI_BUDGET_MAX_OUTPUT_TOKENS_PER_CALL],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_runtime",
+        section=SECTION_AI_RUNTIME,
+        min_value=256,
+        max_value=2000000,
+    ),
 }
 
 
@@ -685,6 +1070,35 @@ def load_fetch_properties(session: Session, instance_id: Optional[int] = None) -
     )
 
 
+def load_pull_order_desc(session: Session, instance_id: Optional[int] = None) -> bool:
+    """Return True if pulls should use newest-first ordering (ORDERBYDESC).
+
+    Defaults to True to enable bail-out optimization on re-pull scenarios.
+    """
+    raw = _read_property(session, PULL_ORDER_DESC, instance_id=instance_id)
+    if raw is None or raw == "":
+        raw = PROPERTY_DEFAULTS[PULL_ORDER_DESC]
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def load_pull_max_records(session: Session, instance_id: Optional[int] = None) -> int:
+    """Return the maximum total records to retrieve per pull run.
+
+    Acts as an independent safety cap, firing regardless of count or content gates.
+    Defaults to 5000.
+    """
+    return _get_int(session, PULL_MAX_RECORDS, int(PROPERTY_DEFAULTS[PULL_MAX_RECORDS]), instance_id=instance_id)
+
+
+def load_pull_bail_unchanged_run(session: Session, instance_id: Optional[int] = None) -> int:
+    """Return the consecutive-unchanged upserts threshold for bail-out.
+
+    When this many consecutive upserts produce no data change (and the count gate
+    is also met), the pull exits early. Defaults to 50.
+    """
+    return _get_int(session, PULL_BAIL_UNCHANGED_RUN, int(PROPERTY_DEFAULTS[PULL_BAIL_UNCHANGED_RUN]), instance_id=instance_id)
+
+
 def load_display_timezone(session: Session, instance_id: Optional[int] = None) -> str:
     """Return the configured IANA display timezone (e.g. 'America/New_York')."""
     raw = _read_property(session, GENERAL_DISPLAY_TIMEZONE, instance_id=instance_id)
@@ -810,5 +1224,148 @@ def load_observation_properties(
             OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT,
             defaults.max_usage_queries_per_result,
             instance_id=instance_id,
+        ),
+    )
+
+
+def load_ai_analysis_properties(
+    session: Session,
+    instance_id: Optional[int] = None,
+) -> AIAnalysisProperties:
+    """Load typed AI analysis properties from app_config."""
+    defaults = AIAnalysisProperties()
+    context_enrichment = (
+        _read_property(session, AI_ANALYSIS_CONTEXT_ENRICHMENT, instance_id=instance_id)
+        or PROPERTY_DEFAULTS[AI_ANALYSIS_CONTEXT_ENRICHMENT]
+    ).strip().lower()
+    if context_enrichment not in {"auto", "always", "never"}:
+        context_enrichment = defaults.context_enrichment
+
+    return AIAnalysisProperties(
+        batch_size=_get_int(
+            session,
+            AI_ANALYSIS_BATCH_SIZE,
+            defaults.batch_size,
+            instance_id=instance_id,
+        ),
+        context_enrichment=context_enrichment,
+        max_rabbit_hole_depth=_get_int(
+            session,
+            AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH,
+            defaults.max_rabbit_hole_depth,
+            instance_id=instance_id,
+        ),
+        max_neighbors_per_hop=_get_int(
+            session,
+            AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP,
+            defaults.max_neighbors_per_hop,
+            instance_id=instance_id,
+        ),
+        min_edge_weight_for_traversal=_get_float(
+            session,
+            AI_ANALYSIS_MIN_EDGE_WEIGHT,
+            defaults.min_edge_weight_for_traversal,
+            instance_id=instance_id,
+        ),
+    )
+
+
+def load_pipeline_prompt_properties(
+    session: Session,
+    instance_id: Optional[int] = None,
+) -> PipelinePromptProperties:
+    """Load typed pipeline prompt integration properties from app_config."""
+    raw = (
+        _read_property(session, PIPELINE_USE_REGISTERED_PROMPTS, instance_id=instance_id)
+        or PROPERTY_DEFAULTS[PIPELINE_USE_REGISTERED_PROMPTS]
+    ).strip().lower()
+    return PipelinePromptProperties(
+        use_registered_prompts=raw in ("true", "1", "yes"),
+    )
+
+
+def load_ai_runtime_properties(
+    session: Session,
+    instance_id: Optional[int] = None,
+) -> AIRuntimeProperties:
+    """Load typed AI runtime/provider/budget properties from app_config."""
+    defaults = AIRuntimeProperties()
+
+    mode = (
+        _read_property(session, AI_RUNTIME_MODE, instance_id=instance_id)
+        or PROPERTY_DEFAULTS[AI_RUNTIME_MODE]
+    ).strip().lower()
+    if mode not in {opt[0] for opt in AI_RUNTIME_MODE_OPTIONS}:
+        mode = defaults.mode
+
+    provider = (
+        _read_property(session, AI_RUNTIME_PROVIDER, instance_id=instance_id)
+        or PROPERTY_DEFAULTS[AI_RUNTIME_PROVIDER]
+    ).strip().lower()
+    if provider not in {opt[0] for opt in AI_RUNTIME_PROVIDER_OPTIONS}:
+        provider = defaults.provider
+
+    model = (
+        _read_property(session, AI_RUNTIME_MODEL, instance_id=instance_id)
+        or PROPERTY_DEFAULTS[AI_RUNTIME_MODEL]
+    ).strip()
+    if not model:
+        model = defaults.model
+
+    stop_on_hard_limit_raw = (
+        _read_property(session, AI_BUDGET_STOP_ON_HARD_LIMIT, instance_id=instance_id)
+        or PROPERTY_DEFAULTS[AI_BUDGET_STOP_ON_HARD_LIMIT]
+    ).strip().lower()
+    stop_on_hard_limit = stop_on_hard_limit_raw in {"1", "true", "yes", "y", "on"}
+
+    return AIRuntimeProperties(
+        mode=mode,
+        provider=provider,
+        model=model,
+        assessment_soft_limit_usd=max(
+            0.0,
+            _get_float(
+                session,
+                AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD,
+                defaults.assessment_soft_limit_usd,
+                instance_id=instance_id,
+            ),
+        ),
+        assessment_hard_limit_usd=max(
+            0.0,
+            _get_float(
+                session,
+                AI_BUDGET_ASSESSMENT_HARD_LIMIT_USD,
+                defaults.assessment_hard_limit_usd,
+                instance_id=instance_id,
+            ),
+        ),
+        monthly_hard_limit_usd=max(
+            0.0,
+            _get_float(
+                session,
+                AI_BUDGET_MONTHLY_HARD_LIMIT_USD,
+                defaults.monthly_hard_limit_usd,
+                instance_id=instance_id,
+            ),
+        ),
+        stop_on_hard_limit=stop_on_hard_limit,
+        max_input_tokens_per_call=max(
+            1,
+            _get_int(
+                session,
+                AI_BUDGET_MAX_INPUT_TOKENS_PER_CALL,
+                defaults.max_input_tokens_per_call,
+                instance_id=instance_id,
+            ),
+        ),
+        max_output_tokens_per_call=max(
+            1,
+            _get_int(
+                session,
+                AI_BUDGET_MAX_OUTPUT_TOKENS_PER_CALL,
+                defaults.max_output_tokens_per_call,
+                instance_id=instance_id,
+            ),
         ),
     )

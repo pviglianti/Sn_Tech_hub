@@ -23,7 +23,7 @@ class _FakeConnectionPullClient:
         self._table_label = "Incident"
         self._vh_state = "current"
 
-    def pull_app_file_types(self, since=None):
+    def pull_app_file_types(self, since=None, **kwargs):
         yield [
             {
                 "sys_id": "aft-1",
@@ -35,7 +35,7 @@ class _FakeConnectionPullClient:
             }
         ]
 
-    def pull_sys_db_object(self, since=None):
+    def pull_sys_db_object(self, since=None, **kwargs):
         yield [
             {
                 "sys_id": "dbo-1",
@@ -46,7 +46,7 @@ class _FakeConnectionPullClient:
             }
         ]
 
-    def pull_version_history(self, since=None, state_filter=None):
+    def pull_version_history(self, since=None, state_filter=None, **kwargs):
         yield [
             {
                 "sys_id": "vh-1",

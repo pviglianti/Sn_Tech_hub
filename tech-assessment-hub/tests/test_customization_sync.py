@@ -1,15 +1,13 @@
 """Tests for the Customization child table sync logic."""
 
-import pytest
 from sqlalchemy import inspect
-from sqlmodel import Session, select
+from sqlmodel import select
 
 from src.models import (
     Assessment,
     AssessmentType,
     Customization,
     Disposition,
-    HeadOwner,
     Instance,
     OriginType,
     ReviewStatus,
@@ -19,7 +17,6 @@ from src.models import (
     ScanType,
 )
 from src.services.customization_sync import (
-    CUSTOMIZED_ORIGIN_TYPES,
     bulk_sync_for_scan,
     is_customized,
     sync_single_result,
@@ -122,6 +119,56 @@ def test_bulk_sync_skips_existing(db_session, sample_instance):
 
     second_count = bulk_sync_for_scan(db_session, scan.id)
     assert second_count == 0
+
+
+def test_bulk_sync_updates_existing_rows(db_session, sample_instance):
+    assessment = _make_assessment(db_session, sample_instance)
+    scan = _make_scan(db_session, assessment)
+
+    result = _make_result(db_session, scan, "bulk_upd", OriginType.modified_ootb)
+    bulk_sync_for_scan(db_session, scan.id)
+
+    result.review_status = ReviewStatus.reviewed
+    result.disposition = Disposition.keep_and_refactor
+    result.recommendation = "Refactor this customization"
+    result.observations = "Observation text"
+    result.name = "bulk_upd_renamed"
+    db_session.add(result)
+    db_session.commit()
+
+    inserted = bulk_sync_for_scan(db_session, scan.id)
+    assert inserted == 0
+
+    row = db_session.exec(
+        select(Customization).where(Customization.scan_result_id == result.id)
+    ).first()
+    assert row is not None
+    assert row.review_status == ReviewStatus.reviewed
+    assert row.disposition == Disposition.keep_and_refactor
+    assert row.recommendation == "Refactor this customization"
+    assert row.observations == "Observation text"
+    assert row.name == "bulk_upd_renamed"
+
+
+def test_bulk_sync_deletes_stale_rows_for_non_customized(db_session, sample_instance):
+    assessment = _make_assessment(db_session, sample_instance)
+    scan = _make_scan(db_session, assessment)
+
+    result = _make_result(db_session, scan, "bulk_del", OriginType.modified_ootb)
+    first_inserted = bulk_sync_for_scan(db_session, scan.id)
+    assert first_inserted == 1
+
+    result.origin_type = OriginType.ootb_untouched
+    db_session.add(result)
+    db_session.commit()
+
+    inserted = bulk_sync_for_scan(db_session, scan.id)
+    assert inserted == 0
+
+    row = db_session.exec(
+        select(Customization).where(Customization.scan_result_id == result.id)
+    ).first()
+    assert row is None
 
 
 def test_bulk_sync_returns_count(db_session, sample_instance):

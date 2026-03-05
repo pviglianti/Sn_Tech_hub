@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 _DICT_PULL_RUN_MODULE = "preflight"
 _DICT_PULL_RUN_TYPE = "dict_pull"
 _ACTIVE_RUN_STATUSES = (JobRunStatus.queued, JobRunStatus.running)
+_ORPHAN_RUN_GRACE_SECONDS = 30
 
 
 def _json_dumps(payload: Optional[dict]) -> Optional[str]:
@@ -426,6 +427,13 @@ def get_dictionary_pull_status(instance_id: int) -> dict:
     """Return current progress for a dictionary pull, suitable for API response."""
     with _DICT_PULL_LOCK:
         progress = _DICT_PULL_JOBS.get(instance_id)
+        thread = _DICT_PULL_THREADS.get(instance_id)
+        thread_alive = bool(thread and thread.is_alive())
+        # If in-memory progress says running but worker thread is gone,
+        # treat the in-memory state as stale and fall back to durable run state.
+        if progress and progress.status == "running" and not thread_alive:
+            _DICT_PULL_JOBS.pop(instance_id, None)
+            progress = None
 
     if progress:
         # Calculate ETA
@@ -460,6 +468,40 @@ def get_dictionary_pull_status(instance_id: int) -> dict:
             .where(JobRun.status.in_(_ACTIVE_RUN_STATUSES))
             .order_by(JobRun.created_at.desc())
         ).first()
+        # Reconcile orphaned durable runs (no worker thread alive).
+        if active_run and not thread_alive:
+            heartbeat = (
+                active_run.last_heartbeat_at
+                or active_run.updated_at
+                or active_run.started_at
+                or active_run.created_at
+            )
+            age_seconds = (datetime.utcnow() - heartbeat).total_seconds() if heartbeat else 0
+            if age_seconds >= _ORPHAN_RUN_GRACE_SECONDS:
+                now = datetime.utcnow()
+                active_run.status = JobRunStatus.failed
+                active_run.completed_at = now
+                active_run.current_data_type = None
+                active_run.current_index = None
+                active_run.progress_pct = 100
+                active_run.estimated_remaining_seconds = 0
+                active_run.error_message = active_run.error_message or "Dictionary pull worker not running"
+                active_run.message = "Dictionary pull interrupted (worker not running)."
+                active_run.updated_at = now
+                active_run.last_heartbeat_at = now
+                session.add(active_run)
+                session.add(
+                    JobEvent(
+                        run_id=active_run.id,
+                        event_type=JobRunStatus.failed.value,
+                        summary="Dictionary pull run marked failed (orphaned run state).",
+                        data_json=_json_dumps({"reason": "orphaned_run_state"}),
+                        created_at=now,
+                    )
+                )
+                session.commit()
+                session.refresh(active_run)
+                active_run = None
         latest_run = session.exec(
             select(JobRun)
             .where(JobRun.instance_id == instance_id)

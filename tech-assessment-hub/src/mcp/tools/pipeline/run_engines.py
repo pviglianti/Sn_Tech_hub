@@ -12,6 +12,7 @@ from typing import Any, Dict, List
 from sqlmodel import Session
 
 from ...registry import ToolSpec
+from ....services.assessment_phase_progress import checkpoint_phase_progress, start_phase_progress
 
 
 INPUT_SCHEMA: Dict[str, Any] = {
@@ -58,10 +59,20 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
     else:
         engine_names = list(_ENGINE_REGISTRY.keys())
 
+    start_phase_progress(
+        session,
+        assessment_id,
+        "engines",
+        total_items=len(engine_names),
+        allow_resume=True,
+        checkpoint={"source": "run_preprocessing_engines_tool", "engine_names": engine_names},
+        commit=False,
+    )
+
     engines_run: List[Dict[str, Any]] = []
     errors: List[str] = []
 
-    for name in engine_names:
+    for idx, name in enumerate(engine_names, start=1):
         module_path = _ENGINE_REGISTRY[name]
         try:
             mod = importlib.import_module(module_path)
@@ -70,6 +81,18 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
         except Exception as exc:  # pragma: no cover - defensive branch
             errors.append(f"{name}: {exc}")
             engines_run.append({"engine": name, "success": False, "error": str(exc)})
+
+        checkpoint_phase_progress(
+            session,
+            assessment_id,
+            "engines",
+            completed_items=idx,
+            total_items=len(engine_names),
+            status="running" if idx < len(engine_names) else ("failed" if errors else "completed"),
+            checkpoint={"last_engine": name, "errors": list(errors)},
+            commit=False,
+        )
+        session.commit()
 
     return {
         "success": len(errors) == 0,

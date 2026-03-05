@@ -2,6 +2,15 @@ import pytest
 
 from src.models import AppConfig
 from src.services.integration_properties import (
+    AI_BUDGET_ASSESSMENT_HARD_LIMIT_USD,
+    AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD,
+    AI_BUDGET_MAX_INPUT_TOKENS_PER_CALL,
+    AI_BUDGET_MAX_OUTPUT_TOKENS_PER_CALL,
+    AI_BUDGET_MONTHLY_HARD_LIMIT_USD,
+    AI_BUDGET_STOP_ON_HARD_LIMIT,
+    AI_RUNTIME_MODE,
+    AI_RUNTIME_MODEL,
+    AI_RUNTIME_PROVIDER,
     FETCH_DEFAULT_BATCH_SIZE,
     FETCH_INTER_BATCH_DELAY,
     FETCH_MAX_BATCHES,
@@ -10,16 +19,27 @@ from src.services.integration_properties import (
     OBSERVATIONS_INCLUDE_USAGE_QUERIES,
     OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT,
     OBSERVATIONS_USAGE_LOOKBACK_MONTHS,
+    PIPELINE_USE_REGISTERED_PROMPTS,
     PREFLIGHT_CONCURRENT_TYPES,
+    PULL_ORDER_DESC,
+    PULL_MAX_RECORDS,
+    PULL_BAIL_UNCHANGED_RUN,
     REASONING_FEATURE_MAX_ITERATIONS,
     REASONING_FEATURE_MEMBERSHIP_DELTA_THRESHOLD,
     REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE,
+    PipelinePromptProperties,
     list_integration_property_snapshots,
     load_fetch_properties,
+    load_ai_runtime_properties,
     load_observation_properties,
+    load_pipeline_prompt_properties,
     load_preflight_concurrent_types,
+    load_pull_order_desc,
+    load_pull_max_records,
+    load_pull_bail_unchanged_run,
     load_reasoning_engine_properties,
     update_integration_properties,
+    PROPERTY_DEFINITIONS,
 )
 
 
@@ -275,3 +295,194 @@ def test_load_observation_properties_overrides(db_session, sample_instance):
     assert props.batch_size == 25
     assert props.include_usage_queries == "always"
     assert props.max_usage_queries_per_result == 4
+
+
+def test_pipeline_prompt_property_present_in_snapshot(db_session):
+    rows = list_integration_property_snapshots(db_session)
+    by_key = {row["key"]: row for row in rows}
+    assert PIPELINE_USE_REGISTERED_PROMPTS in by_key
+    assert by_key[PIPELINE_USE_REGISTERED_PROMPTS]["default"] == "false"
+
+
+def test_load_pipeline_prompt_properties_defaults(db_session):
+    props = load_pipeline_prompt_properties(db_session)
+    assert isinstance(props, PipelinePromptProperties)
+    assert props.use_registered_prompts is False
+
+
+def test_load_pipeline_prompt_properties_override(db_session, sample_instance):
+    update_integration_properties(
+        db_session,
+        {
+            PIPELINE_USE_REGISTERED_PROMPTS: "true",
+        },
+        instance_id=sample_instance.id,
+    )
+    props = load_pipeline_prompt_properties(db_session, instance_id=sample_instance.id)
+    assert props.use_registered_prompts is True
+
+
+def test_ai_runtime_properties_present_in_snapshot(db_session):
+    rows = list_integration_property_snapshots(db_session)
+    by_key = {row["key"]: row for row in rows}
+    assert AI_RUNTIME_MODE in by_key
+    assert AI_RUNTIME_PROVIDER in by_key
+    assert AI_RUNTIME_MODEL in by_key
+    assert AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD in by_key
+    assert AI_BUDGET_ASSESSMENT_HARD_LIMIT_USD in by_key
+    assert AI_BUDGET_MONTHLY_HARD_LIMIT_USD in by_key
+    assert AI_BUDGET_STOP_ON_HARD_LIMIT in by_key
+    assert AI_BUDGET_MAX_INPUT_TOKENS_PER_CALL in by_key
+    assert AI_BUDGET_MAX_OUTPUT_TOKENS_PER_CALL in by_key
+
+
+def test_load_ai_runtime_properties_defaults(db_session):
+    props = load_ai_runtime_properties(db_session)
+    assert props.mode == "local_subscription"
+    assert props.provider == "openai"
+    assert props.model == "gpt-5-mini"
+    assert props.assessment_soft_limit_usd == 10.0
+    assert props.assessment_hard_limit_usd == 25.0
+    assert props.monthly_hard_limit_usd == 200.0
+    assert props.stop_on_hard_limit is True
+    assert props.max_input_tokens_per_call == 200000
+    assert props.max_output_tokens_per_call == 40000
+
+
+def test_load_ai_runtime_properties_overrides(db_session, sample_instance):
+    update_integration_properties(
+        db_session,
+        {
+            AI_RUNTIME_MODE: "api_key",
+            AI_RUNTIME_PROVIDER: "anthropic",
+            AI_RUNTIME_MODEL: "claude-sonnet-4-5",
+            AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD: "15.5",
+            AI_BUDGET_ASSESSMENT_HARD_LIMIT_USD: "35",
+            AI_BUDGET_MONTHLY_HARD_LIMIT_USD: "500",
+            AI_BUDGET_STOP_ON_HARD_LIMIT: "false",
+            AI_BUDGET_MAX_INPUT_TOKENS_PER_CALL: "180000",
+            AI_BUDGET_MAX_OUTPUT_TOKENS_PER_CALL: "12000",
+        },
+        instance_id=sample_instance.id,
+    )
+
+    props = load_ai_runtime_properties(db_session, instance_id=sample_instance.id)
+    assert props.mode == "api_key"
+    assert props.provider == "anthropic"
+    assert props.model == "claude-sonnet-4-5"
+    assert props.assessment_soft_limit_usd == 15.5
+    assert props.assessment_hard_limit_usd == 35.0
+    assert props.monthly_hard_limit_usd == 500.0
+    assert props.stop_on_hard_limit is False
+    assert props.max_input_tokens_per_call == 180000
+    assert props.max_output_tokens_per_call == 12000
+
+
+# ---------------------------------------------------------------------------
+# New pull optimization property tests
+# ---------------------------------------------------------------------------
+
+
+def test_load_pull_order_desc_returns_true_by_default(db_session):
+    """load_pull_order_desc() must return True when no override is set (default 'true')."""
+    result = load_pull_order_desc(db_session)
+    assert result is True
+
+
+def test_load_pull_order_desc_false_when_set_to_false(db_session):
+    """load_pull_order_desc() must return False when property is set to 'false'."""
+    db_session.add(AppConfig(key=PULL_ORDER_DESC, value="false", description="test"))
+    db_session.commit()
+    result = load_pull_order_desc(db_session)
+    assert result is False
+
+
+def test_load_pull_order_desc_true_when_set_to_true(db_session):
+    """load_pull_order_desc() must return True when property is explicitly set to 'true'."""
+    db_session.add(AppConfig(key=PULL_ORDER_DESC, value="true", description="test"))
+    db_session.commit()
+    result = load_pull_order_desc(db_session)
+    assert result is True
+
+
+def test_load_pull_max_records_returns_5000_by_default(db_session):
+    """load_pull_max_records() must return 5000 when no override is set."""
+    result = load_pull_max_records(db_session)
+    assert result == 5000
+
+
+def test_load_pull_max_records_uses_override(db_session):
+    """load_pull_max_records() must return the overridden value when set."""
+    db_session.add(AppConfig(key=PULL_MAX_RECORDS, value="10000", description="test"))
+    db_session.commit()
+    result = load_pull_max_records(db_session)
+    assert result == 10000
+
+
+def test_load_pull_max_records_falls_back_on_invalid(db_session):
+    """load_pull_max_records() must fall back to 5000 on invalid (non-int) value."""
+    db_session.add(AppConfig(key=PULL_MAX_RECORDS, value="not-a-number", description="test"))
+    db_session.commit()
+    result = load_pull_max_records(db_session)
+    assert result == 5000
+
+
+def test_load_pull_bail_unchanged_run_returns_50_by_default(db_session):
+    """load_pull_bail_unchanged_run() must return 50 when no override is set."""
+    result = load_pull_bail_unchanged_run(db_session)
+    assert result == 50
+
+
+def test_load_pull_bail_unchanged_run_uses_override(db_session):
+    """load_pull_bail_unchanged_run() must return the overridden value when set."""
+    db_session.add(AppConfig(key=PULL_BAIL_UNCHANGED_RUN, value="100", description="test"))
+    db_session.commit()
+    result = load_pull_bail_unchanged_run(db_session)
+    assert result == 100
+
+
+def test_load_pull_bail_unchanged_run_falls_back_on_invalid(db_session):
+    """load_pull_bail_unchanged_run() must fall back to 50 on invalid value."""
+    db_session.add(AppConfig(key=PULL_BAIL_UNCHANGED_RUN, value="bad-value", description="test"))
+    db_session.commit()
+    result = load_pull_bail_unchanged_run(db_session)
+    assert result == 50
+
+
+def test_new_pull_properties_exist_in_property_definitions():
+    """All 3 new pull optimization keys must be registered in PROPERTY_DEFINITIONS."""
+    assert PULL_ORDER_DESC in PROPERTY_DEFINITIONS, (
+        f"PULL_ORDER_DESC ({PULL_ORDER_DESC!r}) not found in PROPERTY_DEFINITIONS"
+    )
+    assert PULL_MAX_RECORDS in PROPERTY_DEFINITIONS, (
+        f"PULL_MAX_RECORDS ({PULL_MAX_RECORDS!r}) not found in PROPERTY_DEFINITIONS"
+    )
+    assert PULL_BAIL_UNCHANGED_RUN in PROPERTY_DEFINITIONS, (
+        f"PULL_BAIL_UNCHANGED_RUN ({PULL_BAIL_UNCHANGED_RUN!r}) not found in PROPERTY_DEFINITIONS"
+    )
+
+
+def test_pull_order_desc_property_definition_is_select_type():
+    """PULL_ORDER_DESC PropertyDef must be select type with true/false options."""
+    defn = PROPERTY_DEFINITIONS[PULL_ORDER_DESC]
+    assert defn.value_type == "select"
+    option_keys = [opt[0] for opt in defn.options]
+    assert "true" in option_keys
+    assert "false" in option_keys
+
+
+def test_pull_max_records_property_definition_is_int_type():
+    """PULL_MAX_RECORDS PropertyDef must be int type with sensible min/max."""
+    defn = PROPERTY_DEFINITIONS[PULL_MAX_RECORDS]
+    assert defn.value_type == "int"
+    assert defn.default == "5000"
+    assert defn.min_value is not None and defn.min_value >= 1
+    assert defn.max_value is not None and defn.max_value >= 5000
+
+
+def test_pull_bail_unchanged_run_property_definition_is_int_type():
+    """PULL_BAIL_UNCHANGED_RUN PropertyDef must be int type with sensible min/max."""
+    defn = PROPERTY_DEFINITIONS[PULL_BAIL_UNCHANGED_RUN]
+    assert defn.value_type == "int"
+    assert defn.default == "50"
+    assert defn.min_value is not None and defn.min_value >= 1

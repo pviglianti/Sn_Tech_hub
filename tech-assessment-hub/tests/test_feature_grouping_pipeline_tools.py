@@ -169,13 +169,173 @@ def test_run_feature_reasoning_creates_run_and_status_reports_it(db_session):
     assert status["coverage"]["customized_total"] >= 2
 
 
+def test_group_by_feature_preserves_human_links(db_session):
+    """Re-running group_by_feature must preserve human-authored feature links."""
+    from src.mcp.tools.pipeline.feature_grouping import handle as group_handle
+    from src.models import Feature
+
+    asmt, r1, _, _ = _seed_assessment_with_signals(db_session)
+
+    manual_feature = Feature(assessment_id=asmt.id, name="Human Feature")
+    db_session.add(manual_feature)
+    db_session.flush()
+    human_link = FeatureScanResult(
+        feature_id=manual_feature.id,
+        scan_result_id=r1.id,
+        is_primary=True,
+        assignment_source="human",
+    )
+    db_session.add(human_link)
+    db_session.commit()
+
+    result = group_handle({"assessment_id": asmt.id}, db_session)
+    assert result["success"] is True
+
+    db_session.expire_all()
+    surviving = db_session.exec(
+        select(FeatureScanResult).where(
+            FeatureScanResult.feature_id == manual_feature.id,
+            FeatureScanResult.scan_result_id == r1.id,
+        )
+    ).first()
+    assert surviving is not None
+    assert surviving.assignment_source == "human"
+
+
+def test_group_by_feature_only_links_customized(db_session):
+    """group_by_feature should only create links for customized results, not OOTB."""
+    from src.mcp.tools.pipeline.feature_grouping import handle as group_handle
+
+    asmt, _, _, r3 = _seed_assessment_with_signals(db_session)
+
+    result = group_handle({"assessment_id": asmt.id, "min_group_size": 1}, db_session)
+    assert result["success"] is True
+
+    link_for_ootb = db_session.exec(
+        select(FeatureScanResult).where(FeatureScanResult.scan_result_id == r3.id)
+    ).first()
+    assert link_for_ootb is None
+
+
 def test_mcp_registry_uses_new_feature_grouping_tools():
     from src.mcp.registry import build_registry
 
     registry = build_registry()
     assert registry.has_tool("seed_feature_groups")
+    assert registry.has_tool("get_suggested_groupings")
     assert registry.has_tool("run_feature_reasoning")
     assert registry.has_tool("feature_grouping_status")
     assert registry.has_tool("generate_observations")
     assert registry.has_tool("get_usage_count")
     assert not registry.has_tool("group_by_feature")
+
+
+# ---------------------------------------------------------------------------
+# dry_run / get_suggested_groupings tests
+# ---------------------------------------------------------------------------
+
+
+def test_seed_feature_groups_dry_run_writes_nothing(db_session):
+    """dry_run=True computes suggestions but creates no Feature/FeatureScanResult/Context rows."""
+    from src.mcp.tools.pipeline.seed_feature_groups import handle
+    from src.models import Feature
+
+    asmt, r1, r2, r3 = _seed_assessment_with_signals(db_session)
+
+    result = handle({"assessment_id": asmt.id, "dry_run": True}, db_session)
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["cluster_count"] >= 1
+    assert result["grouped_count"] >= 2
+    assert result["features_created"] == 0  # no writes in dry_run
+
+    # Verify suggested_groups payload is populated
+    assert "suggested_groups" in result
+    assert len(result["suggested_groups"]) >= 1
+    group = result["suggested_groups"][0]
+    assert "suggested_feature_name" in group
+    assert "member_result_ids" in group
+    assert "members" in group
+    assert "signal_counts" in group
+    assert "confidence_score" in group
+    assert r1.id in group["member_result_ids"] or r2.id in group["member_result_ids"]
+
+    # Verify NO DB records were created
+    features = db_session.exec(select(Feature).where(Feature.assessment_id == asmt.id)).all()
+    assert len(features) == 0
+    links = db_session.exec(select(FeatureScanResult)).all()
+    assert len(links) == 0
+    contexts = db_session.exec(select(FeatureContextArtifact)).all()
+    assert len(contexts) == 0
+
+
+def test_get_suggested_groupings_tool_is_read_only(db_session):
+    """get_suggested_groupings tool handler returns suggestions without DB writes."""
+    from src.mcp.tools.pipeline.seed_feature_groups import handle_suggestions
+    from src.models import Feature
+
+    asmt, r1, r2, r3 = _seed_assessment_with_signals(db_session)
+
+    result = handle_suggestions({"assessment_id": asmt.id}, db_session)
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert "suggested_groups" in result
+    assert len(result["suggested_groups"]) >= 1
+
+    # Confirm zero writes
+    features = db_session.exec(select(Feature).where(Feature.assessment_id == asmt.id)).all()
+    assert len(features) == 0
+    links = db_session.exec(select(FeatureScanResult)).all()
+    assert len(links) == 0
+
+
+def test_seed_feature_groups_write_mode_still_creates_records(db_session):
+    """Default (dry_run=False) write path still creates Feature + FeatureScanResult rows (api mode)."""
+    from src.mcp.tools.pipeline.seed_feature_groups import handle
+    from src.models import Feature
+
+    asmt, r1, r2, r3 = _seed_assessment_with_signals(db_session)
+
+    result = handle({"assessment_id": asmt.id}, db_session)
+    assert result["success"] is True
+    assert result["dry_run"] is False
+    assert result["features_created"] >= 1
+
+    features = db_session.exec(select(Feature).where(Feature.assessment_id == asmt.id)).all()
+    assert len(features) >= 1
+    links = db_session.exec(select(FeatureScanResult)).all()
+    assert len(links) >= 2  # r1 and r2 should be members
+
+
+def test_dry_run_and_write_produce_same_groupings(db_session):
+    """dry_run suggestions and write-mode clusters have matching member sets."""
+    from src.mcp.tools.pipeline.seed_feature_groups import seed_feature_groups
+
+    asmt, r1, r2, r3 = _seed_assessment_with_signals(db_session)
+
+    # First: dry_run
+    dry = seed_feature_groups(
+        db_session, assessment_id=asmt.id, dry_run=True, commit=False,
+    )
+    dry_member_sets = [
+        set(g["member_result_ids"]) for g in dry["suggested_groups"]
+    ]
+
+    # Then: write
+    write = seed_feature_groups(
+        db_session, assessment_id=asmt.id, dry_run=False, commit=False,
+    )
+    write_member_sets = []
+    for cluster in write["clusters"]:
+        fid = cluster["feature_id"]
+        member_ids = {
+            int(link.scan_result_id)
+            for link in db_session.exec(
+                select(FeatureScanResult).where(FeatureScanResult.feature_id == fid)
+            ).all()
+        }
+        write_member_sets.append(member_ids)
+
+    assert len(dry_member_sets) == len(write_member_sets)
+    for dry_set in dry_member_sets:
+        assert dry_set in write_member_sets

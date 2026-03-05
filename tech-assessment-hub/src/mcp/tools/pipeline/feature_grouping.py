@@ -17,6 +17,9 @@ from ....models import (
     OriginType, UpdateSet,
 )
 
+_CUSTOMIZED_ORIGINS = {OriginType.modified_ootb, OriginType.net_new_customer}
+_AUTO_ASSIGNMENT_SOURCES = {"engine", "ai"}
+
 
 INPUT_SCHEMA: Dict[str, Any] = {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -43,7 +46,7 @@ INPUT_SCHEMA: Dict[str, Any] = {
 
 
 def _get_customized_results(session: Session, assessment_id: int) -> List[ScanResult]:
-    """Get all non-OOTB results for the assessment."""
+    """Get only customized (modified_ootb / net_new_customer) results for the assessment."""
     scan_ids = list(session.exec(
         select(Scan.id).where(Scan.assessment_id == assessment_id)
     ).all())
@@ -53,7 +56,7 @@ def _get_customized_results(session: Session, assessment_id: int) -> List[ScanRe
     return list(session.exec(
         select(ScanResult)
         .where(col(ScanResult.scan_id).in_(scan_ids))
-        .where(ScanResult.origin_type != OriginType.ootb_untouched)
+        .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGINS)))
     ).all())
 
 
@@ -82,7 +85,7 @@ def _create_feature(
     results: List[ScanResult],
     update_set_id: int = None,
 ) -> Feature:
-    """Create a Feature record and link scan results."""
+    """Create a Feature record and link only customized scan results."""
     feature = Feature(
         assessment_id=assessment_id,
         name=name,
@@ -92,10 +95,13 @@ def _create_feature(
     session.flush()  # Get the ID
 
     for r in results:
+        if r.origin_type not in _CUSTOMIZED_ORIGINS:
+            continue
         link = FeatureScanResult(
             feature_id=feature.id,
             scan_result_id=r.id,
             is_primary=True,
+            assignment_source="engine",
         )
         session.add(link)
 
@@ -131,18 +137,24 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
     if not assessment:
         raise ValueError(f"Assessment not found: {assessment_id}")
 
-    # Clear existing features for this assessment (re-grouping)
+    # Clear existing auto-assigned links (preserve human-authored ones)
     existing_features = session.exec(
         select(Feature).where(Feature.assessment_id == assessment_id)
     ).all()
     for f in existing_features:
-        # Delete links first
         links = session.exec(
             select(FeatureScanResult).where(FeatureScanResult.feature_id == f.id)
         ).all()
         for link in links:
-            session.delete(link)
-        session.delete(f)
+            source = (link.assignment_source or "engine").strip().lower()
+            if source in _AUTO_ASSIGNMENT_SOURCES:
+                session.delete(link)
+        # Only delete feature if no remaining links
+        remaining = session.exec(
+            select(func.count()).where(FeatureScanResult.feature_id == f.id)
+        ).one() or 0
+        if int(remaining) == 0:
+            session.delete(f)
     session.flush()
 
     results = _get_customized_results(session, assessment_id)

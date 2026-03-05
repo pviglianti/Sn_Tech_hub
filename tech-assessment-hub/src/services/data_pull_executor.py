@@ -27,6 +27,11 @@ class DataPullMode(str, Enum):
 
 from .sn_client import ServiceNowClient, ServiceNowClientError
 from .integration_sync_runner import resolve_delta_decision
+from .integration_properties import (
+    load_pull_order_desc,
+    load_pull_max_records,
+    load_pull_bail_unchanged_run,
+)
 from ..models import (
     Instance, InstanceDataPull, DataPullType, DataPullStatus,
     UpdateSet, CustomerUpdateXML, VersionHistory,
@@ -296,7 +301,6 @@ def _resolve_delta_pull_mode(
         data_type,
         since=watermark,
         instance_id=instance_id,
-        inclusive=False,
     )
     decision = resolve_delta_decision(
         local_count=local_count,
@@ -472,6 +476,11 @@ def _pull_update_sets(
     since: Optional[datetime],
     mode: str,
     pull: Optional[InstanceDataPull] = None,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
     """Pull update sets and upsert into database."""
     # Generate batch ID for tracking which records were seen in this pull
@@ -480,8 +489,11 @@ def _pull_update_sets(
     total_records = 0
     max_updated = None
     pulled_at = datetime.utcnow()
+    consecutive_unchanged = 0
+    bail_out_reason: Optional[str] = None
+    enable_bail = bail_threshold > 0 and local_count_pre > 0
 
-    for batch in client.pull_update_sets(since=since):
+    for batch in client.pull_update_sets(since=since, order_desc=order_desc):
         if _is_cancel_requested(session, pull):
             _cancel_pull(session, pull)
             return total_records, max_updated
@@ -496,11 +508,18 @@ def _pull_update_sets(
                 .where(UpdateSet.sn_sys_id == sn_sys_id)
             ).first()
 
+            is_new = existing is None
             if existing:
                 update_set = existing
             else:
                 update_set = UpdateSet(instance_id=instance_id, sn_sys_id=sn_sys_id, name="")
                 session.add(update_set)
+
+            # Snapshot key fields for change detection
+            old_values = None if is_new else (
+                update_set.name, update_set.state, update_set.application,
+                update_set.sys_updated_on,
+            )
 
             # Map fields
             update_set.name = record.get("name", "")
@@ -528,6 +547,19 @@ def _pull_update_sets(
             update_set.last_refreshed_at = pulled_at
             update_set.sync_batch_id = batch_id
 
+            # Change detection
+            if is_new:
+                consecutive_unchanged = 0
+            else:
+                new_values = (
+                    update_set.name, update_set.state, update_set.application,
+                    update_set.sys_updated_on,
+                )
+                if new_values == old_values:
+                    consecutive_unchanged += 1
+                else:
+                    consecutive_unchanged = 0
+
             # Track max updated timestamp
             updated_on = _parse_sn_datetime(record.get("sys_updated_on"))
             if updated_on and (max_updated is None or updated_on > max_updated):
@@ -542,9 +574,38 @@ def _pull_update_sets(
         session.commit()
         logger.info("Pulled batch of update_sets, total so far: %d", total_records)
 
+        # --- DUAL-SIGNAL BAIL-OUT ---
+        if enable_bail and remote_count is not None:
+            current_local = _get_local_cached_count(session, instance_id, DataPullType.update_sets)
+            if current_local >= remote_count and consecutive_unchanged >= bail_threshold:
+                bail_out_reason = "count_and_content_gate"
+                logger.info(
+                    "Pull bail-out (update_sets): local (%d) >= remote (%d), "
+                    "%d consecutive unchanged after %d records",
+                    current_local, remote_count, consecutive_unchanged, total_records,
+                )
+                break
+
+        # --- SAFETY CAP ---
+        if max_records > 0 and total_records >= max_records:
+            bail_out_reason = "safety_cap"
+            logger.warning(
+                "Pull safety cap (update_sets): %d records processed, stopping",
+                total_records,
+            )
+            break
+
     # Full mode: clean up records not seen in this batch (handles deletions in SN)
-    if mode == "full":
+    if mode == "full" and bail_out_reason is None:
         _cleanup_orphan_records(session, instance_id, "update_set", batch_id)
+
+    # Populate bail-out telemetry on pull record
+    if pull is not None:
+        if bail_out_reason:
+            pull.bail_out_reason = bail_out_reason
+        pull.bail_unchanged_at_exit = consecutive_unchanged
+        session.add(pull)
+        session.commit()
 
     return total_records, max_updated
 
@@ -556,6 +617,11 @@ def _pull_customer_update_xml(
     since: Optional[datetime],
     mode: str,
     pull: Optional[InstanceDataPull] = None,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
     """Pull customer update XML records and upsert into database."""
     # Generate batch ID for tracking which records were seen in this pull
@@ -566,8 +632,11 @@ def _pull_customer_update_xml(
     pulled_at = datetime.utcnow()
     update_set_cache: Dict[str, int] = {}
     missing_update_set_id: Optional[int] = None
+    consecutive_unchanged = 0
+    bail_out_reason: Optional[str] = None
+    enable_bail = bail_threshold > 0 and local_count_pre > 0
 
-    for batch in client.pull_customer_update_xml(since=since, include_payload=False):
+    for batch in client.pull_customer_update_xml(since=since, include_payload=False, order_desc=order_desc):
         if _is_cancel_requested(session, pull):
             _cancel_pull(session, pull)
             return total_records, max_updated
@@ -622,11 +691,17 @@ def _pull_customer_update_xml(
                     .where(CustomerUpdateXML.sn_sys_id == sn_sys_id)
                 ).first()
 
+            is_new = existing is None
             if existing:
                 cux = existing
             else:
                 cux = CustomerUpdateXML(instance_id=instance_id, sn_sys_id=sn_sys_id, name="")
                 session.add(cux)
+
+            # Snapshot key fields for change detection
+            old_values = None if is_new else (
+                cux.name, cux.action, cux.type, cux.sys_updated_on,
+            )
 
             # Map fields
             cux.name = record.get("name", "")
@@ -656,6 +731,18 @@ def _pull_customer_update_xml(
             cux.last_refreshed_at = pulled_at
             cux.sync_batch_id = batch_id
 
+            # Change detection
+            if is_new:
+                consecutive_unchanged = 0
+            else:
+                new_values = (
+                    cux.name, cux.action, cux.type, cux.sys_updated_on,
+                )
+                if new_values == old_values:
+                    consecutive_unchanged += 1
+                else:
+                    consecutive_unchanged = 0
+
             updated_on = _parse_sn_datetime(record.get("sys_updated_on"))
             if updated_on and (max_updated is None or updated_on > max_updated):
                 max_updated = updated_on
@@ -669,9 +756,34 @@ def _pull_customer_update_xml(
         session.commit()
         logger.info("Pulled batch of customer_update_xml, total so far: %d", total_records)
 
+        # --- DUAL-SIGNAL BAIL-OUT ---
+        if enable_bail and remote_count is not None:
+            current_local = _get_local_cached_count(session, instance_id, DataPullType.customer_update_xml)
+            if current_local >= remote_count and consecutive_unchanged >= bail_threshold:
+                bail_out_reason = "count_and_content_gate"
+                logger.info(
+                    "Pull bail-out (customer_update_xml): local (%d) >= remote (%d), "
+                    "%d consecutive unchanged after %d records",
+                    current_local, remote_count, consecutive_unchanged, total_records,
+                )
+                break
+
+        # --- SAFETY CAP ---
+        if max_records > 0 and total_records >= max_records:
+            bail_out_reason = "safety_cap"
+            logger.warning("Pull safety cap (customer_update_xml): %d records processed, stopping", total_records)
+            break
+
     # Full mode: clean up records not seen in this batch
-    if mode == "full":
+    if mode == "full" and bail_out_reason is None:
         _cleanup_orphan_records(session, instance_id, "customer_update_xml", batch_id)
+
+    if pull is not None:
+        if bail_out_reason:
+            pull.bail_out_reason = bail_out_reason
+        pull.bail_unchanged_at_exit = consecutive_unchanged
+        session.add(pull)
+        session.commit()
 
     return total_records, max_updated
 
@@ -684,6 +796,11 @@ def _pull_version_history(
     mode: str,
     pull: Optional[InstanceDataPull] = None,
     state_filter: Optional[str] = None,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
     """Pull version history records and upsert into database."""
     # Generate batch ID for tracking which records were seen in this pull
@@ -692,8 +809,11 @@ def _pull_version_history(
     total_records = 0
     max_updated = None
     pulled_at = datetime.utcnow()
+    consecutive_unchanged = 0
+    bail_out_reason: Optional[str] = None
+    enable_bail = bail_threshold > 0 and local_count_pre > 0
 
-    for batch in client.pull_version_history(since=since, state_filter=state_filter):
+    for batch in client.pull_version_history(since=since, state_filter=state_filter, order_desc=order_desc):
         if _is_cancel_requested(session, pull):
             _cancel_pull(session, pull)
             return total_records, max_updated
@@ -708,6 +828,7 @@ def _pull_version_history(
                 .where(VersionHistory.sn_sys_id == sn_sys_id)
             ).first()
 
+            is_new = existing is None
             if existing:
                 vh = existing
             else:
@@ -718,6 +839,10 @@ def _pull_version_history(
                     sys_update_name=""
                 )
                 session.add(vh)
+
+            old_values = None if is_new else (
+                vh.name, vh.state, vh.action, vh.sys_updated_on,
+            )
 
             # Map fields
             vh.name = record.get("name", "")
@@ -749,6 +874,18 @@ def _pull_version_history(
             vh.last_refreshed_at = pulled_at
             vh.sync_batch_id = batch_id
 
+            # Change detection
+            if is_new:
+                consecutive_unchanged = 0
+            else:
+                new_values = (
+                    vh.name, vh.state, vh.action, vh.sys_updated_on,
+                )
+                if new_values == old_values:
+                    consecutive_unchanged += 1
+                else:
+                    consecutive_unchanged = 0
+
             updated_on = _parse_sn_datetime(record.get("sys_updated_on")) or _parse_sn_datetime(record.get("sys_recorded_at"))
             if updated_on and (max_updated is None or updated_on > max_updated):
                 max_updated = updated_on
@@ -762,9 +899,34 @@ def _pull_version_history(
         session.commit()
         logger.info("Pulled batch of version_history, total so far: %d", total_records)
 
+        # --- DUAL-SIGNAL BAIL-OUT ---
+        if enable_bail and remote_count is not None:
+            current_local = _get_local_cached_count(session, instance_id, DataPullType.version_history)
+            if current_local >= remote_count and consecutive_unchanged >= bail_threshold:
+                bail_out_reason = "count_and_content_gate"
+                logger.info(
+                    "Pull bail-out (version_history): local (%d) >= remote (%d), "
+                    "%d consecutive unchanged after %d records",
+                    current_local, remote_count, consecutive_unchanged, total_records,
+                )
+                break
+
+        # --- SAFETY CAP ---
+        if max_records > 0 and total_records >= max_records:
+            bail_out_reason = "safety_cap"
+            logger.warning("Pull safety cap (version_history): %d records processed, stopping", total_records)
+            break
+
     # Full mode: clean up records not seen in this batch
-    if mode == "full":
+    if mode == "full" and bail_out_reason is None:
         _cleanup_orphan_records(session, instance_id, "version_history", batch_id)
+
+    if pull is not None:
+        if bail_out_reason:
+            pull.bail_out_reason = bail_out_reason
+        pull.bail_unchanged_at_exit = consecutive_unchanged
+        session.add(pull)
+        session.commit()
 
     return total_records, max_updated
 
@@ -777,6 +939,11 @@ def _pull_metadata_customizations(
     mode: str,
     pull: Optional[InstanceDataPull] = None,
     class_names: Optional[List[str]] = None,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
     """Pull metadata customization records and upsert into database."""
     # Generate batch ID for tracking which records were seen in this pull
@@ -785,11 +952,14 @@ def _pull_metadata_customizations(
     total_records = 0
     max_updated = None
     pulled_at = datetime.utcnow()
+    consecutive_unchanged = 0
+    bail_out_reason: Optional[str] = None
+    enable_bail = bail_threshold > 0 and local_count_pre > 0
 
     if class_names is None:
         class_names = _fetch_app_file_class_names(session, instance_id=instance_id)
 
-    for batch in client.pull_metadata_customizations(since=since, class_names=class_names):
+    for batch in client.pull_metadata_customizations(since=since, class_names=class_names, order_desc=order_desc):
         if _is_cancel_requested(session, pull):
             _cancel_pull(session, pull)
             return total_records, max_updated
@@ -804,6 +974,7 @@ def _pull_metadata_customizations(
                 .where(MetadataCustomization.sn_sys_id == sn_sys_id)
             ).first()
 
+            is_new = existing is None
             if existing:
                 mc = existing
             else:
@@ -814,6 +985,10 @@ def _pull_metadata_customizations(
                     sys_update_name=""
                 )
                 session.add(mc)
+
+            old_values = None if is_new else (
+                mc.sys_update_name, mc.author_type, mc.sys_updated_on,
+            )
 
             # Map fields
             mc.sys_metadata_sys_id = _normalize_ref(record.get("sys_metadata")) or ""
@@ -826,6 +1001,17 @@ def _pull_metadata_customizations(
             mc.raw_data_json = json.dumps(record)
             mc.last_refreshed_at = pulled_at
             mc.sync_batch_id = batch_id
+
+            if is_new:
+                consecutive_unchanged = 0
+            else:
+                new_values = (
+                    mc.sys_update_name, mc.author_type, mc.sys_updated_on,
+                )
+                if new_values == old_values:
+                    consecutive_unchanged += 1
+                else:
+                    consecutive_unchanged = 0
 
             updated_on = _parse_sn_datetime(record.get("sys_updated_on"))
             if updated_on and (max_updated is None or updated_on > max_updated):
@@ -840,9 +1026,24 @@ def _pull_metadata_customizations(
         session.commit()
         logger.info("Pulled batch of metadata_customization, total so far: %d", total_records)
 
-    # Full mode: clean up records not seen in this batch
-    if mode == "full":
+        if enable_bail and remote_count is not None:
+            current_local = _get_local_cached_count(session, instance_id, DataPullType.metadata_customization)
+            if current_local >= remote_count and consecutive_unchanged >= bail_threshold:
+                bail_out_reason = "count_and_content_gate"
+                break
+        if max_records > 0 and total_records >= max_records:
+            bail_out_reason = "safety_cap"
+            break
+
+    if mode == "full" and bail_out_reason is None:
         _cleanup_orphan_records(session, instance_id, "metadata_customization", batch_id)
+
+    if pull is not None:
+        if bail_out_reason:
+            pull.bail_out_reason = bail_out_reason
+        pull.bail_unchanged_at_exit = consecutive_unchanged
+        session.add(pull)
+        session.commit()
 
     return total_records, max_updated
 
@@ -854,6 +1055,11 @@ def _pull_app_file_types(
     since: Optional[datetime],
     mode: str,
     pull: Optional[InstanceDataPull] = None,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
     """Pull sys_app_file_type records and upsert into database."""
     batch_id = str(uuid.uuid4())
@@ -861,8 +1067,11 @@ def _pull_app_file_types(
     total_records = 0
     max_updated = None
     pulled_at = datetime.utcnow()
+    consecutive_unchanged = 0
+    bail_out_reason: Optional[str] = None
+    enable_bail = bail_threshold > 0 and local_count_pre > 0
 
-    for batch in client.pull_app_file_types(since=since):
+    for batch in client.pull_app_file_types(since=since, order_desc=order_desc):
         if _is_cancel_requested(session, pull):
             _cancel_pull(session, pull)
             return total_records, max_updated
@@ -878,6 +1087,7 @@ def _pull_app_file_types(
                 .where(InstanceAppFileType.sn_sys_id == sn_sys_id)
             ).first()
 
+            is_new = existing is None
             if existing:
                 app_file_type = existing
             else:
@@ -886,6 +1096,10 @@ def _pull_app_file_types(
                     sn_sys_id=sn_sys_id,
                 )
                 session.add(app_file_type)
+
+            old_values = None if is_new else (
+                app_file_type.name, app_file_type.label, app_file_type.sys_updated_on,
+            )
 
             source_table_ref = record.get("sys_source_table")
             parent_table_ref = record.get("sys_parent_table")
@@ -934,6 +1148,17 @@ def _pull_app_file_types(
             app_file_type.last_refreshed_at = pulled_at
             app_file_type.sync_batch_id = batch_id
 
+            if is_new:
+                consecutive_unchanged = 0
+            else:
+                new_values = (
+                    app_file_type.name, app_file_type.label, app_file_type.sys_updated_on,
+                )
+                if new_values == old_values:
+                    consecutive_unchanged += 1
+                else:
+                    consecutive_unchanged = 0
+
             updated_on = _parse_sn_datetime(record.get("sys_updated_on"))
             if updated_on and (max_updated is None or updated_on > max_updated):
                 max_updated = updated_on
@@ -947,8 +1172,24 @@ def _pull_app_file_types(
         session.commit()
         logger.info("Pulled batch of app_file_types, total so far: %d", total_records)
 
-    if mode == "full":
+        if enable_bail and remote_count is not None:
+            current_local = _get_local_cached_count(session, instance_id, DataPullType.app_file_types)
+            if current_local >= remote_count and consecutive_unchanged >= bail_threshold:
+                bail_out_reason = "count_and_content_gate"
+                break
+        if max_records > 0 and total_records >= max_records:
+            bail_out_reason = "safety_cap"
+            break
+
+    if mode == "full" and bail_out_reason is None:
         _cleanup_orphan_records(session, instance_id, "instance_app_file_type", batch_id)
+
+    if pull is not None:
+        if bail_out_reason:
+            pull.bail_out_reason = bail_out_reason
+        pull.bail_unchanged_at_exit = consecutive_unchanged
+        session.add(pull)
+        session.commit()
 
     return total_records, max_updated
 
@@ -960,16 +1201,23 @@ def _pull_plugins(
     since: Optional[datetime],
     mode: str,
     pull: Optional[InstanceDataPull] = None,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
     """Pull plugin records and upsert into database."""
-    # Generate batch ID for tracking which records were seen in this pull
     batch_id = str(uuid.uuid4())
 
     total_records = 0
     max_updated = None
     pulled_at = datetime.utcnow()
+    consecutive_unchanged = 0
+    bail_out_reason: Optional[str] = None
+    enable_bail = bail_threshold > 0 and local_count_pre > 0
 
-    for batch in client.pull_plugins(since=since):
+    for batch in client.pull_plugins(since=since, order_desc=order_desc):
         if _is_cancel_requested(session, pull):
             _cancel_pull(session, pull)
             return total_records, max_updated
@@ -984,6 +1232,7 @@ def _pull_plugins(
                 .where(InstancePlugin.sn_sys_id == sn_sys_id)
             ).first()
 
+            is_new = existing is None
             if existing:
                 plugin = existing
             else:
@@ -995,7 +1244,10 @@ def _pull_plugins(
                 )
                 session.add(plugin)
 
-            # Map fields - 'source' field is the plugin_id
+            old_values = None if is_new else (
+                plugin.name, plugin.state, plugin.version, plugin.sys_updated_on,
+            )
+
             plugin.plugin_id = record.get("source", "")
             plugin.name = record.get("name", "")
             plugin.version = record.get("version")
@@ -1011,6 +1263,17 @@ def _pull_plugins(
             plugin.last_refreshed_at = pulled_at
             plugin.sync_batch_id = batch_id
 
+            if is_new:
+                consecutive_unchanged = 0
+            else:
+                new_values = (
+                    plugin.name, plugin.state, plugin.version, plugin.sys_updated_on,
+                )
+                if new_values == old_values:
+                    consecutive_unchanged += 1
+                else:
+                    consecutive_unchanged = 0
+
             updated_on = _parse_sn_datetime(record.get("sys_updated_on"))
             if updated_on and (max_updated is None or updated_on > max_updated):
                 max_updated = updated_on
@@ -1024,9 +1287,24 @@ def _pull_plugins(
         session.commit()
         logger.info("Pulled batch of plugins, total so far: %d", total_records)
 
-    # Full mode: clean up records not seen in this batch
-    if mode == "full":
+        if enable_bail and remote_count is not None:
+            current_local = _get_local_cached_count(session, instance_id, DataPullType.plugins)
+            if current_local >= remote_count and consecutive_unchanged >= bail_threshold:
+                bail_out_reason = "count_and_content_gate"
+                break
+        if max_records > 0 and total_records >= max_records:
+            bail_out_reason = "safety_cap"
+            break
+
+    if mode == "full" and bail_out_reason is None:
         _cleanup_orphan_records(session, instance_id, "instance_plugin", batch_id)
+
+    if pull is not None:
+        if bail_out_reason:
+            pull.bail_out_reason = bail_out_reason
+        pull.bail_unchanged_at_exit = consecutive_unchanged
+        session.add(pull)
+        session.commit()
 
     return total_records, max_updated
 
@@ -1038,16 +1316,23 @@ def _pull_plugin_view(
     since: Optional[datetime],
     mode: str,
     pull: Optional[InstanceDataPull] = None,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
     """Pull v_plugin records and upsert into database."""
-    # Generate batch ID for tracking which records were seen in this pull
     batch_id = str(uuid.uuid4())
 
     total_records = 0
     max_updated = None
     pulled_at = datetime.utcnow()
+    consecutive_unchanged = 0
+    bail_out_reason: Optional[str] = None
+    enable_bail = bail_threshold > 0 and local_count_pre > 0
 
-    for batch in client.pull_plugin_view(since=since):
+    for batch in client.pull_plugin_view(since=since, order_desc=order_desc):
         if _is_cancel_requested(session, pull):
             _cancel_pull(session, pull)
             return total_records, max_updated
@@ -1062,6 +1347,7 @@ def _pull_plugin_view(
                 .where(PluginView.sn_sys_id == sn_sys_id)
             ).first()
 
+            is_new = existing is None
             if existing:
                 plugin_view = existing
             else:
@@ -1070,6 +1356,10 @@ def _pull_plugin_view(
                     sn_sys_id=sn_sys_id,
                 )
                 session.add(plugin_view)
+
+            old_values = None if is_new else (
+                plugin_view.name, plugin_view.version, plugin_view.sys_updated_on,
+            )
 
             plugin_view.plugin_id = record.get("id") or record.get("plugin_id")
             plugin_view.name = record.get("name")
@@ -1082,6 +1372,17 @@ def _pull_plugin_view(
             plugin_view.raw_data_json = json.dumps(record)
             plugin_view.last_refreshed_at = pulled_at
             plugin_view.sync_batch_id = batch_id
+
+            if is_new:
+                consecutive_unchanged = 0
+            else:
+                new_values = (
+                    plugin_view.name, plugin_view.version, plugin_view.sys_updated_on,
+                )
+                if new_values == old_values:
+                    consecutive_unchanged += 1
+                else:
+                    consecutive_unchanged = 0
 
             updated_on = _parse_sn_datetime(record.get("sys_updated_on"))
             if updated_on and (max_updated is None or updated_on > max_updated):
@@ -1096,9 +1397,24 @@ def _pull_plugin_view(
         session.commit()
         logger.info("Pulled batch of plugin_view, total so far: %d", total_records)
 
-    # Full mode: clean up records not seen in this batch
-    if mode == "full":
+        if enable_bail and remote_count is not None:
+            current_local = _get_local_cached_count(session, instance_id, DataPullType.plugin_view)
+            if current_local >= remote_count and consecutive_unchanged >= bail_threshold:
+                bail_out_reason = "count_and_content_gate"
+                break
+        if max_records > 0 and total_records >= max_records:
+            bail_out_reason = "safety_cap"
+            break
+
+    if mode == "full" and bail_out_reason is None:
         _cleanup_orphan_records(session, instance_id, "plugin_view", batch_id)
+
+    if pull is not None:
+        if bail_out_reason:
+            pull.bail_out_reason = bail_out_reason
+        pull.bail_unchanged_at_exit = consecutive_unchanged
+        session.add(pull)
+        session.commit()
 
     return total_records, max_updated
 
@@ -1110,16 +1426,22 @@ def _pull_scopes(
     since: Optional[datetime],
     mode: str,
     pull: Optional[InstanceDataPull] = None,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
     """Pull scope records and upsert into database."""
-    # Generate batch ID for tracking which records were seen in this pull
     batch_id = str(uuid.uuid4())
-
     total_records = 0
     max_updated = None
     pulled_at = datetime.utcnow()
+    consecutive_unchanged = 0
+    bail_out_reason: Optional[str] = None
+    enable_bail = bail_threshold > 0 and local_count_pre > 0
 
-    for batch in client.pull_scopes(since=since):
+    for batch in client.pull_scopes(since=since, order_desc=order_desc):
         if _is_cancel_requested(session, pull):
             _cancel_pull(session, pull)
             return total_records, max_updated
@@ -1127,25 +1449,18 @@ def _pull_scopes(
             sn_sys_id = record.get("sys_id")
             if not sn_sys_id:
                 continue
-
             existing = session.exec(
-                select(Scope)
-                .where(Scope.instance_id == instance_id)
-                .where(Scope.sn_sys_id == sn_sys_id)
+                select(Scope).where(Scope.instance_id == instance_id).where(Scope.sn_sys_id == sn_sys_id)
             ).first()
-
+            is_new = existing is None
             if existing:
                 scope_rec = existing
             else:
-                scope_rec = Scope(
-                    instance_id=instance_id,
-                    sn_sys_id=sn_sys_id,
-                    scope="",
-                    name=""
-                )
+                scope_rec = Scope(instance_id=instance_id, sn_sys_id=sn_sys_id, scope="", name="")
                 session.add(scope_rec)
 
-            # Map fields
+            old_values = None if is_new else (scope_rec.name, scope_rec.version, scope_rec.sys_updated_on)
+
             scope_rec.scope = record.get("scope", "")
             scope_rec.name = record.get("name", "")
             scope_rec.short_description = record.get("short_description")
@@ -1164,10 +1479,18 @@ def _pull_scopes(
             scope_rec.last_refreshed_at = pulled_at
             scope_rec.sync_batch_id = batch_id
 
+            if is_new:
+                consecutive_unchanged = 0
+            else:
+                new_values = (scope_rec.name, scope_rec.version, scope_rec.sys_updated_on)
+                if new_values == old_values:
+                    consecutive_unchanged += 1
+                else:
+                    consecutive_unchanged = 0
+
             updated_on = _parse_sn_datetime(record.get("sys_updated_on"))
             if updated_on and (max_updated is None or updated_on > max_updated):
                 max_updated = updated_on
-
             total_records += 1
             if _check_cancel_during_loop(session, pull, total_records):
                 session.commit()
@@ -1177,9 +1500,24 @@ def _pull_scopes(
         session.commit()
         logger.info("Pulled batch of scopes, total so far: %d", total_records)
 
-    # Full mode: clean up records not seen in this batch
-    if mode == "full":
+        if enable_bail and remote_count is not None:
+            current_local = _get_local_cached_count(session, instance_id, DataPullType.scopes)
+            if current_local >= remote_count and consecutive_unchanged >= bail_threshold:
+                bail_out_reason = "count_and_content_gate"
+                break
+        if max_records > 0 and total_records >= max_records:
+            bail_out_reason = "safety_cap"
+            break
+
+    if mode == "full" and bail_out_reason is None:
         _cleanup_orphan_records(session, instance_id, "scope", batch_id)
+
+    if pull is not None:
+        if bail_out_reason:
+            pull.bail_out_reason = bail_out_reason
+        pull.bail_unchanged_at_exit = consecutive_unchanged
+        session.add(pull)
+        session.commit()
 
     return total_records, max_updated
 
@@ -1191,20 +1529,22 @@ def _pull_packages(
     since: Optional[datetime],
     mode: str,
     pull: Optional[InstanceDataPull] = None,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
-    """Pull package records from sys_package and upsert into database.
-
-    Note: sys_package is NOT OOTB web-accessible. If this fails, the admin
-    needs to enable web access on the sys_db_object record for sys_package.
-    """
-    # Generate batch ID for tracking which records were seen in this pull
+    """Pull package records from sys_package and upsert into database."""
     batch_id = str(uuid.uuid4())
-
     total_records = 0
     max_updated = None
     pulled_at = datetime.utcnow()
+    consecutive_unchanged = 0
+    bail_out_reason: Optional[str] = None
+    enable_bail = bail_threshold > 0 and local_count_pre > 0
 
-    for batch in client.pull_packages(since=since if mode == "delta" else None):
+    for batch in client.pull_packages(since=since if mode == "delta" else None, order_desc=order_desc):
         if _is_cancel_requested(session, pull):
             _cancel_pull(session, pull)
             return total_records, max_updated
@@ -1212,26 +1552,20 @@ def _pull_packages(
             sn_sys_id = record.get("sys_id")
             if not sn_sys_id:
                 continue
-
             existing = session.exec(
-                select(Package)
-                .where(Package.instance_id == instance_id)
-                .where(Package.sn_sys_id == sn_sys_id)
+                select(Package).where(Package.instance_id == instance_id).where(Package.sn_sys_id == sn_sys_id)
             ).first()
-
+            is_new = existing is None
             if existing:
                 pkg = existing
             else:
-                pkg = Package(
-                    instance_id=instance_id,
-                    sn_sys_id=sn_sys_id,
-                    name=""
-                )
+                pkg = Package(instance_id=instance_id, sn_sys_id=sn_sys_id, name="")
                 session.add(pkg)
 
-            # Map fields from sys_package
+            old_values = None if is_new else (pkg.name, pkg.version, pkg.sys_updated_on)
+
             pkg.name = record.get("name", "")
-            pkg.source = record.get("source")  # ID field - maps to plugin_id
+            pkg.source = record.get("source")
             pkg.version = record.get("version")
             pkg.active = _parse_sn_bool(record.get("active")) if record.get("active") else True
             pkg.licensable = _parse_sn_bool(record.get("licensable"))
@@ -1251,10 +1585,18 @@ def _pull_packages(
             pkg.last_refreshed_at = pulled_at
             pkg.sync_batch_id = batch_id
 
+            if is_new:
+                consecutive_unchanged = 0
+            else:
+                new_values = (pkg.name, pkg.version, pkg.sys_updated_on)
+                if new_values == old_values:
+                    consecutive_unchanged += 1
+                else:
+                    consecutive_unchanged = 0
+
             updated_on = _parse_sn_datetime(record.get("sys_updated_on"))
             if updated_on and (max_updated is None or updated_on > max_updated):
                 max_updated = updated_on
-
             total_records += 1
             if _check_cancel_during_loop(session, pull, total_records):
                 session.commit()
@@ -1264,9 +1606,24 @@ def _pull_packages(
         session.commit()
         logger.info("Pulled batch of packages, total so far: %d", total_records)
 
-    # Full mode: clean up records not seen in this batch
-    if mode == "full":
+        if enable_bail and remote_count is not None:
+            current_local = _get_local_cached_count(session, instance_id, DataPullType.packages)
+            if current_local >= remote_count and consecutive_unchanged >= bail_threshold:
+                bail_out_reason = "count_and_content_gate"
+                break
+        if max_records > 0 and total_records >= max_records:
+            bail_out_reason = "safety_cap"
+            break
+
+    if mode == "full" and bail_out_reason is None:
         _cleanup_orphan_records(session, instance_id, "package", batch_id)
+
+    if pull is not None:
+        if bail_out_reason:
+            pull.bail_out_reason = bail_out_reason
+        pull.bail_unchanged_at_exit = consecutive_unchanged
+        session.add(pull)
+        session.commit()
 
     return total_records, max_updated
 
@@ -1278,16 +1635,22 @@ def _pull_applications(
     since: Optional[datetime],
     mode: str,
     pull: Optional[InstanceDataPull] = None,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
     """Pull application records and upsert into database."""
-    # Generate batch ID for tracking which records were seen in this pull
     batch_id = str(uuid.uuid4())
-
     total_records = 0
     max_updated = None
     pulled_at = datetime.utcnow()
+    consecutive_unchanged = 0
+    bail_out_reason: Optional[str] = None
+    enable_bail = bail_threshold > 0 and local_count_pre > 0
 
-    for batch in client.pull_applications(since=since):
+    for batch in client.pull_applications(since=since, order_desc=order_desc):
         if _is_cancel_requested(session, pull):
             _cancel_pull(session, pull)
             return total_records, max_updated
@@ -1295,22 +1658,17 @@ def _pull_applications(
             sn_sys_id = record.get("sys_id")
             if not sn_sys_id:
                 continue
-
             existing = session.exec(
-                select(Application)
-                .where(Application.instance_id == instance_id)
-                .where(Application.sn_sys_id == sn_sys_id)
+                select(Application).where(Application.instance_id == instance_id).where(Application.sn_sys_id == sn_sys_id)
             ).first()
-
+            is_new = existing is None
             if existing:
                 app = existing
             else:
-                app = Application(
-                    instance_id=instance_id,
-                    sn_sys_id=sn_sys_id,
-                    name=""
-                )
+                app = Application(instance_id=instance_id, sn_sys_id=sn_sys_id, name="")
                 session.add(app)
+
+            old_values = None if is_new else (app.name, app.version, app.sys_updated_on)
 
             app.name = record.get("name", "")
             app.scope = _normalize_ref(record.get("scope")) or _normalize_ref(record.get("sys_scope"))
@@ -1328,10 +1686,18 @@ def _pull_applications(
             app.last_refreshed_at = pulled_at
             app.sync_batch_id = batch_id
 
+            if is_new:
+                consecutive_unchanged = 0
+            else:
+                new_values = (app.name, app.version, app.sys_updated_on)
+                if new_values == old_values:
+                    consecutive_unchanged += 1
+                else:
+                    consecutive_unchanged = 0
+
             updated_on = _parse_sn_datetime(record.get("sys_updated_on"))
             if updated_on and (max_updated is None or updated_on > max_updated):
                 max_updated = updated_on
-
             total_records += 1
             if _check_cancel_during_loop(session, pull, total_records):
                 session.commit()
@@ -1341,9 +1707,24 @@ def _pull_applications(
         session.commit()
         logger.info("Pulled batch of applications, total so far: %d", total_records)
 
-    # Full mode: clean up records not seen in this batch
-    if mode == "full":
+        if enable_bail and remote_count is not None:
+            current_local = _get_local_cached_count(session, instance_id, DataPullType.applications)
+            if current_local >= remote_count and consecutive_unchanged >= bail_threshold:
+                bail_out_reason = "count_and_content_gate"
+                break
+        if max_records > 0 and total_records >= max_records:
+            bail_out_reason = "safety_cap"
+            break
+
+    if mode == "full" and bail_out_reason is None:
         _cleanup_orphan_records(session, instance_id, "application", batch_id)
+
+    if pull is not None:
+        if bail_out_reason:
+            pull.bail_out_reason = bail_out_reason
+        pull.bail_unchanged_at_exit = consecutive_unchanged
+        session.add(pull)
+        session.commit()
 
     return total_records, max_updated
 
@@ -1355,16 +1736,22 @@ def _pull_sys_db_object(
     since: Optional[datetime],
     mode: str,
     pull: Optional[InstanceDataPull] = None,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
     """Pull sys_db_object records and upsert into database."""
-    # Generate batch ID for tracking which records were seen in this pull
     batch_id = str(uuid.uuid4())
-
     total_records = 0
     max_updated = None
     pulled_at = datetime.utcnow()
+    consecutive_unchanged = 0
+    bail_out_reason: Optional[str] = None
+    enable_bail = bail_threshold > 0 and local_count_pre > 0
 
-    for batch in client.pull_sys_db_object(since=since):
+    for batch in client.pull_sys_db_object(since=since, order_desc=order_desc):
         if _is_cancel_requested(session, pull):
             _cancel_pull(session, pull)
             return total_records, max_updated
@@ -1372,24 +1759,18 @@ def _pull_sys_db_object(
             sn_sys_id = record.get("sys_id")
             if not sn_sys_id:
                 continue
-
             existing = session.exec(
-                select(TableDefinition)
-                .where(TableDefinition.instance_id == instance_id)
-                .where(TableDefinition.sn_sys_id == sn_sys_id)
+                select(TableDefinition).where(TableDefinition.instance_id == instance_id).where(TableDefinition.sn_sys_id == sn_sys_id)
             ).first()
-
+            is_new = existing is None
             if existing:
                 tbl = existing
             else:
-                tbl = TableDefinition(
-                    instance_id=instance_id,
-                    sn_sys_id=sn_sys_id,
-                    name=""
-                )
+                tbl = TableDefinition(instance_id=instance_id, sn_sys_id=sn_sys_id, name="")
                 session.add(tbl)
 
-            # Map key fields + store raw payload
+            old_values = None if is_new else (tbl.name, tbl.label, tbl.sys_updated_on)
+
             tbl.name = record.get("name", "")
             tbl.label = record.get("label")
             tbl.super_class = _normalize_ref(record.get("super_class"))
@@ -1407,10 +1788,18 @@ def _pull_sys_db_object(
             tbl.last_refreshed_at = pulled_at
             tbl.sync_batch_id = batch_id
 
+            if is_new:
+                consecutive_unchanged = 0
+            else:
+                new_values = (tbl.name, tbl.label, tbl.sys_updated_on)
+                if new_values == old_values:
+                    consecutive_unchanged += 1
+                else:
+                    consecutive_unchanged = 0
+
             updated_on = _parse_sn_datetime(record.get("sys_updated_on"))
             if updated_on and (max_updated is None or updated_on > max_updated):
                 max_updated = updated_on
-
             total_records += 1
             if _check_cancel_during_loop(session, pull, total_records):
                 session.commit()
@@ -1420,23 +1809,30 @@ def _pull_sys_db_object(
         session.commit()
         logger.info("Pulled batch of sys_db_object, total so far: %d", total_records)
 
-    # Full mode: clean up records not seen in this batch
-    if mode == "full":
+        if enable_bail and remote_count is not None:
+            current_local = _get_local_cached_count(session, instance_id, DataPullType.sys_db_object)
+            if current_local >= remote_count and consecutive_unchanged >= bail_threshold:
+                bail_out_reason = "count_and_content_gate"
+                break
+        if max_records > 0 and total_records >= max_records:
+            bail_out_reason = "safety_cap"
+            break
+
+    if mode == "full" and bail_out_reason is None:
         _cleanup_orphan_records(session, instance_id, "table_definition", batch_id)
+
+    if pull is not None:
+        if bail_out_reason:
+            pull.bail_out_reason = bail_out_reason
+        pull.bail_unchanged_at_exit = consecutive_unchanged
+        session.add(pull)
+        session.commit()
 
     return total_records, max_updated
 
 
 PullHandler = Callable[
-    [
-        Session,
-        int,
-        ServiceNowClient,
-        Optional[datetime],
-        str,
-        Optional[InstanceDataPull],
-        Optional[str],
-    ],
+    ...,
     Tuple[int, Optional[datetime]],
 ]
 
@@ -1475,8 +1871,19 @@ def _dispatch_update_sets(
     mode: str,
     pull: Optional[InstanceDataPull],
     _version_state_filter: Optional[str],
+    *,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
-    return _pull_update_sets(session, instance_id, client, since, mode, pull)
+    return _pull_update_sets(
+        session, instance_id, client, since, mode, pull,
+        order_desc=order_desc, bail_threshold=bail_threshold,
+        max_records=max_records, remote_count=remote_count,
+        local_count_pre=local_count_pre,
+    )
 
 
 def _dispatch_customer_update_xml(
@@ -1487,8 +1894,19 @@ def _dispatch_customer_update_xml(
     mode: str,
     pull: Optional[InstanceDataPull],
     _version_state_filter: Optional[str],
+    *,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
-    return _pull_customer_update_xml(session, instance_id, client, since, mode, pull)
+    return _pull_customer_update_xml(
+        session, instance_id, client, since, mode, pull,
+        order_desc=order_desc, bail_threshold=bail_threshold,
+        max_records=max_records, remote_count=remote_count,
+        local_count_pre=local_count_pre,
+    )
 
 
 def _dispatch_version_history(
@@ -1499,6 +1917,12 @@ def _dispatch_version_history(
     mode: str,
     pull: Optional[InstanceDataPull],
     version_state_filter: Optional[str],
+    *,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
     return _pull_version_history(
         session,
@@ -1508,6 +1932,9 @@ def _dispatch_version_history(
         mode,
         pull,
         state_filter=version_state_filter,
+        order_desc=order_desc, bail_threshold=bail_threshold,
+        max_records=max_records, remote_count=remote_count,
+        local_count_pre=local_count_pre,
     )
 
 
@@ -1519,8 +1946,19 @@ def _dispatch_metadata_customization(
     mode: str,
     pull: Optional[InstanceDataPull],
     _version_state_filter: Optional[str],
+    *,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
-    return _pull_metadata_customizations(session, instance_id, client, since, mode, pull)
+    return _pull_metadata_customizations(
+        session, instance_id, client, since, mode, pull,
+        order_desc=order_desc, bail_threshold=bail_threshold,
+        max_records=max_records, remote_count=remote_count,
+        local_count_pre=local_count_pre,
+    )
 
 
 def _dispatch_app_file_types(
@@ -1531,8 +1969,19 @@ def _dispatch_app_file_types(
     mode: str,
     pull: Optional[InstanceDataPull],
     _version_state_filter: Optional[str],
+    *,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
-    return _pull_app_file_types(session, instance_id, client, since, mode, pull)
+    return _pull_app_file_types(
+        session, instance_id, client, since, mode, pull,
+        order_desc=order_desc, bail_threshold=bail_threshold,
+        max_records=max_records, remote_count=remote_count,
+        local_count_pre=local_count_pre,
+    )
 
 
 def _dispatch_plugins(
@@ -1543,8 +1992,19 @@ def _dispatch_plugins(
     mode: str,
     pull: Optional[InstanceDataPull],
     _version_state_filter: Optional[str],
+    *,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
-    return _pull_plugins(session, instance_id, client, since, mode, pull)
+    return _pull_plugins(
+        session, instance_id, client, since, mode, pull,
+        order_desc=order_desc, bail_threshold=bail_threshold,
+        max_records=max_records, remote_count=remote_count,
+        local_count_pre=local_count_pre,
+    )
 
 
 def _dispatch_plugin_view(
@@ -1555,8 +2015,19 @@ def _dispatch_plugin_view(
     mode: str,
     pull: Optional[InstanceDataPull],
     _version_state_filter: Optional[str],
+    *,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
-    return _pull_plugin_view(session, instance_id, client, since, mode, pull)
+    return _pull_plugin_view(
+        session, instance_id, client, since, mode, pull,
+        order_desc=order_desc, bail_threshold=bail_threshold,
+        max_records=max_records, remote_count=remote_count,
+        local_count_pre=local_count_pre,
+    )
 
 
 def _dispatch_scopes(
@@ -1567,8 +2038,19 @@ def _dispatch_scopes(
     mode: str,
     pull: Optional[InstanceDataPull],
     _version_state_filter: Optional[str],
+    *,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
-    return _pull_scopes(session, instance_id, client, since, mode, pull)
+    return _pull_scopes(
+        session, instance_id, client, since, mode, pull,
+        order_desc=order_desc, bail_threshold=bail_threshold,
+        max_records=max_records, remote_count=remote_count,
+        local_count_pre=local_count_pre,
+    )
 
 
 def _dispatch_packages(
@@ -1579,8 +2061,19 @@ def _dispatch_packages(
     mode: str,
     pull: Optional[InstanceDataPull],
     _version_state_filter: Optional[str],
+    *,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
-    return _pull_packages(session, instance_id, client, since, mode, pull)
+    return _pull_packages(
+        session, instance_id, client, since, mode, pull,
+        order_desc=order_desc, bail_threshold=bail_threshold,
+        max_records=max_records, remote_count=remote_count,
+        local_count_pre=local_count_pre,
+    )
 
 
 def _dispatch_applications(
@@ -1591,8 +2084,19 @@ def _dispatch_applications(
     mode: str,
     pull: Optional[InstanceDataPull],
     _version_state_filter: Optional[str],
+    *,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
-    return _pull_applications(session, instance_id, client, since, mode, pull)
+    return _pull_applications(
+        session, instance_id, client, since, mode, pull,
+        order_desc=order_desc, bail_threshold=bail_threshold,
+        max_records=max_records, remote_count=remote_count,
+        local_count_pre=local_count_pre,
+    )
 
 
 def _dispatch_sys_db_object(
@@ -1603,8 +2107,19 @@ def _dispatch_sys_db_object(
     mode: str,
     pull: Optional[InstanceDataPull],
     _version_state_filter: Optional[str],
+    *,
+    order_desc: bool = False,
+    bail_threshold: int = 0,
+    max_records: int = 0,
+    remote_count: Optional[int] = None,
+    local_count_pre: int = 0,
 ) -> Tuple[int, Optional[datetime]]:
-    return _pull_sys_db_object(session, instance_id, client, since, mode, pull)
+    return _pull_sys_db_object(
+        session, instance_id, client, since, mode, pull,
+        order_desc=order_desc, bail_threshold=bail_threshold,
+        max_records=max_records, remote_count=remote_count,
+        local_count_pre=local_count_pre,
+    )
 
 
 DATA_PULL_SPECS: Dict[DataPullType, DataPullSpec] = {
@@ -1880,17 +2395,23 @@ def execute_data_pull(
         _cancel_pull(session, pull)
         return pull
 
+    # --- Load bail-out integration properties ---
+    order_desc = load_pull_order_desc(session, instance.id)
+    max_records = load_pull_max_records(session, instance.id)
+    bail_threshold = load_pull_bail_unchanged_run(session, instance.id)
+
     effective_mode = mode
     decision_reason = "Explicit mode"
     local_count_for_decision = None
     remote_count_for_decision = None
+    delta_probe_count_value: Optional[int] = None
 
     # Determine since timestamp and effective mode using shared decision contract.
     if mode == "delta" or mode == "smart":
         since = _get_db_derived_watermark(session, instance.id, data_type)
         if since is None:
             since = pull.last_sys_updated_on
-        effective_mode, since, decision_reason, local_count_for_decision, remote_count_for_decision, _ = _resolve_delta_pull_mode(
+        effective_mode, since, decision_reason, local_count_for_decision, remote_count_for_decision, delta_probe_count_value = _resolve_delta_pull_mode(
             session=session,
             client=client,
             instance_id=instance.id,
@@ -1902,6 +2423,19 @@ def execute_data_pull(
         # mode == "full"
         since = None
 
+    # --- Bail-out telemetry: local_count_pre_pull ---
+    local_count_pre = _get_local_cached_count(session, instance.id, data_type)
+
+    # --- Bail-out telemetry: remote_count_at_probe (unfiltered) ---
+    # For delta/smart modes, _resolve_delta_pull_mode already probed unfiltered remote.
+    # For full mode, probe now so bail-out has a target.
+    if remote_count_for_decision is not None:
+        remote_count_for_bail = remote_count_for_decision
+    else:
+        remote_count_for_bail = _estimate_expected_total(
+            session, client, data_type, since=None, instance_id=instance.id,
+        )
+
     _start_pull(session, pull, run_uid=run_uid)
     pull.sync_mode = effective_mode
     pull.sync_decision_reason = decision_reason
@@ -1910,6 +2444,10 @@ def execute_data_pull(
         pull.last_local_count = local_count_for_decision
     if remote_count_for_decision is not None:
         pull.last_remote_count = remote_count_for_decision
+    # --- Set new telemetry columns ---
+    pull.local_count_pre_pull = local_count_pre
+    pull.remote_count_at_probe = remote_count_for_bail
+    pull.delta_probe_count = delta_probe_count_value
     pull.updated_at = datetime.utcnow()
     session.add(pull)
     session.commit()
@@ -1936,12 +2474,22 @@ def execute_data_pull(
             effective_mode,
             pull,
             version_state_filter,
+            order_desc=order_desc,
+            bail_threshold=bail_threshold,
+            max_records=max_records,
+            remote_count=remote_count_for_bail,
+            local_count_pre=local_count_pre,
         )
 
         session.refresh(pull)
         if pull.status == DataPullStatus.cancelled or pull.cancel_requested:
             _cancel_pull(session, pull)
             return pull
+
+        # --- Set post-pull telemetry ---
+        pull.local_count_post_pull = _get_local_cached_count(session, instance.id, data_type)
+        session.add(pull)
+        session.commit()
 
         _complete_pull(session, pull, records, max_updated)
         logger.info("Completed pull of %s for instance %s: %d records", data_type.value, instance.id, records)

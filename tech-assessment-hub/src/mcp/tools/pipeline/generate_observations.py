@@ -26,7 +26,13 @@ from ....models import (
     UpdateSet,
     UpdateSetArtifactLink,
 )
+from ....services.assessment_phase_progress import (
+    checkpoint_phase_progress,
+    complete_phase_progress,
+    start_phase_progress,
+)
 from ....services.integration_properties import load_observation_properties
+from ....services.customization_sync import sync_single_result
 from ..core.get_usage_count import handle as get_usage_count_handle
 
 
@@ -50,6 +56,10 @@ INPUT_SCHEMA: Dict[str, Any] = {
         "max_results": {
             "type": "integer",
             "description": "Optional cap for number of customized results to process.",
+        },
+        "resume_from_index": {
+            "type": "integer",
+            "description": "Optional 0-based resume cursor for customized artifact processing.",
         },
     },
     "required": ["assessment_id"],
@@ -259,6 +269,7 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
     if include_usage_queries not in {"always", "auto", "never"}:
         include_usage_queries = obs_props.include_usage_queries
     max_results = int(params.get("max_results") or 0)
+    resume_from_index = max(0, int(params.get("resume_from_index") or 0))
 
     rows = session.exec(
         select(ScanResult)
@@ -266,18 +277,30 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
         .where(Scan.assessment_id == assessment_id)
         .order_by(ScanResult.id.asc())
     ).all()
-    customized_results = [row for row in rows if _is_customized(row)]
+    all_customized_results = [row for row in rows if _is_customized(row)]
     if max_results > 0:
-        customized_results = customized_results[:max_results]
+        all_customized_results = all_customized_results[:max_results]
+    total_customized = len(all_customized_results)
+    resume_from_index = min(resume_from_index, total_customized)
+    customized_results = all_customized_results[resume_from_index:]
 
     landscape = _compose_landscape_summary(
         assessment=assessment,
-        customized_results=customized_results,
+        customized_results=all_customized_results,
     )
     landscape_row = _upsert_landscape_summary(
         session,
         assessment_id=assessment_id,
         summary_text=landscape,
+    )
+    start_phase_progress(
+        session,
+        assessment_id,
+        "observations",
+        total_items=total_customized,
+        allow_resume=True,
+        checkpoint={"source": "generate_observations_tool"},
+        commit=False,
     )
 
     processed = 0
@@ -340,20 +363,50 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
             result.review_status = ReviewStatus.pending_review
             result.ai_pass_count = int(result.ai_pass_count or 0) + 1
             session.add(result)
+            sync_single_result(session, result, commit=False)
             processed += 1
 
+            absolute_completed = resume_from_index + processed
+            checkpoint_phase_progress(
+                session,
+                assessment_id,
+                "observations",
+                completed_items=absolute_completed,
+                total_items=total_customized,
+                last_item_id=int(result.id) if result.id is not None else None,
+                status="running",
+                checkpoint={"resume_from_index": absolute_completed},
+                commit=False,
+            )
+            session.commit()
+
+    if processed == 0:
+        session.commit()
+
+    next_resume_index = resume_from_index + processed
+    if next_resume_index >= total_customized:
+        complete_phase_progress(
+            session,
+            assessment_id,
+            "observations",
+            checkpoint={"completed_items": total_customized, "resume_from_index": total_customized},
+            commit=False,
+        )
         session.commit()
 
     return {
         "success": True,
         "assessment_id": assessment_id,
-        "total_customized": len(customized_results),
+        "total_customized": total_customized,
         "processed_count": processed,
         "batch_size": batch_size,
         "batches_processed": batch_count,
         "include_usage_queries": include_usage_queries,
         "usage_queries_executed": usage_queries_executed,
         "usage_cache_hits": usage_cache_hits,
+        "resume_from_index": resume_from_index,
+        "next_resume_index": next_resume_index,
+        "remaining_customized": max(0, total_customized - next_resume_index),
         "landscape_summary": {
             "recommendation_id": landscape_row.id,
             "category": "landscape_summary",

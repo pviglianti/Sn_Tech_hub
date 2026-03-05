@@ -5,7 +5,7 @@ Called from scan_executor (bulk after scan completion) and the
 result update endpoint (per-record on reclassification/review changes).
 """
 
-from typing import List, Optional, Set
+from typing import List, Optional
 
 from sqlmodel import Session, select
 
@@ -40,38 +40,88 @@ def _build_customization_from_result(result: ScanResult) -> Customization:
     )
 
 
-def bulk_sync_for_scan(session: Session, scan_id: int) -> int:
-    """Populate customization rows for all customized results in a scan.
+def _copy_result_to_customization(row: Customization, result: ScanResult) -> bool:
+    """Mirror result fields onto an existing customization row.
 
-    Typically called once after scan_executor completes a scan.
-    Skips results that already have a customization row.
-    Returns the number of rows inserted.
+    Returns True when any persisted value changed.
+    """
+    changed = False
+
+    updates = {
+        "scan_id": result.scan_id,
+        "sys_id": result.sys_id,
+        "table_name": result.table_name,
+        "name": result.name,
+        "origin_type": result.origin_type,
+        "head_owner": result.head_owner,
+        "sys_class_name": result.sys_class_name,
+        "sys_scope": result.sys_scope,
+        "review_status": result.review_status,
+        "disposition": result.disposition,
+        "recommendation": result.recommendation,
+        "observations": result.observations,
+        "sys_updated_on": result.sys_updated_on,
+    }
+
+    for field_name, new_value in updates.items():
+        if getattr(row, field_name) != new_value:
+            setattr(row, field_name, new_value)
+            changed = True
+
+    return changed
+
+
+def bulk_sync_for_scan(session: Session, scan_id: int, *, commit: bool = True) -> int:
+    """Reconcile customization rows for all results in a scan.
+
+    - INSERT missing rows for customized results.
+    - UPDATE existing rows when mirrored fields drift.
+    - DELETE stale rows for results no longer customized.
+
+    Returns the number of inserted rows.
     """
     results = session.exec(
-        select(ScanResult)
-        .where(ScanResult.scan_id == scan_id)
-        .where(ScanResult.origin_type.in_([ot.value for ot in CUSTOMIZED_ORIGIN_TYPES]))
+        select(ScanResult).where(ScanResult.scan_id == scan_id)
     ).all()
+    results_by_id = {
+        int(result.id): result for result in results if result.id is not None
+    }
 
-    existing_result_ids: Set[int] = set(
-        session.exec(
-            select(Customization.scan_result_id)
-            .where(Customization.scan_id == scan_id)
-        ).all()
-    )
+    existing_rows = session.exec(
+        select(Customization).where(Customization.scan_id == scan_id)
+    ).all()
+    existing_by_result_id = {
+        int(row.scan_result_id): row for row in existing_rows
+    }
 
-    count = 0
-    for result in results:
-        if result.id not in existing_result_ids:
+    inserted_count = 0
+    updated_count = 0
+    deleted_count = 0
+
+    for result_id, result in results_by_id.items():
+        if not is_customized(result.origin_type):
+            continue
+        existing = existing_by_result_id.get(result_id)
+        if existing is None:
             session.add(_build_customization_from_result(result))
-            count += 1
+            inserted_count += 1
+            continue
+        if _copy_result_to_customization(existing, result):
+            session.add(existing)
+            updated_count += 1
 
-    if count:
+    for result_id, row in existing_by_result_id.items():
+        result = results_by_id.get(result_id)
+        if result is None or not is_customized(result.origin_type):
+            session.delete(row)
+            deleted_count += 1
+
+    if commit and (inserted_count or updated_count or deleted_count):
         session.commit()
-    return count
+    return inserted_count
 
 
-def sync_single_result(session: Session, result: ScanResult) -> None:
+def sync_single_result(session: Session, result: ScanResult, *, commit: bool = True) -> None:
     """Sync a single scan_result's customization row after an update.
 
     - If result is customized and no customization row exists -> INSERT
@@ -83,21 +133,19 @@ def sync_single_result(session: Session, result: ScanResult) -> None:
         .where(Customization.scan_result_id == result.id)
     ).first()
 
+    changed = False
+
     if is_customized(result.origin_type):
         if existing:
-            existing.origin_type = result.origin_type
-            existing.head_owner = result.head_owner
-            existing.review_status = result.review_status
-            existing.disposition = result.disposition
-            existing.recommendation = result.recommendation
-            existing.observations = result.observations
-            existing.name = result.name
-            existing.sys_scope = result.sys_scope
-            existing.sys_updated_on = result.sys_updated_on
-            session.add(existing)
+            changed = _copy_result_to_customization(existing, result)
+            if changed:
+                session.add(existing)
         else:
             session.add(_build_customization_from_result(result))
-        session.commit()
+            changed = True
     elif existing:
         session.delete(existing)
+        changed = True
+
+    if commit and changed:
         session.commit()

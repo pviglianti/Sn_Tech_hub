@@ -34,3 +34,5 @@ urllib3==2.6.3
 uvicorn==0.39.0
 yarl==1.22.0
 PyYAML==6.0.2
+openpyxl==3.1.5
+python-docx==1.2.0

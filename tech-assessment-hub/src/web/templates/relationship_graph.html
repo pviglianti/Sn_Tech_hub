@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+
+{% block title %}Relationship Graph - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div id="rgShell" class="card rg-shell rg-expanded">
+    <div class="rg-header">
+        <div>
+            <h1>Relationship Graph</h1>
+            <p class="text-muted-plain">Seed: <strong>{{ seed_mode | replace('_', ' ') | title }}</strong> — {{ seed_label }}</p>
+            <p class="text-muted-sm">Click a node to center and load only its direct neighborhood.</p>
+        </div>
+        <div class="button-group">
+            {% if scan_id %}
+            <a href="/scans/{{ scan_id }}" class="btn btn-sm btn-secondary">Back to Scan</a>
+            {% elif assessment_id %}
+            <a href="/assessments/{{ assessment_id }}" class="btn btn-sm btn-secondary">Back to Assessment</a>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="rg-toolbar">
+        <input id="rgSearchInput" type="text" class="form-control" placeholder="Find artifact by name..." />
+        <button id="rgSearchBtn" class="btn btn-sm btn-secondary" type="button">Search</button>
+        <button id="rgToggleFiltersBtn" class="btn btn-sm btn-secondary" type="button">Filters</button>
+        <button id="rgToggleDetailBtn" class="btn btn-sm btn-secondary" type="button">Details</button>
+        <button id="rgExpandBtn" class="btn btn-sm btn-secondary active" type="button">Sample View</button>
+        <button id="rgPopoutBtn" class="btn btn-sm btn-secondary" type="button">Pop Out</button>
+        <button id="rgPanLeftBtn" class="btn btn-sm btn-secondary" type="button" title="Pan left">←</button>
+        <button id="rgPanUpBtn" class="btn btn-sm btn-secondary" type="button" title="Pan up">↑</button>
+        <button id="rgPanDownBtn" class="btn btn-sm btn-secondary" type="button" title="Pan down">↓</button>
+        <button id="rgPanRightBtn" class="btn btn-sm btn-secondary" type="button" title="Pan right">→</button>
+        <button id="rgZoomOutBtn" class="btn btn-sm btn-secondary" type="button" title="Zoom out">-</button>
+        <button id="rgZoomInBtn" class="btn btn-sm btn-secondary" type="button" title="Zoom in">+</button>
+        <button id="rgLayoutBtn" class="btn btn-sm btn-secondary" type="button">Re-Layout</button>
+        <button id="rgFitBtn" class="btn btn-sm btn-secondary" type="button">Fit Once</button>
+        <label class="rg-checkbox rg-fit-checkbox"><input id="rgFitAllToggle" type="checkbox" /> Fit All</label>
+        <button id="rgLabelsBtn" class="btn btn-sm btn-secondary" type="button">Labels</button>
+        <div class="rg-stats">
+            <span id="rgNodeCount">0</span> nodes •
+            <span id="rgEdgeCount">0</span> edges
+        </div>
+    </div>
+
+    <div id="rgLayout" class="rg-layout">
+        <aside id="rgSidebar" class="rg-sidebar">
+            <div class="rg-section">
+                <h3>Path</h3>
+                <div id="rgBreadcrumbs" class="rg-breadcrumbs"></div>
+            </div>
+            <div class="rg-section">
+                <h3>Filters</h3>
+                <div id="rgCustomizationSection">
+                    <label class="rg-checkbox"><input id="rgShowCustom" type="checkbox" checked /> Show Customized</label>
+                    <div class="rg-subfilter">
+                        <label class="rg-checkbox"><input id="rgShowModified" type="checkbox" checked /> OOTB Modified</label>
+                        <label class="rg-checkbox"><input id="rgShowNetNew" type="checkbox" checked /> Customer Created</label>
+                    </div>
+                    <label class="rg-checkbox"><input id="rgShowNotCustom" type="checkbox" checked /> Show Not Customized</label>
+                </div>
+            </div>
+            <div class="rg-section">
+                <h3>Relationship Types</h3>
+                <div id="rgEdgeFilters"></div>
+            </div>
+            <div class="rg-section" id="rgTablePickerSection">
+                <h3>Table Artifacts</h3>
+                <label class="rg-checkbox" style="margin-bottom:0.35rem;">
+                    <input id="rgTableGroupingToggle" type="checkbox" checked />
+                    Group Crowded Tables
+                </label>
+                <div id="rgTableArtifactPicker" class="text-muted-sm">No table artifact list loaded.</div>
+            </div>
+            <div class="rg-section">
+                <h3>Status</h3>
+                <p id="rgStatusText" class="text-muted-sm">Initializing graph...</p>
+            </div>
+        </aside>
+
+        <section class="rg-canvas-wrap">
+            <div id="relationshipGraphCanvas" class="rg-canvas"></div>
+        </section>
+
+        <aside id="rgDetailPanel" class="rg-detail">
+            <h3>Selected Node</h3>
+            <div id="rgDetailBody" class="text-muted-sm">Click a node to inspect details.</div>
+        </aside>
+    </div>
+</div>
+
+<style>
+.rg-shell { padding: 1rem; }
+.rg-header { display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 0.75rem; align-items: flex-start; }
+.rg-toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem; align-items: center; }
+.rg-toolbar .form-control { flex: 1 1 280px; min-width: 220px; }
+.rg-stats { margin-left: auto; font-size: 0.85rem; color: var(--text-muted); white-space: nowrap; }
+.rg-fit-checkbox { margin: 0; white-space: nowrap; }
+.rg-layout { display: grid; grid-template-columns: 260px 1fr 300px; gap: 0.75rem; min-height: 72vh; }
+.rg-layout.rg-no-sidebar { grid-template-columns: 1fr 300px; }
+.rg-layout.rg-no-detail { grid-template-columns: 260px 1fr; }
+.rg-layout.rg-no-sidebar.rg-no-detail { grid-template-columns: 1fr; }
+.rg-sidebar, .rg-detail { border: 1px solid var(--border-color); border-radius: 12px; padding: 0.75rem; background: var(--card-bg, var(--surface-color)); overflow: auto; }
+.rg-panel-hidden { display: none !important; }
+.rg-section { margin-bottom: 1rem; }
+.rg-section h3, .rg-detail h3 { margin: 0 0 0.5rem 0; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.rg-canvas-wrap { border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden; background: linear-gradient(180deg, rgba(17, 23, 33, 0.82), rgba(9, 13, 20, 0.95)); }
+.rg-canvas { width: 100%; height: 100%; min-height: 72vh; }
+.rg-shell.rg-expanded .rg-layout { min-height: 86vh; }
+.rg-shell.rg-expanded .rg-canvas { min-height: 86vh; }
+.rg-checkbox { font-size: 0.85rem; display: inline-flex; gap: 0.45rem; align-items: center; }
+.rg-subfilter { margin: 0.4rem 0 0.45rem 1.2rem; display: flex; flex-direction: column; gap: 0.25rem; }
+.rg-edge-filter { display: flex; align-items: center; gap: 0.45rem; font-size: 0.82rem; margin-bottom: 0.35rem; }
+.rg-edge-swatch { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
+.rg-breadcrumbs { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.rg-crumb { border: 1px solid var(--border-color); background: var(--surface-color); color: var(--text-color); border-radius: 999px; padding: 0.2rem 0.55rem; font-size: 0.75rem; cursor: pointer; }
+.rg-crumb:hover { border-color: var(--primary-color); }
+.rg-badge { display: inline-block; padding: 0.16rem 0.45rem; border-radius: 999px; font-size: 0.72rem; border: 1px solid var(--border-color); margin-right: 0.35rem; }
+.rg-badge-custom { border-color: #2f9e44; color: #2f9e44; }
+.rg-badge-modified { border-color: #f08c00; color: #f08c00; }
+.rg-badge-netnew { border-color: #4c6ef5; color: #4c6ef5; }
+.rg-meta-row { margin-bottom: 0.45rem; font-size: 0.82rem; }
+.rg-meta-row code { font-size: 0.76rem; }
+.rg-picker-group { margin-bottom: 0.55rem; }
+.rg-picker-title { font-size: 0.76rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.28rem; letter-spacing: 0.03em; }
+.rg-picker-list { display: flex; flex-direction: column; gap: 0.24rem; max-height: 210px; overflow: auto; }
+.rg-picker-item { width: 100%; text-align: left; border: 1px solid var(--border-color); background: var(--surface-color); color: var(--text-color); border-radius: 8px; padding: 0.28rem 0.4rem; font-size: 0.74rem; cursor: pointer; }
+.rg-picker-item:hover { border-color: var(--primary-color); }
+
+@media (max-width: 1200px) {
+    .rg-layout { grid-template-columns: 240px 1fr; }
+    .rg-detail { grid-column: 1 / -1; }
+    .rg-layout.rg-no-sidebar { grid-template-columns: 1fr; }
+    .rg-layout.rg-no-detail { grid-template-columns: 240px 1fr; }
+    .rg-shell.rg-expanded .rg-layout { min-height: 72vh; }
+    .rg-shell.rg-expanded .rg-canvas { min-height: 72vh; }
+}
+
+@media (max-width: 900px) {
+    .rg-stats { margin-left: 0; flex: 1 1 100%; }
+    .rg-layout { grid-template-columns: 1fr; }
+    .rg-sidebar, .rg-detail { order: 2; }
+    .rg-canvas-wrap { order: 1; min-height: 58vh; }
+    .rg-canvas { min-height: 58vh; }
+    .rg-shell.rg-expanded .rg-canvas { min-height: 64vh; }
+}
+</style>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+<script src="/static/js/RelationshipGraph.js?v={{ static_version }}"></script>
+<script>
+(function () {
+    if (!window.RelationshipGraph) {
+        var status = document.getElementById('rgStatusText');
+        if (status) status.textContent = 'Relationship graph script failed to load.';
+        return;
+    }
+    var graph = new window.RelationshipGraph({
+        apiUrl: '/api/relationship-graph/neighborhood',
+        initialSeed: {{ seed_payload | tojson }},
+        canvasId: 'relationshipGraphCanvas',
+        detailBodyId: 'rgDetailBody',
+        statusId: 'rgStatusText',
+        nodeCountId: 'rgNodeCount',
+        edgeCountId: 'rgEdgeCount',
+        breadcrumbsId: 'rgBreadcrumbs',
+        edgeFiltersId: 'rgEdgeFilters',
+        tablePickerSectionId: 'rgTablePickerSection',
+        tableArtifactPickerId: 'rgTableArtifactPicker',
+        tableGroupingToggleId: 'rgTableGroupingToggle',
+        searchInputId: 'rgSearchInput',
+        searchButtonId: 'rgSearchBtn',
+        customSectionId: 'rgCustomizationSection',
+        showCustomId: 'rgShowCustom',
+        showNotCustomId: 'rgShowNotCustom',
+        showModifiedId: 'rgShowModified',
+        showNetNewId: 'rgShowNetNew',
+        zoomOutButtonId: 'rgZoomOutBtn',
+        zoomInButtonId: 'rgZoomInBtn',
+        layoutButtonId: 'rgLayoutBtn',
+        fitButtonId: 'rgFitBtn',
+        fitAllToggleId: 'rgFitAllToggle',
+        labelsButtonId: 'rgLabelsBtn',
+        shellId: 'rgShell',
+        layoutId: 'rgLayout',
+        sidebarId: 'rgSidebar',
+        detailPanelId: 'rgDetailPanel',
+        toggleFiltersButtonId: 'rgToggleFiltersBtn',
+        toggleDetailButtonId: 'rgToggleDetailBtn',
+        expandButtonId: 'rgExpandBtn',
+        popoutButtonId: 'rgPopoutBtn',
+        panLeftButtonId: 'rgPanLeftBtn',
+        panRightButtonId: 'rgPanRightBtn',
+        panUpButtonId: 'rgPanUpBtn',
+        panDownButtonId: 'rgPanDownBtn',
+    });
+    graph.init();
+})();
+</script>
+{% endblock %}

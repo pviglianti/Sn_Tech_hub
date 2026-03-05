@@ -34,6 +34,17 @@ This file is the single shared standard for Claude, Codex, and other tools.
 - Read only explicitly referenced files from `02_working/` or `03_outputs/`.
 - Never bulk-read folders.
 
+## Context Exclusions (Required)
+- Never include `archive/` in default rehydration or exploratory scans.
+- Read files under `archive/` only when the user explicitly asks for archived material.
+- Treat files moved into `archive/` as historical/old docs and ignore them for active implementation decisions.
+- For this workspace, also exclude these paths from default rehydration/exploratory scans unless explicitly referenced by the active task or requested by the user:
+  - `docs/`
+  - `Templates/`
+  - `snow-flow_pv/`
+  - `tech-assessment-hub/docs/plans/`
+- For phase coordination/chat files in `00_admin/`, read only the files tied to the current active phase in `todos.md`/`ACTIVE_PROJECT.md`; treat other phase files as historical context unless explicitly requested.
+
 ## Core Memory File Shapes
 - `context.md`: includes `## Rehydrate Snapshot` (8-12 bullets max).
 - `todos.md`: only 3 sections: `## Now`, `## Next`, `## Backlog`.
@@ -97,3 +108,4 @@ All agents MUST follow these when writing or modifying code:
 - Keep next action explicit in each run-log row.
 - If information is not in active project files or referenced artifacts, treat it as unknown.
 - **For coordinated multi-agent work:** Follow `00_admin/agent_coordination_protocol.md`. Create a phase-specific coordination + chat file pair for each collaborative effort. Use the standard message tags, status lifecycle, review requirements, and checkpoint pattern defined there.
+- **Exception — orchestrated runs:** When the workspace is using the `.claude/orchestration/` system, the orchestration playbook and role prompts override the interactive chat/polling workflow. In that mode Codex is the event-loop coordinator, workers do not poll, and any shared orchestration files are the explicit source of truth for that run.

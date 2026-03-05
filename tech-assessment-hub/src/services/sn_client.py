@@ -919,6 +919,7 @@ class ServiceNowClient:
         order_by: str = "sys_updated_on",
         inter_batch_delay: Optional[float] = None,
         max_batches: Optional[int] = None,
+        order_desc: bool = False,
     ):
         """Generator that yields batches of records using offset pagination.
 
@@ -934,6 +935,7 @@ class ServiceNowClient:
             order_by: Field to order by for consistent pagination
             inter_batch_delay: Seconds between successive API calls (None = from properties)
             max_batches: Safety cap — stop after this many batches (None = from properties)
+            order_desc: When True, use ORDERBYDESC instead of ORDERBY (newest-first)
 
         Yields:
             List[Dict] — one batch of records at a time
@@ -949,12 +951,14 @@ class ServiceNowClient:
         # Append ORDER BY to the query string (SN encoded-query format).
         # This is in addition to sysparm_order_by; SN honours whichever
         # it encounters first.
+        # When order_desc=True, use ORDERBYDESC for newest-first ordering.
+        order_keyword = "ORDERBYDESC" if order_desc else "ORDERBY"
         effective_query = query or ""
-        if order_by and f"ORDERBY{order_by}" not in effective_query:
+        if order_by and f"{order_keyword}{order_by}" not in effective_query:
             effective_query = (
-                f"{effective_query}^ORDERBY{order_by}"
+                f"{effective_query}^{order_keyword}{order_by}"
                 if effective_query
-                else f"ORDERBY{order_by}"
+                else f"{order_keyword}{order_by}"
             )
 
         offset = 0
@@ -1093,6 +1097,7 @@ class ServiceNowClient:
         since: Optional[datetime] = None,
         batch_size: Optional[int] = None,
         scope_filter: Optional[str] = None,
+        order_desc: bool = False,
     ):
         """
         Pull update sets from ServiceNow using batched pagination.
@@ -1101,6 +1106,7 @@ class ServiceNowClient:
             since: Only pull records updated since this datetime (for delta pulls)
             batch_size: Number of records per API call
             scope_filter: Filter by scope ("global", "scoped", or None for all)
+            order_desc: When True, order newest-first (ORDERBYDESC)
 
         Yields:
             Batches of update set records
@@ -1115,6 +1121,7 @@ class ServiceNowClient:
             query=query,
             fields=fields,
             batch_size=batch_size,
+            order_desc=order_desc,
         ):
             yield batch
 
@@ -1123,6 +1130,7 @@ class ServiceNowClient:
         since: Optional[datetime] = None,
         batch_size: Optional[int] = None,
         include_payload: bool = False,
+        order_desc: bool = False,
     ):
         """
         Pull customer update XML records using batched pagination.
@@ -1130,7 +1138,8 @@ class ServiceNowClient:
         Args:
             since: Only pull records updated since this datetime
             batch_size: Number of records per API call
-        include_payload: Whether to include the full XML payload (large!)
+            include_payload: Whether to include the full XML payload (large!)
+            order_desc: When True, order newest-first (ORDERBYDESC)
 
         Yields:
             Batches of customer update XML records
@@ -1154,6 +1163,7 @@ class ServiceNowClient:
             query=query,
             fields=fields,
             batch_size=batch_size,
+            order_desc=order_desc,
         ):
             yield batch
 
@@ -1162,6 +1172,7 @@ class ServiceNowClient:
         since: Optional[datetime] = None,
         batch_size: Optional[int] = None,
         state_filter: Optional[str] = None,
+        order_desc: bool = False,
     ):
         """
         Pull version history records using batched pagination.
@@ -1170,6 +1181,7 @@ class ServiceNowClient:
             since: Only pull records since this datetime
             batch_size: Number of records per API call
             state_filter: Filter by state (e.g., "current" for head versions)
+            order_desc: When True, order newest-first (ORDERBYDESC)
 
         Yields:
             Batches of version history records
@@ -1190,6 +1202,7 @@ class ServiceNowClient:
             fields=fields,
             batch_size=batch_size,
             order_by=order,
+            order_desc=order_desc,
         ):
             yield batch
 
@@ -1198,6 +1211,7 @@ class ServiceNowClient:
         since: Optional[datetime] = None,
         batch_size: Optional[int] = None,
         class_names: Optional[List[str]] = None,
+        order_desc: bool = False,
     ):
         """
         Pull metadata customization records using batched pagination.
@@ -1205,6 +1219,8 @@ class ServiceNowClient:
         Args:
             since: Only pull records updated since this datetime
             batch_size: Number of records per API call
+            class_names: Optional list of class names to filter by
+            order_desc: When True, order newest-first (ORDERBYDESC)
 
         Yields:
             Batches of metadata customization records
@@ -1218,6 +1234,7 @@ class ServiceNowClient:
                 query=query,
                 fields=fields,
                 batch_size=batch_size,
+                order_desc=order_desc,
             ):
                 yield batch
 
@@ -1225,6 +1242,7 @@ class ServiceNowClient:
         self,
         since: Optional[datetime] = None,
         batch_size: Optional[int] = None,
+        order_desc: bool = False,
     ):
         """
         Pull app file type records from sys_app_file_type.
@@ -1232,6 +1250,7 @@ class ServiceNowClient:
         Args:
             since: Only pull records updated since this datetime
             batch_size: Number of records per API call
+            order_desc: When True, order newest-first (ORDERBYDESC)
 
         Yields:
             Batches of app file type records
@@ -1246,6 +1265,7 @@ class ServiceNowClient:
             query=query,
             fields=fields,
             batch_size=batch_size,
+            order_desc=order_desc,
         ):
             yield batch
 
@@ -1254,6 +1274,7 @@ class ServiceNowClient:
         batch_size: Optional[int] = None,
         active_only: bool = False,
         since: Optional[datetime] = None,
+        order_desc: bool = False,
     ):
         """
         Pull plugin records from sys_plugins.
@@ -1262,6 +1283,7 @@ class ServiceNowClient:
             batch_size: Number of records per API call
             active_only: Only pull active plugins
             since: Only pull records updated since this datetime
+            order_desc: When True, order newest-first (ORDERBYDESC)
 
         Yields:
             Batches of plugin records
@@ -1277,6 +1299,7 @@ class ServiceNowClient:
             fields=fields,
             batch_size=batch_size,
             order_by="name",
+            order_desc=order_desc,
         ):
             yield batch
 
@@ -1285,6 +1308,7 @@ class ServiceNowClient:
         batch_size: Optional[int] = None,
         active_only: bool = False,
         since: Optional[datetime] = None,
+        order_desc: bool = False,
     ):
         """
         Pull application scope records from sys_scope.
@@ -1293,6 +1317,7 @@ class ServiceNowClient:
             batch_size: Number of records per API call
             active_only: Only pull active scopes
             since: Only pull records updated since this datetime
+            order_desc: When True, order newest-first (ORDERBYDESC)
 
         Yields:
             Batches of scope records
@@ -1308,6 +1333,7 @@ class ServiceNowClient:
             fields=fields,
             batch_size=batch_size,
             order_by="scope",
+            order_desc=order_desc,
         ):
             yield batch
 
@@ -1315,6 +1341,7 @@ class ServiceNowClient:
         self,
         since: Optional[datetime] = None,
         batch_size: Optional[int] = None,
+        order_desc: bool = False,
     ):
         """
         Pull package records from sys_package.
@@ -1326,6 +1353,7 @@ class ServiceNowClient:
         Args:
             since: Only pull records updated since this datetime
             batch_size: Number of records per API call
+            order_desc: When True, order newest-first (ORDERBYDESC)
 
         Yields:
             Batches of package records
@@ -1341,6 +1369,7 @@ class ServiceNowClient:
             fields=fields,
             batch_size=batch_size,
             order_by="name",
+            order_desc=order_desc,
         ):
             yield batch
 
@@ -1349,6 +1378,7 @@ class ServiceNowClient:
         batch_size: Optional[int] = None,
         active_only: bool = False,
         since: Optional[datetime] = None,
+        order_desc: bool = False,
     ):
         """
         Pull application records from sys_app.
@@ -1357,6 +1387,7 @@ class ServiceNowClient:
             batch_size: Number of records per API call
             active_only: Only pull active apps
             since: Only pull records updated since this datetime
+            order_desc: When True, order newest-first (ORDERBYDESC)
 
         Yields:
             Batches of application records
@@ -1370,6 +1401,7 @@ class ServiceNowClient:
             fields=fields,
             batch_size=batch_size,
             order_by="name",
+            order_desc=order_desc,
         ):
             yield batch
 
@@ -1377,6 +1409,7 @@ class ServiceNowClient:
         self,
         since: Optional[datetime] = None,
         batch_size: Optional[int] = None,
+        order_desc: bool = False,
     ):
         """
         Pull table definitions from sys_db_object.
@@ -1384,6 +1417,7 @@ class ServiceNowClient:
         Args:
             since: Only pull records updated since this datetime
             batch_size: Number of records per API call
+            order_desc: When True, order newest-first (ORDERBYDESC)
 
         Yields:
             Batches of sys_db_object records (all fields)
@@ -1396,6 +1430,7 @@ class ServiceNowClient:
             fields=None,  # all fields
             batch_size=batch_size,
             order_by="sys_updated_on",
+            order_desc=order_desc,
         ):
             yield batch
 
@@ -1404,6 +1439,7 @@ class ServiceNowClient:
         batch_size: Optional[int] = None,
         active_only: bool = False,
         since: Optional[datetime] = None,
+        order_desc: bool = False,
     ):
         """
         Pull plugin view records from v_plugin.
@@ -1412,6 +1448,7 @@ class ServiceNowClient:
             batch_size: Number of records per API call
             active_only: Only pull active plugins
             since: Only pull records updated since this datetime
+            order_desc: When True, order newest-first (ORDERBYDESC)
 
         Yields:
             Batches of v_plugin records
@@ -1425,5 +1462,6 @@ class ServiceNowClient:
             fields=fields,
             batch_size=batch_size,
             order_by="name",
+            order_desc=order_desc,
         ):
             yield batch

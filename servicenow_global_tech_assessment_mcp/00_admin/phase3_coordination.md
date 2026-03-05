@@ -40,6 +40,34 @@
 | P5D-ui: Observation card UI + observation-review.js + review gate UI | Claude | `approved` | P5D-backend |
 | P5E: Grouping + recommendation trigger buttons | Claude | `approved` | P5D |
 
+## Phase 8A Task Assignments (AGREED 2026-03-05)
+
+> **Status:** Planned and cross-agent approved in `phase3_planning_chat.md` (`[CLAUDE] [REVIEW_PASS] [APPROVED]` + `[CODEX] [APPROVED]`).
+
+| Task | Owner | Status | Depends On |
+|------|-------|--------|------------|
+| P8A-0: Full regression on combined branch + commit hardening tranche baseline | Codex | `in_progress` | — |
+| P8A-1: Human live validation of runtime telemetry page during full pipeline run | Human | `not_started` | P8A-0 |
+| P8A-2: Resume drill for `observations` + `recommendations` stages | Codex + Claude + Human | `not_started` | P8A-0 |
+| P8A-3: Patch defects from validation/drill + rerun regression | Codex | `not_started` | P8A-2 |
+| P8A-4: Acceptance gate + merge decision (PR to main after pass) | Codex + Claude | `not_started` | P8A-3 |
+
+## Phase 9 Task Assignments (AGREED OPTION A)
+
+> **Scope decision:** Prompt integration is pulled into Phase 9 (not deferred to Phase 10).
+
+| Task | Owner | Status | Depends On |
+|------|-------|--------|------------|
+| P9A: Integrate registered MCP prompts into pipeline handlers (`ai_analysis`, `ai_refinement`, `report`) with safe rollout toggle | Codex | `review_requested` | P8A-4 |
+| P9B: Excel/Word export generation from report-stage aggregate payloads | Codex | `approved` | P8A-4 |
+| P9C: Process recommendations UI (assessment detail rendering/filtering/sorting) | Claude + Codex | `approved` | P9A |
+
+## Phase 10 Task Assignments (IMPLEMENTED 2026-03-05)
+
+| Task | Owner | Status | Depends On |
+|------|-------|--------|------------|
+| P10A: Assessment summary dashboard page (cross-assessment pipeline/cost/token metrics) | Codex | `approved` | P9B |
+
 ### Accepted Addendums (A6–A10)
 - **A6:** Plural route naming: `/api/assessments/...`, `/api/results/...`
 - **A7:** Separate `pipeline` object in polling response (not overloading scan job)

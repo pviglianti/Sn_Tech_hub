@@ -5,7 +5,10 @@
 {% block content %}
 <div class="page-header">
     <h1>Assessments</h1>
-    <a href="/assessments/new" class="btn btn-primary">+ New Assessment</a>
+    <div class="button-group">
+        <a href="/assessments/summary" class="btn btn-secondary">Summary Dashboard</a>
+        <a href="/assessments/new" class="btn btn-primary">+ New Assessment</a>
+    </div>
 </div>
 
 {% if assessments %}

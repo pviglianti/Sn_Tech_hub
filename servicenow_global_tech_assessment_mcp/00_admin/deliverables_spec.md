@@ -14,8 +14,12 @@ Define concise acceptance criteria for active and planned deliverables.
   - Acceptance: paths valid, status current, archive links maintained.
 - `03_outputs/13_csdm_data_foundations_spec.md`
   - Acceptance: architecture/schema/API sections remain coherent with current code direction.
-- `03_outputs/api_standardization_plan_codex_2026-02-13.md`
-  - Acceptance: standardization decisions remain actionable and testable.
+- `03_outputs/plan_mcp_tools_classification_quality_2026-02-15.md`
+  - Acceptance: MCP phase/status narrative remains aligned with current implementation and tests.
+
+### Archived Reference
+- `archive/2026-03-05_markdown_cleanup/servicenow_global_tech_assessment_mcp/03_outputs/api_standardization_plan_codex_2026-02-13.md`
+  - Acceptance: historical standardization baseline remains discoverable for audit/comparison.
 
 ### Planned
 - `03_outputs/01_solution_vision_and_scope.md`

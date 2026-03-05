@@ -41,6 +41,8 @@ from ....models import (
     UpdateSetArtifactLink,
     UpdateSetOverlap,
 )
+from ....services.assessment_phase_progress import checkpoint_phase_progress, start_phase_progress
+from ....services.relationship_graph import EDGE_WEIGHTS
 
 
 INPUT_SCHEMA: Dict[str, Any] = {
@@ -76,20 +78,42 @@ INPUT_SCHEMA: Dict[str, Any] = {
             "description": "Iteration number recorded on seeded memberships/context artifacts.",
             "default": 0,
         },
+        "dry_run": {
+            "type": "boolean",
+            "description": "When true, compute suggested groupings and return them as JSON without writing any records.",
+            "default": False,
+        },
     },
     "required": ["assessment_id"],
 }
 
-
-_EDGE_WEIGHTS: Dict[str, float] = {
-    "update_set_overlap": 3.0,
-    "update_set_artifact_link": 2.5,
-    "code_reference": 3.0,
-    "structural_relationship": 2.5,
-    "temporal_cluster": 1.8,
-    "naming_cluster": 2.0,
-    "table_colocation": 1.2,
+_SUGGESTIONS_INPUT_SCHEMA: Dict[str, Any] = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+        "assessment_id": {
+            "type": "integer",
+            "description": "Assessment to compute suggested groupings for.",
+        },
+        "min_group_size": {
+            "type": "integer",
+            "description": "Minimum customized records required to form a suggested group.",
+            "default": 2,
+        },
+        "min_edge_weight": {
+            "type": "number",
+            "description": "Minimum cumulative signal weight required to connect two records.",
+            "default": 2.0,
+        },
+        "max_pairs_per_signal": {
+            "type": "integer",
+            "description": "Safety cap on pairwise links generated per signal group.",
+            "default": 5000,
+        },
+    },
+    "required": ["assessment_id"],
 }
+
 
 _CUSTOMIZED_ORIGIN_VALUES = {
     OriginType.modified_ootb.value,
@@ -273,6 +297,7 @@ def seed_feature_groups(
     max_pairs_per_signal: int = 5000,
     iteration_number: int = 0,
     commit: bool = True,
+    dry_run: bool = False,
 ) -> Dict[str, Any]:
     assessment = session.get(Assessment, assessment_id)
     if not assessment:
@@ -302,14 +327,15 @@ def seed_feature_groups(
     human_locked_ids = _current_human_locked_result_ids(session, assessment_id)
     eligible_customized_ids = sorted(customized_ids - human_locked_ids)
 
-    if reset_existing:
+    if reset_existing and not dry_run:
         _reset_existing_seed_rows(session, assessment_id)
 
     if not eligible_customized_ids:
-        if commit:
+        if not dry_run and commit:
             session.commit()
         return {
             "success": True,
+            "dry_run": dry_run,
             "assessment_id": assessment_id,
             "features_created": 0,
             "cluster_count": 0,
@@ -318,6 +344,7 @@ def seed_feature_groups(
             "eligible_customized_count": 0,
             "human_locked_count": len(human_locked_ids),
             "clusters": [],
+            **({"suggested_groups": []} if dry_run else {}),
         }
 
     eligible_set = set(eligible_customized_ids)
@@ -358,7 +385,7 @@ def seed_feature_groups(
                 a=a,
                 b=b,
                 signal_type="update_set_artifact_link",
-                weight=_EDGE_WEIGHTS["update_set_artifact_link"],
+                weight=EDGE_WEIGHTS["update_set_artifact_link"],
                 payload={"update_set_id": us_id},
             )
         context_ids = sorted(update_set_context_members.get(us_id, set()))
@@ -392,7 +419,7 @@ def seed_feature_groups(
                 a=a,
                 b=b,
                 signal_type="update_set_overlap",
-                weight=_EDGE_WEIGHTS["update_set_overlap"],
+                weight=EDGE_WEIGHTS["update_set_overlap"],
                 payload={
                     "overlap_id": overlap.id,
                     "signal_type": overlap.signal_type,
@@ -427,7 +454,7 @@ def seed_feature_groups(
                 a=a,
                 b=b,
                 signal_type="temporal_cluster",
-                weight=_EDGE_WEIGHTS["temporal_cluster"],
+                weight=EDGE_WEIGHTS["temporal_cluster"],
                 payload={"cluster_id": cluster.id, "developer": cluster.developer},
             )
         for custom_id in custom_members:
@@ -457,7 +484,7 @@ def seed_feature_groups(
                 a=a,
                 b=b,
                 signal_type="naming_cluster",
-                weight=_EDGE_WEIGHTS["naming_cluster"],
+                weight=EDGE_WEIGHTS["naming_cluster"],
                 payload={"cluster_id": cluster.id, "label": cluster.cluster_label},
             )
         for custom_id in custom_members:
@@ -485,7 +512,7 @@ def seed_feature_groups(
                 a=a,
                 b=b,
                 signal_type="table_colocation",
-                weight=_EDGE_WEIGHTS["table_colocation"],
+                weight=EDGE_WEIGHTS["table_colocation"],
                 payload={"summary_id": summary.id, "target_table": summary.target_table},
             )
         for custom_id in custom_members:
@@ -514,7 +541,7 @@ def seed_feature_groups(
                 a=source_id,
                 b=target_id,
                 signal_type="code_reference",
-                weight=_EDGE_WEIGHTS["code_reference"],
+                weight=EDGE_WEIGHTS["code_reference"],
                 payload={"code_reference_id": ref.id, "reference_type": ref.reference_type},
             )
         elif source_id in eligible_set and target_id in non_customized_ids:
@@ -549,7 +576,7 @@ def seed_feature_groups(
                 a=parent_id,
                 b=child_id,
                 signal_type="structural_relationship",
-                weight=_EDGE_WEIGHTS["structural_relationship"],
+                weight=EDGE_WEIGHTS["structural_relationship"],
                 payload={"relationship_id": rel.id, "relationship_type": rel.relationship_type},
             )
         elif parent_id in eligible_set and child_id in non_customized_ids:
@@ -607,6 +634,7 @@ def seed_feature_groups(
     used_names: Counter = Counter()
     grouped_customized_ids: Set[int] = set()
     cluster_payloads: List[Dict[str, Any]] = []
+    suggested_groups: List[Dict[str, Any]] = []
     features_created = 0
     context_rows_created = 0
 
@@ -663,6 +691,42 @@ def seed_feature_groups(
         else:
             cluster_confidence = 0.5
 
+        # --- dry_run: build suggestion payload only, no DB writes ---
+        if dry_run:
+            member_details: List[Dict[str, Any]] = []
+            for member_id in component:
+                row = result_by_id[member_id]
+                member_details.append({
+                    "scan_result_id": member_id,
+                    "name": row.name,
+                    "table_name": row.table_name,
+                })
+            context_detail: List[Dict[str, Any]] = []
+            for member_id in component:
+                for (ctx_rid, ctx_type), candidate in context_candidates.get(member_id, {}).items():
+                    if ctx_rid not in non_customized_ids:
+                        continue
+                    ctx_row = result_by_id.get(ctx_rid)
+                    context_detail.append({
+                        "scan_result_id": ctx_rid,
+                        "context_type": ctx_type,
+                        "name": ctx_row.name if ctx_row else None,
+                    })
+            suggested_groups.append({
+                "suggested_feature_name": feature_name,
+                "member_count": len(component),
+                "member_result_ids": sorted(component),
+                "members": member_details,
+                "signal_counts": dict(signal_counts),
+                "confidence_score": round(cluster_confidence, 3),
+                "primary_update_set_id": primary_update_set_id,
+                "primary_table": primary_table,
+                "primary_developer": primary_developer,
+                "context_artifacts": context_detail[:20],
+            })
+            continue
+
+        # --- write path: persist Feature + FeatureScanResult + FeatureContextArtifact ---
         feature = Feature(
             assessment_id=assessment_id,
             name=feature_name,
@@ -693,6 +757,9 @@ def seed_feature_groups(
         features_created += 1
 
         for member_id in component:
+            member_row = result_by_id.get(member_id)
+            if member_row and not _is_customized(member_row):
+                continue
             neighbor_rows = []
             member_signal_counts: Counter = Counter()
             weighted_neighbor_count = 0
@@ -786,8 +853,9 @@ def seed_feature_groups(
         )
 
     ungrouped_ids = sorted(set(eligible_customized_ids) - grouped_customized_ids)
-    summary = {
+    summary: Dict[str, Any] = {
         "success": True,
+        "dry_run": dry_run,
         "assessment_id": assessment_id,
         "features_created": features_created,
         "cluster_count": len(components),
@@ -800,10 +868,13 @@ def seed_feature_groups(
         "clusters": cluster_payloads,
     }
 
-    if commit:
-        session.commit()
+    if dry_run:
+        summary["suggested_groups"] = suggested_groups
     else:
-        session.flush()
+        if commit:
+            session.commit()
+        else:
+            session.flush()
 
     return summary
 
@@ -815,16 +886,77 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
     reset_existing = bool(params.get("reset_existing", True))
     max_pairs_per_signal = int(params.get("max_pairs_per_signal", 5000))
     iteration_number = int(params.get("iteration_number", 0))
+    dry_run = bool(params.get("dry_run", False))
 
+    if not dry_run:
+        start_phase_progress(
+            session,
+            assessment_id,
+            "grouping",
+            total_items=0,
+            allow_resume=True,
+            checkpoint={"source": "seed_feature_groups_tool", "iteration_number": max(0, iteration_number)},
+            commit=False,
+        )
+
+    try:
+        result = seed_feature_groups(
+            session,
+            assessment_id=assessment_id,
+            min_group_size=max(1, min_group_size),
+            min_edge_weight=max(0.0, min_edge_weight),
+            reset_existing=reset_existing,
+            max_pairs_per_signal=max(100, max_pairs_per_signal),
+            iteration_number=max(0, iteration_number),
+            commit=not dry_run,
+            dry_run=dry_run,
+        )
+    except Exception as exc:
+        if not dry_run:
+            checkpoint_phase_progress(
+                session,
+                assessment_id,
+                "grouping",
+                status="failed",
+                checkpoint={"error": str(exc)},
+                error=str(exc),
+                commit=True,
+            )
+        raise
+
+    if not dry_run:
+        grouped_count = int(result.get("grouped_count") or 0)
+        eligible_count = int(result.get("eligible_customized_count") or grouped_count)
+        checkpoint_phase_progress(
+            session,
+            assessment_id,
+            "grouping",
+            total_items=max(0, eligible_count),
+            completed_items=max(0, grouped_count),
+            status="completed",
+            checkpoint={
+                "features_created": int(result.get("features_created") or 0),
+                "grouped_count": grouped_count,
+                "eligible_customized_count": eligible_count,
+                "resume_from_index": max(0, grouped_count),
+            },
+            commit=True,
+        )
+    return result
+
+
+def handle_suggestions(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
+    """Read-only handler: returns suggested groupings without writing anything."""
+    assessment_id = int(params["assessment_id"])
     return seed_feature_groups(
         session,
         assessment_id=assessment_id,
-        min_group_size=max(1, min_group_size),
-        min_edge_weight=max(0.0, min_edge_weight),
-        reset_existing=reset_existing,
-        max_pairs_per_signal=max(100, max_pairs_per_signal),
-        iteration_number=max(0, iteration_number),
-        commit=True,
+        min_group_size=max(1, int(params.get("min_group_size", 2))),
+        min_edge_weight=max(0.0, float(params.get("min_edge_weight", 2.0))),
+        max_pairs_per_signal=max(100, int(params.get("max_pairs_per_signal", 5000))),
+        reset_existing=False,
+        commit=False,
+        dry_run=True,
     )
 
 
@@ -833,10 +965,22 @@ TOOL_SPEC = ToolSpec(
     description=(
         "Deterministically seed feature groups using engine outputs "
         "(update set overlap, code refs, structural links, temporal/naming/table clusters). "
-        "Only customized records are persisted as members; non-customized records are kept as context evidence."
+        "Only customized records are persisted as members; non-customized records are kept as context evidence. "
+        "Pass dry_run=true to compute suggestions without writing."
     ),
     input_schema=INPUT_SCHEMA,
     handler=handle,
     permission="write",
 )
 
+SUGGESTIONS_TOOL_SPEC = ToolSpec(
+    name="get_suggested_groupings",
+    description=(
+        "Read-only tool: compute deterministic feature grouping suggestions from engine outputs "
+        "without writing any Feature, FeatureScanResult, or FeatureContextArtifact records. "
+        "Returns suggested group names, member lists, signal counts, and confidence scores."
+    ),
+    input_schema=_SUGGESTIONS_INPUT_SCHEMA,
+    handler=handle_suggestions,
+    permission="read",
+)

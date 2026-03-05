@@ -67,22 +67,17 @@ def validate_table_exists(client: ServiceNowClient, table_name: str) -> Optional
     Returns:
         SNTableInfo if the table exists, None otherwise.
     """
-    url = client._build_url("table/sys_db_object")
-    params = {
-        "sysparm_query": f"name={table_name}",
-        "sysparm_limit": 1,
-        "sysparm_fields": "sys_id,name,label,super_class,is_extendable,extension_model",
-        "sysparm_display_value": "false",
-    }
-
     try:
-        response = client.session.get(url, params=params, timeout=client._cfg['request_timeout'])
-        data = client._handle_response(response)
+        results = client.get_records(
+            table="sys_db_object",
+            query=f"name={table_name}",
+            fields=["sys_id", "name", "label", "super_class", "is_extendable", "extension_model"],
+            limit=1,
+        )
     except ServiceNowClientError:
         logger.warning("Failed to validate table %s", table_name)
         return None
 
-    results = data.get("result", [])
     if not results:
         return None
 
@@ -119,21 +114,19 @@ def _resolve_table_name_by_sys_id(client: ServiceNowClient, sys_id: str) -> Opti
     if not sys_id:
         return None
 
-    url = client._build_url(f"table/sys_db_object/{sys_id}")
-    params = {
-        "sysparm_fields": "name",
-    }
     try:
-        response = client.session.get(url, params=params, timeout=client._cfg['request_timeout'])
-        if response.status_code == 404:
-            return None
-        data = client._handle_response(response)
-        result = data.get("result")
-        if result:
-            return result.get("name") or None
+        results = client.get_records(
+            table="sys_db_object",
+            query=f"sys_id={sys_id}",
+            fields=["name"],
+            limit=1,
+        )
     except ServiceNowClientError:
         return None
-    return None
+
+    if not results:
+        return None
+    return results[0].get("name") or None
 
 
 # ============================================
@@ -193,35 +186,28 @@ def _fetch_fields_for_table(
     Args:
         client: ServiceNow client
         table_name: Table name to query
-        since: Optional datetime watermark for delta queries (sys_updated_on > since)
+        since: Optional datetime watermark for delta queries (sys_updated_on >= since)
     """
-    from datetime import datetime as dt_class
-
-    url = client._build_url("table/sys_dictionary")
-
-    # Build query with optional delta filter
+    # Build query with optional delta filter using shared watermark builder.
     query_parts = [f"name={table_name}", "active=true"]
     if since:
-        # Format datetime for ServiceNow query (UTC, ServiceNow format)
-        since_str = since.strftime("%Y-%m-%d %H:%M:%S")
-        query_parts.append(f"sys_updated_on>={since_str}")
+        query_parts.append(client._watermark_filter(since, inclusive=True))
 
-    params = {
-        "sysparm_query": "^".join(query_parts),
-        "sysparm_fields": "element,column_label,internal_type,max_length,reference,active,read_only,mandatory",
-        "sysparm_limit": 500,
-        "sysparm_display_value": "false",
-    }
+    query = "^".join(query_parts)
 
     try:
-        response = client.session.get(url, params=params, timeout=client._cfg['request_timeout'])
-        data = client._handle_response(response)
+        raw_records = client.get_records(
+            table="sys_dictionary",
+            query=query,
+            fields=["element", "column_label", "internal_type", "max_length", "reference", "active", "read_only", "mandatory"],
+            limit=500,
+        )
     except ServiceNowClientError as exc:
         logger.error("Failed to fetch dictionary for %s: %s", table_name, exc)
         return []
 
     fields: List[SNFieldInfo] = []
-    for rec in data.get("result", []):
+    for rec in raw_records:
         element = rec.get("element", "") or ""
 
         # Filter out the collection record (element is empty).

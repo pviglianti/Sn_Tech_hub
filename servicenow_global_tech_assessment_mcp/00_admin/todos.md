@@ -4,29 +4,39 @@
 - [ ] [owner:human] **Job Log cancellation validation**: run UI checklist in `03_outputs/human_ui_validation_job_log_cancellation_2026-02-16.md` (per-row cancel + cancel-all-active + filtered cancel-all behavior). ~10 min.
 - [ ] [owner:human] **MCP Prompts + Resources validation**: 8 curl tests against running server. Start app, run curl commands from `03_outputs/human_ui_validation_instance_scoped_config_2026-02-15.md` (bottom section). Verifies the MCP server correctly serves methodology prompts and reference docs to AI clients. ~10 min.
 - [ ] [owner:human] **Instance-scoped Integration Properties validation**: UI walkthrough from same file (top section). Verifies global vs per-instance config scope selector + override behavior. ~10 min.
-- [ ] [owner:human] **Credential key reconciliation (integration blocker)**: `POST /instances/{id}/test` currently returns 500 (`cryptography.fernet.InvalidToken`) for connected instances, including `testweis` (`instance_id=4`). Restore the matching `data/.encryption_key` for this DB or re-enter instance credentials, then rerun integration smoke.
+- [x] [owner:human] **Credential key reconciliation**: Resolved — credentials re-entered, instances connecting successfully.
 
 ## Now — When Available
+- [ ] [owner:codex] **Phase 11 unified execution (integrity + cleanup tracks)**: execute Codex-owned tracks from `03_outputs/plan_phase11_unified_feature_ownership_and_legacy_cleanup_2026-03-05.md` and coordinate status in `00_admin/phase11_coordination.md` / `00_admin/phase11_chat.md` (customized-only guard, unique feature membership protection, and assessment-scoped legacy cleanup utility with dry-run/apply).
+- [ ] [owner:codex] **Orchestration runtime dry-run validation**: exercise the new `.claude/orchestration/` workflow on a small scoped task and verify streamed launch logs, coordination runtime registry, reviewer-after-first-`[DONE]` gate, model/effort overrides, and safe worktree teardown behavior before using it for larger execution.
+- [ ] [owner:codex] **Phase 8A Step 0**: run full regression on combined branch state and commit runtime hardening tranche baseline (telemetry + checkpoints + AI runtime/budget properties) before human QA.
+- [ ] [owner:human] **Relationship Graph validation**: verify `/relationship-graph` launches from result detail, feature hierarchy (feature/member/context links), and table browser; confirm click-centered progressive expansion, custom origin labels (`modified_ootb` vs `net_new_customer`), dictionary/reference/table linkage quality, and development-chain overlays on real assessment data (Codex browser smoke + screenshots completed; exploratory human pass still needed).
+- [ ] [owner:codex] **API-Access Fallback Table Import Utility (next feature)**: implement instance+table-scoped upload/import flow for tables where API pulls are rejected/blocked (CSV/XLS/XLSX/JSON/XML) using plan `servicenow_global_tech_assessment_mcp/03_outputs/plan_api_access_fallback_table_import_utility_2026-03-05.md` (mandatory `sys_updated_on`, `sys_id` warning/fallback matching, dry-run + confirm + upsert/insert report).
+- [ ] [owner:human] **Full pipeline live QA**: Run complete 10-stage pipeline on real assessment with live SN instance after credential reconciliation.
+- [ ] [owner:human] **Assessment Runtime Usage validation**: run one full pipeline and verify `/integration-properties/assessment-runtime-usage` shows mode/provider/model, MCP local/SN/local-DB call counters, token totals, and estimated cost.
+- [ ] [owner:human] **Resume + rehydrate validation**: interrupt an in-progress stage (`observations`, `grouping`, or `recommendations`) and confirm resume picks up from saved checkpoint/index instead of restarting completed work.
+- [ ] [owner:human] **Phase 9/10 feature validation**: verify prompt-toggle behavior (`pipeline.use_registered_prompts`), assessment exports (`/api/assessments/{id}/export/xlsx`, `/api/assessments/{id}/export/docx`), process recommendations tab DataTable, and `/assessments/summary` dashboard metrics on real assessment data.
+- [ ] [owner:claude] **Phase 9/10 peer review closeout**: post final `REVIEW_PASS` for prompt integration (P9A) after Codex remediation; exports/process recommendations/summary are already reviewed and marked approved.
 - [ ] [owner:human] Visual QA: Data Browser page, template component changes, routed pages (instances, pulls).
 - [ ] [owner:human] Visual QA deep-link flow: preflight → Job Log with preloaded conditions.
 - [ ] [owner:human] Visual QA #2 Phase 2 durable status (dictionary modal, CSDM ingestion bar, scan runtime bar).
-- [ ] [owner:human] Reasoning Phase 2 validation: run `run_preprocessing_engines` (all 6 engines) on a real assessment and spot-check generated rows in Data Browser.
-- [x] [owner:both] Generalize coordination protocol: `agent_coordination_protocol.md` created, `AGENTS.md` updated.
-- [x] [owner:both] **Phase 3 planning**: Engine output UI + enhanced features tab + AI reasoning loop + OOTB replacement analysis. Plan published at `tech-assessment-hub/docs/plans/2026-03-04-reasoning-layer-phase3-ui-ai-feature-orchestration.md`; chat coordination in `phase3_planning_chat.md`.
-- [x] [owner:codex] Phase 3 Codex scope complete (P3A/P3B/P3D/P4A + P4C backend): data model/API/provenance, unified grouping-signal/hierarchy/evidence APIs, deterministic `seed_feature_groups`, one-pass `run_feature_reasoning`, `feature_grouping_status`, structured feature recommendation persistence surfaces, full regression green (`305 passed`).
-- [x] [owner:claude] Phase 3 implementation kickoff (P3C/P4B): grouping-signal tabs + feature hierarchy UI and prompt/skill updates; align to Codex API contracts.
-- [x] [owner:claude] Cross-review Codex Phase 3 backend contracts and confirm/patch any UI-required payload diffs in `phase3_planning_chat.md`.
-- [ ] [owner:human] Phase 3/P4D final gate: execute manual QA checklist from `phase3_planning_chat.md` (QA-1..QA-14) on real assessment data after running `run_preprocessing_engines` → `seed_feature_groups` / `run_feature_reasoning`, then mark phase done.
-- [x] [owner:codex] Phase 5 backend (P5A/P5B/P5C/P5D + P5E backend trigger wiring): pipeline stage model/API contracts, observation properties, `get_usage_count`, `generate_observations`, review-status API, and `advance-pipeline` stage execution. Full regression green (`328 passed`).
-- [x] [owner:claude] Phase 5 UI scope: flow bar rendering/wiring, observation cards + review controls, review gate UI, and grouping/recommendation trigger UX using Codex backend contracts.
-- [x] [owner:both] Phase 5 cross-review + end-to-end validation (backend+UI integration) and updated human QA checklist — automated validation green (`330` full regression after new dedupe tests) and live pipeline re-validation completed on `pdi` (`assessment_id=19`) through `engines → observations → review gate → grouping → recommendations → complete`.
-- [x] [owner:codex] Phase 6 Task 3 UI prep: drafted `src/web/templates/admin_best_practices.html` with DataTable-based list + editor form and endpoint wiring assumptions (`GET/POST/PUT /api/best-practices`), then posted contract notes to `phase3_planning_chat.md` for Claude route wiring.
-- [ ] [owner:claude] Phase 6 Task 3 backend wiring: add page route/nav + `best-practices` API routes to match Codex template contract, then request Codex cross-review + targeted test run.
-- [ ] [owner:human] Reasoning Phase 1 validation: run `run_preprocessing_engines` tool on a real assessment and spot-check generated `code_reference` + `structural_relationship` rows in Data Browser.
+- [ ] [owner:human] Phase 3/P4D final gate: execute manual QA checklist from `phase3_planning_chat.md` (QA-1..QA-14) on real assessment data.
+- [ ] [owner:codex] **Property contract hygiene sweep (code/docs/app_config parity)**: (1) replace stale doc key `observations.context_enrichment` with `ai_analysis.context_enrichment`, (2) replace legacy `observations.usage_query_limit` references with `observations.max_usage_queries_per_result` + historical-note wording, (3) explicitly document special non-Integration-Properties AppConfig keys (`mcp_bridge_config`, `mcp_runtime_config`, `mcp_admin_token`) and ownership boundaries, and (4) add an automated parity check/test that fails on unapproved unknown AppConfig keys.
+- [ ] [owner:codex] **AI runtime budget wiring completion**: enforce currently loaded-but-underused runtime controls in execution path: `ai.budget.assessment_soft_limit_usd` (warning/telemetry threshold), `ai.budget.monthly_hard_limit_usd` (tenant cap), `ai.budget.max_input_tokens_per_call`, `ai.budget.max_output_tokens_per_call`, plus explicit runtime behavior contract for `ai.runtime.mode/provider/model` beyond telemetry labeling.
+- [ ] [owner:claude] **Cross-review request — properties + save UX**: review Codex property-contract TODO scope and Integration Properties Save UX update (global top-right + bottom save actions, dirty-state/no-auto-save messaging) and post `REVIEW_PASS`/`REVIEW_FEEDBACK` in `phase3_planning_chat.md`.
 - [ ] [owner:any] Rabbit hole priority config — modular/adjustable rules for which dependency types to follow.
 - [ ] [owner:any] Catch-all label table — mapping app file class → display label (sys_dictionary → "Form Fields", etc.).
 
+## Completed (session 2026-03-05 — AI Setup Wizard Flow)
+- [x] [owner:codex] Added guided AI setup page at `/integration-properties/ai-setup` for non-technical runtime setup (scope selection, runtime mode/provider/model save, bridge config save/start/restart/stop, and direct pipeline stage kickoff action).
+- [x] [owner:codex] Added Integration Properties entry points to the wizard: Assessment Tools card button and inline `AI Setup Wizard` link directly in the `AI / LLM Runtime` section next to AI provider/model controls.
+
 ## Backlog
+- [ ] [owner:codex] **Bail-out boilerplate refactor**: Extract ~25 lines of repeated bail-out logic across 11 `_pull_*` handlers into a shared helper function in `data_pull_executor.py`. Logged by Reviewer-T3 (2026-03-05 sprint).
+- [ ] [owner:codex] **csdm_ingestion consolidation**: `csdm_ingestion.py` still has its own `build_delta_query()` and `fetch_batch_with_retry()` — migrate to centralized `sn_client` methods. Logged as out-of-scope debt in SN API centralization sprint.
+- [ ] [owner:codex] **display_value parameter normalization**: `display_value=False` silently dropped in Task 2 consolidated modules (scan_executor, sn_dictionary). Add explicit `display_value` parameter to `get_records()` if needed by callers. Flagged by Architect (2026-03-05 sprint).
+- [ ] [owner:codex] **ORDER direction dedup hardening**: Harden cross-direction `sysparm_order_by` vs encoded-query ORDER clause conflict detection. Latent risk flagged by Architect (2026-03-05 sprint).
+- [ ] [owner:codex] **Bail-out telemetry dashboard**: Build observability view for the 6 new `InstanceDataPull` bail-out columns. Recommended by Architect (2026-03-05 sprint).
 - [ ] [owner:claude] UI Consolidation Group 3A: Jinja macros for filter cards (deferred as low-value for now).
 - [ ] [owner:any] Full-app UI modularization [H]: unify remaining results-grid behavior across global/assessment/scan into one reusable controller (audit 3.1).
 - [ ] [owner:any] Full-app UI modularization [H]: create shared polling/status engine with standardized lifecycle/backoff/visibility handling (audit 3.3).
@@ -42,6 +52,48 @@
 - [ ] [owner:codex] Remove `api_config_summary` + `instance_assessment_app_file_options_page` compatibility shims from `server.py` after test imports updated to router modules.
 - [ ] [owner:codex] Add unit tests for `JobRun`/`JobEvent` state transitions, startup recovery, and ETA calculation (gap noted in Claude review of Phase 1).
 - [ ] [owner:any] Jinja2 server-rendered dates (`.strftime()` in templates like `instances.html`, `assessments.html`) still show raw UTC — add a Jinja2 filter when prioritized.
+
+## Completed (session 2026-03-05 — Customizations Visibility Recovery)
+- [x] [owner:codex] Fixed missing-customizations rendering for historical assessments by adding API-level auto-heal/backfill in `customizations` routes (`/api/assessments/{id}/customizations`, `/api/scans/{id}/customizations`, `/api/customizations/options`) to sync stale child-table rows from `scan_result` on read.
+- [x] [owner:codex] Added regression coverage (`tests/test_customizations_api.py`) validating stale-child-table auto-heal behavior for assessment listing + options endpoints.
+- [x] [owner:codex] Repaired backfill utility startup (`src/scripts/backfill_customizations.py` now imports `src.models_sn` registry) and executed one-time local DB backfill to restore historical rows.
+
+## Completed (session 2026-03-05 — MCP Result Sync Hardening)
+- [x] [owner:codex] Patched MCP `update_scan_result` tool to call `sync_single_result` after writes so customization child rows stay aligned when AI updates review/disposition/recommendation/observations.
+- [x] [owner:codex] Added regression tests (`tests/test_update_result_tool.py`) covering both existing-customization updates and missing-customization backfill via MCP write path.
+
+## Completed (session 2026-03-05 — AI/Engine Write-Back Sync Hardening)
+- [x] [owner:codex] Upgraded `customization_sync.bulk_sync_for_scan` from insert-only to full reconciliation (insert missing, update drifted rows, delete stale rows no longer customized) and added optional transactional `commit` control for batching.
+- [x] [owner:codex] Patched AI pipeline write paths to sync child rows during updates: `generate_observations` and depth-first analyzer now call `sync_single_result(..., commit=False)` before their staged commits.
+- [x] [owner:codex] Expanded regression coverage for reconciliation and AI write-back consistency (`tests/test_customization_sync.py`, `tests/test_generate_observations.py`, `tests/test_depth_first_analyzer.py`).
+
+## Completed (session 2026-03-05 — Phases 6 + 7)
+- [x] [owner:claude] **Phase 6 complete**: MCP Skills/Prompts Library + Best Practice Knowledge Base. `BestPractice` model with 41 seed checks + `BestPracticeCategory` enum, admin CRUD API (`GET/POST/PUT /api/best-practices`), session-aware prompt infrastructure (`PromptSpec.handler`), 4 MCP prompts (`artifact_analyzer`, `relationship_tracer`, `technical_architect`, `report_writer`). 478 tests passing.
+- [x] [owner:claude] **Phase 7 complete**: Human-in-the-Loop Pipeline Buttons + Re-run. Extended `PipelineStage` enum from 7→10 stages (`ai_analysis`, `ai_refinement`, `report`). Contextual lookup service (`src/services/contextual_lookup.py` — local-first with SN fallback, Fact caching, reference detection). `AIAnalysisProperties` frozen dataclass (batch_size, context_enrichment). Real ai_analysis handler (enriches ScanResults with local context + usage data). Real ai_refinement handler (3 sub-steps: complex features, per-artifact review, assessment-wide roll-up). Report handler (aggregates statistics/features/recommendations into GeneralRecommendation). Re-run from complete (reset to scans, preserves human edits). 10-step flow bar UI with action buttons and re-run. 91 Phase 7 tests (39 unit + 18 integration + 34 contextual lookup). **496 total tests passing**.
+
+## Completed (session 2026-03-05 — Runtime Telemetry + Resume Hardening)
+- [x] [owner:codex] Added AI runtime configuration + budget controls in Integration Properties (`ai.runtime.*`, `ai.budget.*`) with typed loader support (`load_ai_runtime_properties`) and validation tests.
+- [x] [owner:codex] Added assessment runtime telemetry stack: `AssessmentRuntimeUsage` model/table, snapshot service (`assessment_runtime_usage.py`), admin DataTable page/API (`/integration-properties/assessment-runtime-usage`), and link from Integration Properties page.
+- [x] [owner:codex] Added resumable phase checkpoint stack: `AssessmentPhaseProgress` model/table + service (`assessment_phase_progress.py`), stage-level resume wiring in pipeline handlers, MCP runtime router checkpoint/failure tracking, and tool-level resume progress updates for `generate_observations`, `seed_feature_groups`, `run_preprocessing_engines`, and `run_feature_reasoning`.
+- [x] [owner:codex] Added/updated tests for runtime telemetry + resume behavior and reran targeted regression (`76 passed`): `test_assessment_phase_progress.py`, `test_assessment_runtime_usage.py`, `test_mcp_runtime.py`, `test_generate_observations.py`, `test_feature_grouping_pipeline_tools.py`, `test_phase7_pipeline_stages.py`, `test_integration_properties.py`.
+
+## Completed (session 2026-03-05 — Phase 9/10 Delivery)
+- [x] [owner:codex] Phase 9 prompt integration completed: added safe rollout helper + prompt extraction path for `artifact_analyzer` (`ai_analysis`), `relationship_tracer` + `technical_architect` (`ai_refinement`), and `report_writer` (`report`) behind `pipeline.use_registered_prompts`.
+- [x] [owner:codex] Phase 9 exports completed: canonical export API route is `/api/assessments/{id}/export/{format}` (`xlsx`/`docx`) via `report_export` service; duplicate in-page export action block removed during peer-review cleanup.
+- [x] [owner:codex] Phase 9 process recommendations UI completed: added assessment-detail Process Recommendations tab with DataTable endpoints (`/api/assessments/{id}/process-recommendations/*`) and filtering/sorting support.
+- [x] [owner:codex] Phase 10 summary dashboard completed: added `/assessments/summary` page for cross-assessment pipeline stage distribution, state distribution, and runtime cost/token/MCP totals.
+- [x] [owner:codex] Added targeted + full regression coverage for Phase 9/10 peer-review cycle: `test_phase9_prompt_integration.py` (ai_refinement enabled/disabled/fallback paths), `test_phase9_exports_and_process_ui.py`, `test_pipeline_prompt_integration.py`; full suite currently green (`532 passed`).
+
+## Completed (session 2026-03-05 — Relationship Graph UX)
+- [x] [owner:codex] Added graph node deep links for result/artifact/table/assessment/feature navigation and introduced center-artifact development-chain visualization (artifact record, customer update XML, update set, metadata customization, version history with grouped overflow) in relationship graph payload/UI.
+- [x] [owner:codex] Added compact development-chain overlap layout in artifact mode and verified live UI rendering via Playwright screenshots on `127.0.0.1:8081` (including link rendering in Selected Node detail panel).
+- [x] [owner:codex] Shifted graph toward sample-style ergonomics: expanded canvas mode (default), panel toggles (Filters/Details), directional pan controls + arrow-key panning, `Pop Out` window action, and staircase layering for development-chain cards with off-node/staggered labels for cleaner readability.
+
+## Completed (session 2026-03-05 — Pipeline Stage Order Sync)
+- [x] [owner:codex] Reconciled backend pipeline sequencing drift with active docs/UI. **Note (corrected by Claude):** Final correct order is `scans -> engines -> ai_analysis -> observations -> review -> grouping -> ai_refinement -> recommendations -> report -> complete` (engines before ai_analysis). See commits `a337742` (stage order fix) and `6cb7399` (per-assessment analysis_mode). 585 tests passing.
+
+## Completed (session 2026-03-05 — Integration Properties Save UX)
+- [x] [owner:codex] Moved save action out of card-local context and into global page actions: added top-right and bottom Save buttons wired to same handler, added explicit dirty-state/no-auto-save messaging, added unsaved-change scope-switch confirmation, browser/in-app leave confirmation (`beforeunload` + link/form confirm), and kept Reload/Reset in Admin Access card. Validation: `tests/test_integration_properties.py` (`26 passed`).
 
 ## Completed (session 2026-03-04)
 - [x] [owner:codex] Reasoning Phase 1 data model foundation: added `GroupingSignalType`, reasoning fields on `Feature`/`ScanResult`, and 4 new reasoning tables (`code_reference`, `update_set_overlap`, `temporal_cluster`, `structural_relationship`) with explicit `instance_id` + `assessment_id` references and result/update-set foreign keys.

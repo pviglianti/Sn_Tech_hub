@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block title %}Assessment Runtime Usage - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<a href="/integration-properties" class="browse-back-link">&larr; Back to Integration Properties</a>
+
+<div class="page-header">
+    <h1>Assessment Runtime Usage</h1>
+    <div class="button-group">
+        <button type="button" class="btn btn-secondary" id="runtimeUsageLoad">Load / Refresh</button>
+    </div>
+</div>
+
+<div class="card">
+    <p class="text-muted-plain mb-0">
+        Tracks per-assessment runtime mode/model, counts, MCP call activity, and token/cost telemetry.
+    </p>
+</div>
+
+<div class="card mt-1">
+    <h2>Admin Access</h2>
+    {% set token_input_id = 'runtimeUsageAdminToken' %}
+    {% set token_help_text = 'Optional on localhost. Required when MCP admin token is configured for remote access.' %}
+    {% include "components/admin_token_field.html" %}
+</div>
+
+<div class="card mt-1">
+    <div id="runtimeUsageTableContainer"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/ConditionBuilder.js?v={{ static_version }}"></script>
+<script src="/static/js/ColumnPicker.js?v={{ static_version }}"></script>
+<script src="/static/js/DataTable.js?v={{ static_version }}"></script>
+<script>
+(function () {
+    var container = document.getElementById('runtimeUsageTableContainer');
+    var loadBtn = document.getElementById('runtimeUsageLoad');
+    var tokenInput = document.getElementById('runtimeUsageAdminToken');
+    if (!container || !window.DataTable) return;
+
+    var dt = null;
+
+    function withToken(url) {
+        var token = (tokenInput && tokenInput.value || '').trim();
+        if (!token) return url;
+        var sep = url.indexOf('?') === -1 ? '?' : '&';
+        return url + sep + 'admin_token=' + encodeURIComponent(token);
+    }
+
+    function mountDataTable() {
+        if (dt && typeof dt.destroy === 'function') {
+            dt.destroy();
+        }
+
+        dt = new window.DataTable(container, {
+            dataUrl: withToken('/api/integration-properties/assessment-runtime-usage/records'),
+            schemaUrl: withToken('/api/integration-properties/assessment-runtime-usage/field-schema'),
+            instanceId: 0,
+            tableName: 'assessment_runtime_usage',
+            pageSize: 50,
+            storageKey: 'dt_assessment_runtime_usage_v1',
+            includeTableAndInstanceParams: false,
+            onReferenceClick: function () {},
+            onRecordClick: function (_id, row) {
+                if (row && row.assessment_id) {
+                    window.location.href = '/assessments/' + row.assessment_id;
+                }
+            },
+        });
+
+        dt.init().catch(function (err) {
+            console.error('Runtime usage DataTable init error:', err);
+            container.innerHTML = '<div class="empty-state"><h2>Error</h2><p>' + err.message + '</p></div>';
+        });
+    }
+
+    if (loadBtn) {
+        loadBtn.addEventListener('click', function () {
+            mountDataTable();
+        });
+    }
+
+    mountDataTable();
+})();
+</script>
+{% endblock %}
+

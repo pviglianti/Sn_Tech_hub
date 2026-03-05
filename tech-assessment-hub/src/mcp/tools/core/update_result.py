@@ -10,6 +10,7 @@ from sqlmodel import Session
 
 from ...registry import ToolSpec
 from ....models import Disposition, FindingCategory, ReviewStatus, ScanResult, Severity
+from ....services.customization_sync import sync_single_result
 
 
 INPUT_SCHEMA: Dict[str, Any] = {
@@ -96,6 +97,7 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
     session.add(result)
     session.commit()
     session.refresh(result)
+    sync_single_result(session, result)
 
     return {
         "success": True,

@@ -30,11 +30,14 @@ class AssessmentState(str, Enum):
 class PipelineStage(str, Enum):
     """Assessment reasoning pipeline stages after scans complete."""
     scans = "scans"
+    ai_analysis = "ai_analysis"
     engines = "engines"
     observations = "observations"
     review = "review"
     grouping = "grouping"
+    ai_refinement = "ai_refinement"
     recommendations = "recommendations"
+    report = "report"
     complete = "complete"
 
 
@@ -626,6 +629,9 @@ class Feature(SQLModel, table=True):
     date_range_end: Optional[datetime] = None
     pass_number: Optional[int] = None
 
+    # ---- Visual styling ----
+    color_index: Optional[int] = None
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -675,6 +681,9 @@ class GeneralRecommendation(SQLModel, table=True):
 class FeatureScanResult(SQLModel, table=True):
     """Many-to-many link between Features and ScanResults"""
     __tablename__ = "feature_scan_result"
+    __table_args__ = (
+        UniqueConstraint("feature_id", "scan_result_id"),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     feature_id: int = Field(foreign_key="feature.id", index=True)
@@ -1272,6 +1281,15 @@ class InstanceDataPull(SQLModel, table=True):
     # avoids incorrectly deciding "full refresh" due to count mismatch.
     state_filter_applied: Optional[str] = None
 
+    # Bail-out telemetry columns — all default None so SQLite ALTER TABLE ADD COLUMN works
+    # without data migration scripts. Populated by data_pull_executor bail-out logic.
+    local_count_pre_pull: Optional[int] = Field(default=None)
+    remote_count_at_probe: Optional[int] = Field(default=None)
+    delta_probe_count: Optional[int] = Field(default=None)
+    bail_out_reason: Optional[str] = Field(default=None)
+    bail_unchanged_at_exit: Optional[int] = Field(default=None)
+    local_count_post_pull: Optional[int] = Field(default=None)
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -1596,6 +1614,94 @@ class JobEvent(SQLModel, table=True):
 
     # Relationships
     run: JobRun = Relationship(back_populates="events")
+
+
+# ============================================
+# TABLE: AssessmentRuntimeUsage (assessment AI runtime telemetry)
+# ============================================
+
+class AssessmentRuntimeUsage(SQLModel, table=True):
+    """Assessment-level runtime/cost telemetry snapshot."""
+    __tablename__ = "assessment_runtime_usage"
+    __table_args__ = (
+        UniqueConstraint("assessment_id", name="uq_assessment_runtime_usage_assessment"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+    instance_id: int = Field(foreign_key="instance.id", index=True)
+
+    assessment_number: Optional[str] = Field(default=None, index=True)
+    assessment_name: Optional[str] = Field(default=None, index=True)
+    instance_name: Optional[str] = Field(default=None, index=True)
+    assessment_state: Optional[str] = Field(default=None, index=True)
+
+    llm_runtime_mode: Optional[str] = Field(default=None, index=True)
+    llm_provider: Optional[str] = Field(default=None, index=True)
+    llm_model: Optional[str] = Field(default=None, index=True)
+
+    run_started_at: Optional[datetime] = None
+    run_completed_at: Optional[datetime] = None
+    run_duration_seconds: Optional[int] = None
+
+    total_results: int = 0
+    customized_results: int = 0
+    total_features: int = 0
+    total_groupings: int = 0
+    total_feature_memberships: int = 0
+    total_general_recommendations: int = 0
+    total_feature_recommendations: int = 0
+    total_technical_recommendations: int = 0
+
+    mcp_calls_local: int = 0
+    mcp_calls_servicenow: int = 0
+    mcp_calls_local_db: int = 0
+
+    llm_input_tokens: int = 0
+    llm_output_tokens: int = 0
+    llm_total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+
+    last_event: Optional[str] = None
+    details_json: Optional[str] = None
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============================================
+# TABLE: AssessmentPhaseProgress (resumable phase checkpoints)
+# ============================================
+
+class AssessmentPhaseProgress(SQLModel, table=True):
+    """Per-assessment, per-phase resumable checkpoint state."""
+    __tablename__ = "assessment_phase_progress"
+    __table_args__ = (
+        UniqueConstraint("assessment_id", "phase", name="uq_assessment_phase_progress_scope"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+    instance_id: int = Field(foreign_key="instance.id", index=True)
+
+    phase: str = Field(index=True)
+    status: str = Field(default="pending", index=True)
+
+    total_items: int = 0
+    completed_items: int = 0
+    resume_from_index: int = 0
+    last_item_id: Optional[int] = None
+    run_attempt: int = 0
+
+    checkpoint_json: Optional[str] = None
+    last_error: Optional[str] = None
+
+    started_at: Optional[datetime] = None
+    last_checkpoint_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 # ============================================

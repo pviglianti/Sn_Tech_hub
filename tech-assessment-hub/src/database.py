@@ -76,6 +76,8 @@ def create_db_and_tables():
         "job_run",
         "job_event",
         "app_config",
+        "assessment_runtime_usage",
+        "assessment_phase_progress",
         "code_reference",
         "update_set_overlap",
         "temporal_cluster",
@@ -284,6 +286,26 @@ def _ensure_indexes() -> None:
             )
         for stmt in index_statements:
             conn.execute(text(stmt))
+
+        # FeatureScanResult unique pair — only if table exists and has no duplicates.
+        fsr_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='feature_scan_result'")
+        ).first()
+        if fsr_exists:
+            dup_count = conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM ("
+                    "  SELECT feature_id, scan_result_id FROM feature_scan_result"
+                    "  GROUP BY feature_id, scan_result_id HAVING COUNT(*) > 1"
+                    ")"
+                )
+            ).scalar() or 0
+            if dup_count == 0:
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_feature_scan_result_feature_scan_result"
+                    " ON feature_scan_result (feature_id, scan_result_id)"
+                ))
+
         conn.commit()
 
 

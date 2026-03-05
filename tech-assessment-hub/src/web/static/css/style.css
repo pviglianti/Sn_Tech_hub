@@ -270,6 +270,34 @@ h1, h2, h3, h4, h5, h6 {
     letter-spacing: -0.025em;
 }
 
+.integration-properties-header {
+    position: sticky;
+    top: 72px;
+    z-index: 90;
+    background: var(--bg-color);
+    padding-bottom: 0.625rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.integration-dirty-state {
+    font-weight: 600;
+}
+
+.integration-properties-save-footer {
+    position: sticky;
+    bottom: 0.75rem;
+    z-index: 85;
+    border: 1px solid var(--border-color);
+}
+
+.integration-properties-save-footer-content {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
 /* Cards */
 .card {
     background-color: var(--card-bg);
@@ -2964,7 +2992,7 @@ h1, h2, h3, h4, h5, h6 {
     flex-direction: column;
     align-items: center;
     position: relative;
-    min-width: 100px;
+    min-width: 80px;
     text-align: center;
 }
 
@@ -2972,9 +3000,9 @@ h1, h2, h3, h4, h5, h6 {
 .pipeline-step:not(:last-child)::after {
     content: '';
     position: absolute;
-    top: 16px;
-    left: calc(50% + 18px);
-    width: calc(100% - 36px);
+    top: 14px;
+    left: calc(50% + 16px);
+    width: calc(100% - 32px);
     height: 2px;
     background: var(--border-color);
     z-index: 0;
@@ -2991,8 +3019,8 @@ h1, h2, h3, h4, h5, h6 {
 
 /* Step circle */
 .pipeline-step-circle {
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -3036,7 +3064,7 @@ h1, h2, h3, h4, h5, h6 {
 /* Step label */
 .pipeline-step-label {
     margin-top: 0.4rem;
-    font-size: 0.75rem;
+    font-size: 0.68rem;
     font-weight: 600;
     color: var(--text-muted);
     white-space: nowrap;
@@ -3100,6 +3128,17 @@ h1, h2, h3, h4, h5, h6 {
 .pipeline-step-action .btn-pipeline-skip:hover {
     background: rgba(0, 0, 0, 0.04);
     color: var(--text-color);
+}
+
+.pipeline-step-action .btn-pipeline-rerun {
+    background: var(--warning-color, #d97706);
+    border-color: var(--warning-color, #d97706);
+    color: #fff;
+}
+
+.pipeline-step-action .btn-pipeline-rerun:hover {
+    background: #b45309;
+    border-color: #b45309;
 }
 
 /* Review gate progress */
@@ -3246,4 +3285,96 @@ h1, h2, h3, h4, h5, h6 {
 .observation-disposition {
     padding-top: 0.5rem;
     border-top: 1px solid var(--border-color);
+}
+
+/* ── Assessment Summary Page ─────────────────────────────────────── */
+
+.assessment-summary-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.assessment-summary-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--card-bg-secondary);
+}
+
+@media (max-width: 900px) {
+    .assessment-summary-item {
+        flex-direction: column;
+    }
+}
+
+/* ── Feature Color Coding ─────────────────────────────────────── */
+.feature-color-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+
+.feature-color-border {
+    border-left: 4px solid var(--feature-color, #ccc);
+    padding-left: 8px;
+}
+
+.feature-color-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 0;
+}
+
+.feature-color-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.85rem;
+    padding: 3px 8px;
+    background: var(--bg-secondary, #f7f7f7);
+    border-radius: 4px;
+}
+
+.feature-color-legend-item .member-count {
+    color: var(--text-muted, #888);
+    font-size: 0.75rem;
+}
+
+/* ── Customization Highlight in Related Lists ─────────────────── */
+.is-assessment-customization {
+    background-color: rgba(255, 152, 0, 0.08);
+}
+
+.is-assessment-customization td:first-child::before {
+    content: '';
+    display: inline-block;
+    width: 3px;
+    height: 14px;
+    background: #FF9800;
+    border-radius: 2px;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+
+.customization-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: #FF9800;
+    color: #fff;
+    margin-left: 4px;
+    vertical-align: middle;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
 }
