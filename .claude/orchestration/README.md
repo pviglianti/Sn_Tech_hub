@@ -35,8 +35,10 @@ Documentation ownership is split on purpose:
 - Reviewer writes review output to `orchestration_run/findings.md`
 - Orchestrator writes operational interventions and gate/course-correction notes to `orchestration_run/coordination.md`
 - Architect/PM heartbeat snapshots also append to `orchestration_run/coordination.md`
+- Process-improvement items discovered during the run are queued in `orchestration_run/coordination.md` and then absorbed into PM/Architect memory before the next similar run
 
 Architect and PM do not require open tabs between prompts. They are re-launched as fresh `claude -p` runs, with continuity carried by shared docs and memory files.
+They must read those memory files again before planning so prior failures, lessons, and unresolved process debt influence the next run.
 
 All launches should be streamable to `.jsonl` logs so Codex can steer in real time.
 Watcher runs are snapshot-based (one-shot): the orchestrator decides when to re-launch, and never tells the watcher to poll/wait.

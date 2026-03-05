@@ -55,6 +55,7 @@ The orchestrator is the ONLY thing that polls. Agents NEVER poll or wait.
 - Orchestrator runs a persistent heartbeat loop and treats stale heartbeat as failure
 - Orchestrator re-launches watcher snapshots when trigger conditions are hit
 - Orchestrator records its own interventions in `coordination.md`
+- Orchestrator records any process/doc failure that should not recur in the `Process Improvement Queue`
 - Orchestrator requests Architect ratification when a technical course correction changes task boundaries, scope, or tiering assumptions
 - Orchestrator detects when an agent should act
 - Orchestrator sends prompt/nudge to that agent
@@ -71,7 +72,7 @@ After each run:
 
 **Keep (committed):** `plan.md`, `coordination.md`, `findings.md`, `architect_memory.md`, `pm_memory.md`, `architect_digest.md`
 
-**Next run:** Archive previous run → create fresh from templates → Arch+PM rehydrate from archived memory
+**Next run:** Archive previous run → create fresh from templates → Arch+PM rehydrate from archived memory and account for unresolved process-improvement items before planning
 
 ## Worktree Rules
 

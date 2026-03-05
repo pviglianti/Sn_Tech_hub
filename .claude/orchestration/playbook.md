@@ -18,6 +18,7 @@ This is your copy-paste reference. Follow phases in order. Do NOT skip checkpoin
 12. **Monitor loop is mandatory during Build/Cross-Test.** Run a persistent orchestrator heartbeat loop and treat stale heartbeat as a process failure.
 13. **Orchestrator leaves an audit trail.** Course corrections, gate misses, and model/reasoning escalations are written to `orchestration_run/coordination.md`, not `findings.md`.
 14. **Technical course corrections need ratification.** If orchestrator changes task boundaries, scope, or tiering assumptions, log it and trigger an Architect heartbeat snapshot.
+15. **Process failures become work.** If unclear docs, wrong command order, or repeated missed gates caused waste during the run, log `[PROCESS_FIX_REQUIRED]` in `coordination.md` and resolve it through a docs patch or explicit backlog/memory carry-forward before the next similar run.
 
 ## Model / Effort Triage
 
@@ -359,6 +360,12 @@ Every orchestrator intervention is appended to `coordination.md` under `## Orche
 - `[MODEL_ESCALATION]` for tier/model/effort changes
 - `[GATE_MISS]` for late launches or missed handoffs
 - `[ARCH_RATIFY_REQUIRED]` when a technical correction needs Architect confirmation
+
+If the run exposed an orchestration/doc/process gap that should not recur:
+- Append `[PROCESS_FIX_REQUIRED]` to the `## Process Improvement Queue` in `coordination.md`
+- Trigger a PM heartbeat snapshot
+- Trigger an Architect heartbeat snapshot if task boundaries, scope, or model tiering were part of the failure
+- Do not start the next similar run until the item is patched in `.claude/orchestration/*` or explicitly carried in memory/backlog
 
 Guardrail:
 - During Build phase, do not do unrelated housekeeping updates (for example todo journaling). Stay on monitoring, gating, nudges, and checkpoint progression.
@@ -718,7 +725,8 @@ claude -p --verbose --model opus --effort high \
 1. Architecture decisions → servicenow_global_tech_assessment_mcp/00_admin/insights.md (Active Decisions section)
 2. Session summary → servicenow_global_tech_assessment_mcp/00_admin/run_log.md (append)
 3. Update servicenow_global_tech_assessment_mcp/00_admin/context.md if direction changed
-4. Write role memory → orchestration_run/architect_memory.md" \
+4. Read orchestration_run/coordination.md and absorb any [ARCH_RATIFY_REQUIRED] or architecture-impacting [PROCESS_FIX_REQUIRED] items
+5. Write role memory → orchestration_run/architect_memory.md" \
   > orchestration_run/logs/architect_memory_stream.jsonl 2>&1
 ```
 
@@ -731,7 +739,8 @@ claude -p --verbose --model sonnet --effort medium \
   "You are the PM. Write session memory:
 1. New backlog items → servicenow_global_tech_assessment_mcp/00_admin/todos.md (Backlog section)
 2. Session summary → servicenow_global_tech_assessment_mcp/00_admin/run_log.md (append)
-3. Write role memory → orchestration_run/pm_memory.md" \
+3. Read orchestration_run/coordination.md and convert any [PROCESS_FIX_REQUIRED] items into explicit backlog items or resolved process notes
+4. Write role memory → orchestration_run/pm_memory.md" \
   > orchestration_run/logs/pm_memory_stream.jsonl 2>&1
 ```
 
@@ -764,6 +773,7 @@ Do NOT rewrite PM's operational meaning. Keep under ~120 lines." \
 - [ ] `orchestration_run/pm_memory.md` exists
 - [ ] `orchestration_run/architect_digest.md` exists
 - [ ] Admin files updated
+- [ ] Any `[PROCESS_FIX_REQUIRED]` items were patched or carried into backlog/memory for the next similar run
 
 ### Step 22: Verify all orchestration processes are down
 

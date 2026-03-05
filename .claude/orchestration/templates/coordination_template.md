@@ -86,3 +86,12 @@ Use when the orchestrator made a temporary technical correction that needs Archi
 - [ ] [ARCH_RATIFY_REQUIRED] Task/file boundary change approved by Architect
 - [ ] [ARCH_RATIFY_REQUIRED] Model/reasoning escalation recommendation reviewed by Architect
 -->
+
+## Process Improvement Queue
+
+Use when the run exposed an orchestration/process/doc gap that must be patched or explicitly carried as debt before the next similar run.
+
+<!--
+- [ ] [PROCESS_FIX_REQUIRED] Bootstrap ACK gate was skipped; patch launch order docs and gate commands before the next multi-dev run.
+- [ ] [PROCESS_FIX_REQUIRED] Reviewer/heartbeat launch timing was unclear; PM must log backlog item and orchestrator docs must be tightened or updated.
+-->

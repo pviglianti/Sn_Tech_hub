@@ -30,6 +30,7 @@ All inline updates in plan MD use:
 | `[GATE_MISS]` | Required launch/checkpoint/handoff was missed | Orchestrator, PM heartbeat |
 | `[ARCH_RATIFY_REQUIRED]` | Technical course correction needs Architect confirmation | Orchestrator, Architect heartbeat |
 | `[DELIVERY_NOTE]` | Delivery/process note from orchestrator or PM heartbeat | Orchestrator, PM heartbeat |
+| `[PROCESS_FIX_REQUIRED]` | Run exposed an orchestration/doc/process gap that must be patched or backlogged before the next similar run | Orchestrator, PM, Architect |
 
 ## Channels
 
@@ -37,7 +38,7 @@ All inline updates in plan MD use:
 |---------|---------|------------|-----------|
 | `.jsonl` stream logs | Real-time observability | Each role (auto) | Orchestrator (`tail -f`), Reviewer |
 | Plan MD (inline sections) | Status, findings, sign-offs | Architect, PM, Devs, Reviewer, Cross-testers (own section only) | Everyone |
-| Coordination MD | Task table, checkpoints, runtime registry, orchestrator intervention log, heartbeat snapshots, ratification queue | PM (initial), Orchestrator (updates), heartbeat snapshots | Everyone |
+| Coordination MD | Task table, checkpoints, runtime registry, orchestrator intervention log, heartbeat snapshots, ratification queue, process improvement queue | PM (initial), Orchestrator (updates), heartbeat snapshots | Everyone |
 | `findings.md` | Reviewer summary | Reviewer only | Architect, PM, Orchestrator |
 
 ## Shared Root Rule
@@ -51,7 +52,7 @@ Devs in worktrees must edit those files via absolute `$PROJECT_ROOT/...` paths a
 - **Reviewer** writes ONLY to `Reviewer Findings` sections and `findings.md` in the ROOT shared docs
 - **Heartbeat snapshots** write ONLY to `Heartbeat Snapshots` and `Ratification Queue` sections in ROOT `coordination.md`
 - **No one** edits or overwrites another role's messages — append only
-- **Orchestrator** updates top-level Status fields, Sign-off checkboxes, and the `Orchestrator Intervention Log` in ROOT `coordination.md`
+- **Orchestrator** updates top-level Status fields, Sign-off checkboxes, the `Orchestrator Intervention Log`, and the `Process Improvement Queue` in ROOT `coordination.md`
 
 ## Back-and-Forth Protocol
 

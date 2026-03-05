@@ -87,6 +87,7 @@ Formal phase transitions. The orchestrator MUST verify all gates before proceedi
 - [ ] Architect wrote to `orchestration_run/architect_memory.md`
 - [ ] PM wrote to `orchestration_run/pm_memory.md`
 - [ ] Admin files updated (`servicenow_global_tech_assessment_mcp/00_admin/insights.md`, `servicenow_global_tech_assessment_mcp/00_admin/todos.md`, `servicenow_global_tech_assessment_mcp/00_admin/run_log.md`)
+- [ ] Any `[PROCESS_FIX_REQUIRED]` items were either patched in `.claude/orchestration/*` or converted into explicit backlog/memory items for the next run
 
 **Action:** Verify no orchestration process remains running. Session complete.
 
