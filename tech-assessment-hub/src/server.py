@@ -1599,7 +1599,10 @@ def _run_assessment_pipeline_stage(
             pipeline_prompt_props = load_pipeline_prompt_properties(session, instance_id=assessment.instance_id)
             instance_id = assessment.instance_id
 
-            if ai_props.analysis_mode == "depth_first":
+            # Use assessment-level analysis_mode (safe from mid-run global property changes)
+            effective_mode = getattr(assessment, "analysis_mode", None) or ai_props.analysis_mode
+
+            if effective_mode == "depth_first":
                 # --- Depth-first relationship-driven analysis ---
                 graph = build_relationship_graph(session, assessment_id)
 
@@ -1894,7 +1897,8 @@ def _run_assessment_pipeline_stage(
 
             # In depth-first mode, features already exist -- run in merge mode (don't reset)
             grouping_params = {"assessment_id": assessment_id}
-            if ai_props_grouping.analysis_mode == "depth_first":
+            effective_grouping_mode = getattr(assessment, "analysis_mode", None) or ai_props_grouping.analysis_mode
+            if effective_grouping_mode == "depth_first":
                 grouping_params["reset_existing"] = False
 
             result = seed_feature_groups_handle(grouping_params, session)
@@ -8354,6 +8358,10 @@ async def add_assessment(
         selected_classes = _default_selected_file_classes(session, instance_id)
     app_file_classes_json = json.dumps(selected_classes) if selected_classes else None
 
+    # Snapshot the current global analysis_mode so the assessment is immune to later changes
+    ai_props = load_ai_analysis_properties(session, instance_id=instance_id)
+    initial_analysis_mode = ai_props.analysis_mode  # "sequential" or "depth_first"
+
     # Create assessment
     assessment = Assessment(
         number=assessment_number,
@@ -8366,7 +8374,8 @@ async def add_assessment(
         target_tables_json=target_tables if assessment_type == "table" else None,
         target_plugins_json=target_plugins if assessment_type == "plugin" else None,
         app_file_classes_json=app_file_classes_json,
-        scope_filter=scope_filter
+        scope_filter=scope_filter,
+        analysis_mode=initial_analysis_mode,
     )
     session.add(assessment)
     session.commit()

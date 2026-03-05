@@ -33,7 +33,7 @@ from src.services.integration_properties import AIAnalysisProperties
 # Seed helpers
 # ---------------------------------------------------------------------------
 
-def _seed_instance_and_assessment(db_session, pipeline_stage="ai_analysis"):
+def _seed_instance_and_assessment(db_session, pipeline_stage="ai_analysis", analysis_mode="sequential"):
     """Create a minimal Instance + Assessment at a given pipeline stage."""
     inst = Instance(
         name="p11c-test",
@@ -51,6 +51,7 @@ def _seed_instance_and_assessment(db_session, pipeline_stage="ai_analysis"):
         assessment_type=AssessmentType.global_app,
         state=AssessmentState.in_progress,
         pipeline_stage=pipeline_stage,
+        analysis_mode=analysis_mode,
     )
     db_session.add(asmt)
     db_session.commit()
@@ -153,7 +154,7 @@ class TestAIAnalysisDepthFirstMode:
         db_session, db_engine,
     ):
         """When analysis_mode=depth_first, DFS function should be called with correct args."""
-        inst, asmt = _seed_instance_and_assessment(db_session)
+        inst, asmt = _seed_instance_and_assessment(db_session, analysis_mode="depth_first")
         scan, srs = _add_customized_scan_results(db_session, asmt)
 
         mock_load_ai.return_value = _make_dfs_ai_props()
@@ -238,7 +239,7 @@ class TestGroupingModeAware:
         db_session, db_engine,
     ):
         """In depth_first mode, grouping passes reset_existing=False."""
-        inst, asmt = _seed_instance_and_assessment(db_session, pipeline_stage="grouping")
+        inst, asmt = _seed_instance_and_assessment(db_session, pipeline_stage="grouping", analysis_mode="depth_first")
 
         mock_load_ai.return_value = _make_dfs_ai_props()
         mock_seed_handle.return_value = {
@@ -305,7 +306,7 @@ class TestDepthFirstTelemetry:
         mock_set_stage, mock_set_job, db_session, db_engine,
     ):
         """Telemetry details should contain mode=depth_first and DFS-specific fields."""
-        inst, asmt = _seed_instance_and_assessment(db_session)
+        inst, asmt = _seed_instance_and_assessment(db_session, analysis_mode="depth_first")
         scan, srs = _add_customized_scan_results(db_session, asmt)
 
         mock_load_ai.return_value = _make_dfs_ai_props()
