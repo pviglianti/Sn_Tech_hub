@@ -1692,3 +1692,48 @@ class NumberSequence(SQLModel, table=True):
         """Generate next number in sequence"""
         self.current_value += 1
         return f"{self.prefix}{str(self.current_value).zfill(self.padding)}"
+
+
+# ============================================
+# ENUM: BestPracticeCategory
+# ============================================
+
+class BestPracticeCategory(str, Enum):
+    """Categories for ServiceNow best practice checks."""
+    technical_server = "technical_server"
+    technical_client = "technical_client"
+    architecture = "architecture"
+    process = "process"
+    security = "security"
+    performance = "performance"
+    upgradeability = "upgradeability"
+    catalog = "catalog"
+    integration = "integration"
+
+
+# ============================================
+# TABLE: BestPractice (admin-editable checks)
+# ============================================
+
+class BestPractice(SQLModel, table=True):
+    """Admin-editable ServiceNow best practice check.
+
+    Used by the technical_architect prompt to evaluate artifacts
+    and produce assessment-wide technical findings.
+    """
+    __tablename__ = "best_practice"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    code: str = Field(unique=True, index=True)
+    title: str
+    category: BestPracticeCategory
+    severity: str = "medium"  # Uses Severity values but stored as str for flexibility
+    description: Optional[str] = None
+    detection_hint: Optional[str] = None
+    recommendation: Optional[str] = None
+    applies_to: Optional[str] = None  # Comma-separated sys_class_name values, or null = all
+    is_active: bool = Field(default=True)
+    source_url: Optional[str] = None
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
