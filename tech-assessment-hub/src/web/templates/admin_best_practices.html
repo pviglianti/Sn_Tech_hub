@@ -1,0 +1,517 @@
+{% extends "base.html" %}
+
+{% block title %}Best Practices - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Best Practice Catalog</h1>
+    <div class="button-group">
+        <button type="button" class="btn btn-secondary" id="bpReloadBtn" title="Reload best practices from the server">Reload</button>
+        <button type="button" class="btn btn-primary" id="bpNewBtn" title="Start a new best practice entry">New Check</button>
+    </div>
+</div>
+
+<div class="card">
+    <p class="text-muted-plain mb-0">
+        Admin-managed check library used by AI reasoning prompts for architecture, code quality, and governance recommendations.
+    </p>
+</div>
+
+<div class="card mt-1">
+    <h2>Filters</h2>
+    <div class="bp-filter-grid">
+        <div class="form-group mb-0">
+            <label for="bpFilterCategory">Category</label>
+            <select id="bpFilterCategory" class="form-control">
+                <option value="">All categories</option>
+            </select>
+        </div>
+        <div class="form-group mb-0">
+            <label for="bpFilterActive">Active State</label>
+            <select id="bpFilterActive" class="form-control">
+                <option value="any">Any</option>
+                <option value="true" selected>Active Only</option>
+                <option value="false">Inactive Only</option>
+            </select>
+        </div>
+        <div class="button-group bp-filter-actions">
+            <button type="button" class="btn btn-primary" id="bpApplyFiltersBtn">Apply</button>
+            <button type="button" class="btn btn-secondary" id="bpResetFiltersBtn">Reset</button>
+        </div>
+    </div>
+    <p class="text-muted-plain mb-0 mt-075" id="bpFilterSummary">Ready.</p>
+</div>
+
+<div class="bp-layout mt-1">
+    <div class="card">
+        <h2>Checks</h2>
+        <p class="text-muted-plain mb-1">
+            Select one row to edit. Use column picker to show additional fields.
+        </p>
+        <div id="bestPracticeTableContainer"></div>
+    </div>
+    <div class="card">
+        <h2 id="bpEditorTitle">New Check</h2>
+        <form id="bpEditorForm">
+            <input type="hidden" id="bpId" value="">
+            <div class="form-group">
+                <label for="bpCode">Code</label>
+                <input type="text" id="bpCode" placeholder="EX: TECH_SRV_001" required>
+                <small>Unique immutable key. Use short namespace + numeric suffix.</small>
+            </div>
+            <div class="form-group">
+                <label for="bpTitle">Title</label>
+                <input type="text" id="bpTitle" placeholder="Short check title" required>
+            </div>
+            <div class="form-group">
+                <label for="bpCategory">Category</label>
+                <select id="bpCategory" required></select>
+            </div>
+            <div class="form-group">
+                <label for="bpSeverity">Severity</label>
+                <select id="bpSeverity">
+                    <option value="critical">Critical</option>
+                    <option value="high">High</option>
+                    <option value="medium" selected>Medium</option>
+                    <option value="low">Low</option>
+                    <option value="info">Info</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="bpDescription">Description</label>
+                <textarea id="bpDescription" rows="3" placeholder="What this check validates"></textarea>
+            </div>
+            <div class="form-group">
+                <label for="bpDetectionHint">Detection Hint</label>
+                <textarea id="bpDetectionHint" rows="3" placeholder="How to detect this condition in artifacts"></textarea>
+            </div>
+            <div class="form-group">
+                <label for="bpRecommendation">Recommendation</label>
+                <textarea id="bpRecommendation" rows="3" placeholder="Recommended remediation guidance"></textarea>
+            </div>
+            <div class="form-group">
+                <label for="bpAppliesTo">Applies To</label>
+                <input type="text" id="bpAppliesTo" placeholder="Comma-separated sys_class_name values (optional)">
+            </div>
+            <div class="form-group">
+                <label for="bpSourceUrl">Source URL</label>
+                <input type="url" id="bpSourceUrl" placeholder="https://...">
+            </div>
+            <div class="form-group mb-0">
+                <label>
+                    <input type="checkbox" id="bpIsActive" checked>
+                    Active
+                </label>
+            </div>
+            <div class="button-group mt-1">
+                <button type="submit" class="btn btn-primary" id="bpSaveBtn">Save</button>
+                <button type="button" class="btn btn-secondary" id="bpToggleActiveBtn">Deactivate</button>
+                <button type="button" class="btn btn-secondary" id="bpClearFormBtn">Clear</button>
+            </div>
+        </form>
+        <pre id="bpEditorStatus" class="code-block mt-1">Ready.</pre>
+    </div>
+</div>
+
+<style>
+.bp-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(360px, 1fr);
+    gap: 1rem;
+    align-items: start;
+}
+
+@media (max-width: 1280px) {
+    .bp-layout {
+        grid-template-columns: 1fr;
+    }
+}
+
+.bp-filter-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.75rem;
+    align-items: end;
+}
+
+.bp-filter-actions {
+    margin-bottom: 0.1rem;
+}
+
+.bp-category-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(37, 99, 235, 0.1);
+    color: #1d4ed8;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: capitalize;
+}
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/ColumnPicker.js?v={{ static_version }}"></script>
+<script src="/static/js/DataTable.js?v={{ static_version }}"></script>
+<script>
+(function () {
+    var container = document.getElementById('bestPracticeTableContainer');
+    if (!container || !window.DataTable) {
+        return;
+    }
+
+    var editorForm = document.getElementById('bpEditorForm');
+    var editorStatus = document.getElementById('bpEditorStatus');
+    var editorTitle = document.getElementById('bpEditorTitle');
+    var filterSummary = document.getElementById('bpFilterSummary');
+    var filterCategory = document.getElementById('bpFilterCategory');
+    var filterActive = document.getElementById('bpFilterActive');
+    var categorySelect = document.getElementById('bpCategory');
+
+    var categories = (window.BEST_PRACTICE_CATEGORIES && window.BEST_PRACTICE_CATEGORIES.length)
+        ? window.BEST_PRACTICE_CATEGORIES.slice()
+        : [
+            'technical_server',
+            'technical_client',
+            'architecture',
+            'process',
+            'security',
+            'performance',
+            'upgradeability',
+            'catalog',
+            'integration'
+        ];
+
+    function toCategoryLabel(value) {
+        return String(value || '')
+            .split('_')
+            .filter(Boolean)
+            .map(function (part) { return part.charAt(0).toUpperCase() + part.slice(1); })
+            .join(' ');
+    }
+
+    function populateCategorySelects() {
+        categories.forEach(function (value) {
+            var filterOption = document.createElement('option');
+            filterOption.value = value;
+            filterOption.textContent = toCategoryLabel(value);
+            filterCategory.appendChild(filterOption);
+
+            var formOption = document.createElement('option');
+            formOption.value = value;
+            formOption.textContent = toCategoryLabel(value);
+            categorySelect.appendChild(formOption);
+        });
+        if (categories.length) {
+            categorySelect.value = categories[0];
+        }
+    }
+
+    function setStatus(text, isError) {
+        if (!editorStatus) return;
+        editorStatus.textContent = String(text || '');
+        editorStatus.style.color = isError ? 'var(--danger-color)' : 'var(--text-color)';
+    }
+
+    function setFilterSummary(text) {
+        if (filterSummary) {
+            filterSummary.textContent = text;
+        }
+    }
+
+    function resetForm() {
+        document.getElementById('bpId').value = '';
+        document.getElementById('bpCode').value = '';
+        document.getElementById('bpCode').disabled = false;
+        document.getElementById('bpTitle').value = '';
+        document.getElementById('bpSeverity').value = 'medium';
+        document.getElementById('bpDescription').value = '';
+        document.getElementById('bpDetectionHint').value = '';
+        document.getElementById('bpRecommendation').value = '';
+        document.getElementById('bpAppliesTo').value = '';
+        document.getElementById('bpSourceUrl').value = '';
+        document.getElementById('bpIsActive').checked = true;
+        if (categories.length) {
+            categorySelect.value = categories[0];
+        }
+        editorTitle.textContent = 'New Check';
+        document.getElementById('bpSaveBtn').textContent = 'Create';
+        document.getElementById('bpToggleActiveBtn').disabled = true;
+    }
+
+    function loadRowIntoForm(row) {
+        if (!row) return;
+        document.getElementById('bpId').value = row.id || '';
+        document.getElementById('bpCode').value = row.code || '';
+        document.getElementById('bpCode').disabled = true;
+        document.getElementById('bpTitle').value = row.title || '';
+        document.getElementById('bpCategory').value = row.category || '';
+        document.getElementById('bpSeverity').value = (row.severity || 'medium').toLowerCase();
+        document.getElementById('bpDescription').value = row.description || '';
+        document.getElementById('bpDetectionHint').value = row.detection_hint || '';
+        document.getElementById('bpRecommendation').value = row.recommendation || '';
+        document.getElementById('bpAppliesTo').value = row.applies_to || '';
+        document.getElementById('bpSourceUrl').value = row.source_url || '';
+        document.getElementById('bpIsActive').checked = !!row.is_active;
+        editorTitle.textContent = 'Edit: ' + (row.code || row.id);
+        document.getElementById('bpSaveBtn').textContent = 'Save';
+        document.getElementById('bpToggleActiveBtn').disabled = false;
+        document.getElementById('bpToggleActiveBtn').textContent = row.is_active ? 'Deactivate' : 'Activate';
+    }
+
+    function payloadFromForm() {
+        return {
+            code: String(document.getElementById('bpCode').value || '').trim(),
+            title: String(document.getElementById('bpTitle').value || '').trim(),
+            category: String(document.getElementById('bpCategory').value || '').trim(),
+            severity: String(document.getElementById('bpSeverity').value || '').trim().toLowerCase(),
+            description: String(document.getElementById('bpDescription').value || '').trim() || null,
+            detection_hint: String(document.getElementById('bpDetectionHint').value || '').trim() || null,
+            recommendation: String(document.getElementById('bpRecommendation').value || '').trim() || null,
+            applies_to: String(document.getElementById('bpAppliesTo').value || '').trim() || null,
+            source_url: String(document.getElementById('bpSourceUrl').value || '').trim() || null,
+            is_active: !!document.getElementById('bpIsActive').checked,
+        };
+    }
+
+    function sortRows(rows, field, dir) {
+        if (!field) return rows;
+        var direction = dir === 'desc' ? -1 : 1;
+        rows.sort(function (a, b) {
+            var av = a[field];
+            var bv = b[field];
+
+            if (typeof av === 'boolean') av = av ? 1 : 0;
+            if (typeof bv === 'boolean') bv = bv ? 1 : 0;
+
+            if (av == null && bv == null) return 0;
+            if (av == null) return -1 * direction;
+            if (bv == null) return 1 * direction;
+
+            if (typeof av === 'number' && typeof bv === 'number') {
+                return (av - bv) * direction;
+            }
+
+            var as = String(av).toLowerCase();
+            var bs = String(bv).toLowerCase();
+            if (as < bs) return -1 * direction;
+            if (as > bs) return 1 * direction;
+            return 0;
+        });
+        return rows;
+    }
+
+    populateCategorySelects();
+    resetForm();
+
+    var dt = new window.DataTable(container, {
+        dataUrl: '/api/best-practices',
+        schemaUrl: '/api/best-practices',
+        instanceId: 0,
+        tableName: 'best_practice',
+        pageSize: 50,
+        storageKey: 'dt_best_practice_admin_v1',
+        includeTableAndInstanceParams: false,
+        selectable: true,
+        rowIdField: 'id',
+        onRecordClick: function () {},
+        onSelectionChange: function (selectedRows) {
+            if (selectedRows.length === 1) {
+                loadRowIntoForm(selectedRows[0]);
+                setStatus('Loaded selected best practice for editing.', false);
+                return;
+            }
+            if (selectedRows.length > 1) {
+                setStatus('Multiple rows selected. Select one row to edit.', true);
+                return;
+            }
+            resetForm();
+            setStatus('Ready.', false);
+        },
+        customRenderers: {
+            category: function (value, row, td) {
+                var pill = document.createElement('span');
+                pill.className = 'bp-category-pill';
+                pill.textContent = toCategoryLabel(value);
+                td.appendChild(pill);
+            },
+            severity: function (value, row, td) {
+                var normalized = String(value || 'medium').toLowerCase();
+                var span = document.createElement('span');
+                span.className = 'severity-badge severity-' + normalized;
+                span.textContent = normalized;
+                td.appendChild(span);
+            },
+            is_active: function (value, row, td) {
+                var span = document.createElement('span');
+                span.className = 'status-badge ' + (value ? 'status-connected' : 'status-draft');
+                span.textContent = value ? 'active' : 'inactive';
+                td.appendChild(span);
+            }
+        }
+    });
+
+    dt._fetchSchema = async function () {
+        this.schema = {
+            fields: [
+                { local_column: 'code', column_label: 'Code', kind: 'string', is_reference: false, sn_reference_table: null },
+                { local_column: 'title', column_label: 'Title', kind: 'string', is_reference: false, sn_reference_table: null },
+                { local_column: 'category', column_label: 'Category', kind: 'string', is_reference: false, sn_reference_table: null },
+                { local_column: 'severity', column_label: 'Severity', kind: 'string', is_reference: false, sn_reference_table: null },
+                { local_column: 'is_active', column_label: 'Active', kind: 'boolean', is_reference: false, sn_reference_table: null },
+                { local_column: 'applies_to', column_label: 'Applies To', kind: 'string', is_reference: false, sn_reference_table: null },
+                { local_column: 'updated_at', column_label: 'Updated', kind: 'date', is_reference: false, sn_reference_table: null }
+            ],
+            available_tables: []
+        };
+        this.fields = this.schema.fields;
+        this._availableTables = {};
+    };
+
+    dt.refresh = async function () {
+        if (this._loading) return;
+        this._loading = true;
+        this._loadingOverlay.style.display = 'flex';
+        try {
+            var query = [];
+            if (filterCategory.value) {
+                query.push('category=' + encodeURIComponent(filterCategory.value));
+            }
+            if (filterActive.value === 'true' || filterActive.value === 'false') {
+                query.push('is_active=' + filterActive.value);
+            }
+            var url = '/api/best-practices' + (query.length ? ('?' + query.join('&')) : '');
+            var res = await fetch(url);
+            if (!res.ok) {
+                throw new Error('Best practice fetch failed: ' + res.status);
+            }
+            var data = await res.json();
+            var allRows = Array.isArray(data.best_practices) ? data.best_practices.slice() : [];
+            sortRows(allRows, this.sortField, this.sortDir);
+            this.total = allRows.length;
+            var start = this.offset;
+            var end = start + this.pageSize;
+            this.rows = allRows.slice(start, end);
+            this._renderTable();
+            this._renderPager();
+            setFilterSummary('Showing ' + this.rows.length + ' of ' + this.total + ' checks.');
+        } catch (err) {
+            this._tbody.innerHTML =
+                '<tr><td colspan="99" style="text-align:center;color:var(--danger-color);padding:2rem;">' +
+                'Error loading best practices: ' + err.message + '</td></tr>';
+            setFilterSummary('Failed to load checks.');
+            setStatus(err.message, true);
+        } finally {
+            this._loading = false;
+            this._loadingOverlay.style.display = 'none';
+        }
+    };
+
+    document.getElementById('bpApplyFiltersBtn').addEventListener('click', function () {
+        dt.offset = 0;
+        dt.clearSelection();
+        dt.refresh();
+    });
+
+    document.getElementById('bpResetFiltersBtn').addEventListener('click', function () {
+        filterCategory.value = '';
+        filterActive.value = 'any';
+        dt.offset = 0;
+        dt.clearSelection();
+        dt.refresh();
+    });
+
+    document.getElementById('bpReloadBtn').addEventListener('click', function () {
+        dt.refresh();
+    });
+
+    document.getElementById('bpNewBtn').addEventListener('click', function () {
+        dt.clearSelection();
+        resetForm();
+        setStatus('New check form ready.', false);
+    });
+
+    document.getElementById('bpClearFormBtn').addEventListener('click', function () {
+        dt.clearSelection();
+        resetForm();
+        setStatus('Form cleared.', false);
+    });
+
+    document.getElementById('bpToggleActiveBtn').addEventListener('click', async function () {
+        var idValue = parseInt(document.getElementById('bpId').value || '0', 10);
+        if (!idValue) {
+            setStatus('Select an existing check before toggling active state.', true);
+            return;
+        }
+        var nextActive = !document.getElementById('bpIsActive').checked;
+        try {
+            var res = await fetch('/api/best-practices/' + encodeURIComponent(idValue), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ is_active: nextActive }),
+            });
+            if (!res.ok) {
+                throw new Error('Toggle failed: ' + res.status);
+            }
+            document.getElementById('bpIsActive').checked = nextActive;
+            setStatus('Best practice state updated.', false);
+            await dt.refresh();
+        } catch (err) {
+            setStatus(err.message, true);
+        }
+    });
+
+    editorForm.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        var idValue = parseInt(document.getElementById('bpId').value || '0', 10);
+        var payload = payloadFromForm();
+
+        if (!payload.title) {
+            setStatus('Title is required.', true);
+            return;
+        }
+        if (!payload.category) {
+            setStatus('Category is required.', true);
+            return;
+        }
+        if (!idValue && !payload.code) {
+            setStatus('Code is required for new checks.', true);
+            return;
+        }
+
+        var url = '/api/best-practices';
+        var method = 'POST';
+        if (idValue) {
+            method = 'PUT';
+            url = '/api/best-practices/' + encodeURIComponent(idValue);
+            delete payload.code;
+        }
+
+        try {
+            setStatus('Saving...', false);
+            var res = await fetch(url, {
+                method: method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+                throw new Error('Save failed: ' + res.status);
+            }
+            var saved = await res.json();
+            loadRowIntoForm(saved);
+            await dt.refresh();
+            setStatus('Saved ' + (saved.code || ('ID ' + saved.id)) + '.', false);
+        } catch (err) {
+            setStatus(err.message, true);
+        }
+    });
+
+    dt.init().catch(function (err) {
+        container.innerHTML = '<div class="empty-state"><h2>Error</h2><p>' + err.message + '</p></div>';
+        setStatus('Failed to initialize table: ' + err.message, true);
+    });
+})();
+</script>
+{% endblock %}

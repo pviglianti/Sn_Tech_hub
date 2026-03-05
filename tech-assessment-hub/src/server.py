@@ -1,6 +1,6 @@
 # server.py - FastAPI Application
 
-from fastapi import FastAPI, Request, Depends, Form, HTTPException, Query
+from fastapi import FastAPI, Request, Depends, Form, HTTPException, Query, Body
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -18,9 +18,9 @@ from dataclasses import dataclass
 
 from .database import get_session, create_db_and_tables, engine
 from .models import (
-    Instance, Assessment, Scan, ScanResult, Feature, FeatureScanResult, FeatureContextArtifact, FeatureRecommendation,
+    Instance, Assessment, Scan, ScanResult, Customization, Feature, FeatureScanResult, FeatureContextArtifact, FeatureRecommendation,
     GlobalApp, AppFileClass, NumberSequence,
-    ConnectionStatus, AssessmentState, AssessmentType,
+    ConnectionStatus, AssessmentState, AssessmentType, PipelineStage,
     ScanStatus,
     OriginType, HeadOwner, ReviewStatus, Disposition, Severity, FindingCategory,
     InstanceDataPull, DataPullType, DataPullStatus,
@@ -29,6 +29,7 @@ from .models import (
     AppConfig, JobRun, JobEvent, JobRunStatus,
     CodeReference, StructuralRelationship, UpdateSetOverlap,
     TemporalCluster, NamingCluster, TableColocationSummary, UpdateSetArtifactLink,
+    BestPractice, BestPracticeCategory,
 )
 from .services.encryption import encrypt_password, decrypt_password
 from .services.sn_client import ServiceNowClient, ServiceNowClientError
@@ -53,6 +54,10 @@ from .services.dictionary_pull_orchestrator import (
 from .table_registry_catalog import get_all_default_sn_tables, get_table_source
 from .seed_data import run_seed
 from .mcp.server import handle_request as handle_mcp_request
+from .mcp.tools.pipeline.run_engines import handle as run_preprocessing_engines_handle
+from .mcp.tools.pipeline.seed_feature_groups import handle as seed_feature_groups_handle
+from .mcp.tools.pipeline.run_feature_reasoning import handle as run_feature_reasoning_handle
+from .mcp.tools.pipeline.generate_observations import handle as generate_observations_handle
 from .mcp.bridge import (
     BRIDGE_MANAGER,
     load_bridge_config,
@@ -352,6 +357,53 @@ _POSTFLIGHT_RUN_MODULE = "postflight"
 _POSTFLIGHT_RUN_TYPE = "artifact_pull"
 
 
+@dataclass
+class _AssessmentPipelineJob:
+    """In-process coordinator for post-scan pipeline stages."""
+
+    assessment_id: int
+    run_uid: str
+    target_stage: str
+    stage: str
+    status: str
+    message: str
+    progress_percent: int
+    started_at: datetime
+    updated_at: datetime
+    finished_at: Optional[datetime]
+    thread: Optional[threading.Thread]
+
+
+_ASSESSMENT_PIPELINE_JOBS_LOCK = threading.Lock()
+_ASSESSMENT_PIPELINE_JOBS: Dict[int, _AssessmentPipelineJob] = {}
+_ASSESSMENT_PIPELINE_RUN_MODULE = "assessment"
+_ASSESSMENT_PIPELINE_RUN_TYPE = "reasoning_pipeline"
+_PIPELINE_STAGE_ORDER: List[str] = [
+    PipelineStage.scans.value,
+    PipelineStage.engines.value,
+    PipelineStage.observations.value,
+    PipelineStage.review.value,
+    PipelineStage.grouping.value,
+    PipelineStage.recommendations.value,
+    PipelineStage.complete.value,
+]
+_PIPELINE_STAGE_LABELS: Dict[str, str] = {
+    PipelineStage.scans.value: "Scans",
+    PipelineStage.engines.value: "Engines",
+    PipelineStage.observations.value: "Observations",
+    PipelineStage.review.value: "Review",
+    PipelineStage.grouping.value: "Grouping",
+    PipelineStage.recommendations.value: "Recommendations",
+    PipelineStage.complete.value: "Complete",
+}
+_PIPELINE_STAGE_AUTONEXT: Dict[str, str] = {
+    PipelineStage.engines.value: PipelineStage.observations.value,
+    PipelineStage.observations.value: PipelineStage.review.value,
+    PipelineStage.grouping.value: PipelineStage.recommendations.value,
+    PipelineStage.recommendations.value: PipelineStage.complete.value,
+}
+
+
 def _assessment_scan_progress_percent(
     stage: str,
     status: str,
@@ -394,6 +446,342 @@ def _assessment_scan_job_status_to_run_status(status: str) -> JobRunStatus:
     if normalized in {"queued", "pending"}:
         return JobRunStatus.queued
     return JobRunStatus.running
+
+
+def _pipeline_stage_value(raw_stage: Any) -> str:
+    if raw_stage is None:
+        return PipelineStage.scans.value
+    if hasattr(raw_stage, "value"):
+        return str(raw_stage.value)
+    stage = str(raw_stage).strip().lower()
+    return stage if stage in _PIPELINE_STAGE_ORDER else PipelineStage.scans.value
+
+
+def _pipeline_stage_index(stage_value: str) -> int:
+    try:
+        return _PIPELINE_STAGE_ORDER.index(_pipeline_stage_value(stage_value))
+    except ValueError:
+        return 0
+
+
+def _assessment_pipeline_job_status_to_run_status(status: str) -> JobRunStatus:
+    normalized = (status or "").strip().lower()
+    if normalized == "completed":
+        return JobRunStatus.completed
+    if normalized == "failed":
+        return JobRunStatus.failed
+    if normalized == "cancelled":
+        return JobRunStatus.cancelled
+    if normalized in {"queued", "pending"}:
+        return JobRunStatus.queued
+    return JobRunStatus.running
+
+
+def _assessment_pipeline_metadata(raw: Optional[str]) -> Dict[str, Any]:
+    parsed = _safe_json(raw, {})
+    if isinstance(parsed, dict):
+        return parsed
+    return {}
+
+
+def _find_assessment_pipeline_run(
+    session: Session,
+    assessment_id: int,
+    *,
+    active_only: bool,
+) -> Optional[JobRun]:
+    stmt = (
+        select(JobRun)
+        .where(JobRun.module == _ASSESSMENT_PIPELINE_RUN_MODULE)
+        .where(JobRun.job_type == _ASSESSMENT_PIPELINE_RUN_TYPE)
+    )
+    if active_only:
+        stmt = stmt.where(JobRun.status.in_([JobRunStatus.queued, JobRunStatus.running]))
+    runs = session.exec(stmt.order_by(JobRun.created_at.desc()).limit(200)).all()
+    for run in runs:
+        metadata = _assessment_pipeline_metadata(run.metadata_json)
+        if int(metadata.get("assessment_id") or 0) == assessment_id:
+            return run
+    return None
+
+
+def _create_assessment_pipeline_run_record(assessment_id: int, target_stage: str) -> Optional[str]:
+    now = datetime.utcnow()
+    with Session(engine) as session:
+        assessment = session.get(Assessment, assessment_id)
+        if not assessment:
+            return None
+        run_uid = uuid.uuid4().hex
+        run = JobRun(
+            run_uid=run_uid,
+            instance_id=assessment.instance_id,
+            module=_ASSESSMENT_PIPELINE_RUN_MODULE,
+            job_type=_ASSESSMENT_PIPELINE_RUN_TYPE,
+            mode=target_stage,
+            status=JobRunStatus.queued,
+            queue_total=1,
+            queue_completed=0,
+            progress_pct=5,
+            current_data_type=target_stage,
+            message=f"Queued pipeline stage: {target_stage}",
+            metadata_json=_json_dumps(
+                {
+                    "assessment_id": assessment_id,
+                    "target_stage": target_stage,
+                    "stage": target_stage,
+                }
+            ),
+            created_at=now,
+            updated_at=now,
+            last_heartbeat_at=now,
+        )
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+        _append_data_pull_event(
+            session,
+            run,
+            event_type="queued",
+            summary="Assessment pipeline stage queued.",
+            payload={"assessment_id": assessment_id, "target_stage": target_stage},
+        )
+        session.commit()
+        return run_uid
+
+
+def _update_assessment_pipeline_run_state(
+    assessment_id: int,
+    run_uid: Optional[str],
+    *,
+    stage: str,
+    status: str,
+    message: str,
+    progress_percent: Optional[int] = None,
+) -> None:
+    if not run_uid:
+        return
+    with Session(engine) as session:
+        run = _load_data_pull_run(session, run_uid)
+        if not run:
+            return
+        run_status = _assessment_pipeline_job_status_to_run_status(status)
+        now = datetime.utcnow()
+        run.status = run_status
+        if run_status in {JobRunStatus.running, JobRunStatus.queued} and not run.started_at:
+            run.started_at = now
+        if run_status in {JobRunStatus.completed, JobRunStatus.failed, JobRunStatus.cancelled}:
+            run.completed_at = now
+            run.queue_completed = 1
+        else:
+            run.completed_at = None
+            run.queue_completed = 0
+        run.queue_total = 1
+        run.current_data_type = stage
+        run.current_index = None if run.queue_completed else 1
+        if progress_percent is None:
+            progress_percent = 100 if run.queue_completed else 20
+        run.progress_pct = max(0, min(100, int(progress_percent)))
+        run.message = message
+        run.error_message = message if run_status == JobRunStatus.failed else None
+        metadata = _assessment_pipeline_metadata(run.metadata_json)
+        metadata["assessment_id"] = assessment_id
+        metadata["stage"] = stage
+        run.metadata_json = _json_dumps(metadata)
+        run.updated_at = now
+        run.last_heartbeat_at = now
+        event_type = run_status.value if run_status in {
+            JobRunStatus.completed,
+            JobRunStatus.failed,
+            JobRunStatus.cancelled,
+        } else "progress"
+        _append_data_pull_event(
+            session,
+            run,
+            event_type=event_type,
+            summary=message,
+            payload={
+                "assessment_id": assessment_id,
+                "stage": stage,
+                "status": status,
+                "progress_percent": run.progress_pct,
+            },
+        )
+        session.commit()
+
+
+def _serialize_assessment_pipeline_run(run: JobRun, *, is_alive: bool) -> Dict[str, Any]:
+    raw_status = run.status.value if hasattr(run.status, "value") else str(run.status)
+    status = raw_status
+    if raw_status in {JobRunStatus.queued.value, JobRunStatus.running.value}:
+        status = "running"
+    elif raw_status == JobRunStatus.cancelled.value:
+        status = "failed"
+
+    metadata = _assessment_pipeline_metadata(run.metadata_json)
+    stage = _pipeline_stage_value(metadata.get("stage") or run.current_data_type or run.mode)
+    target_stage = _pipeline_stage_value(metadata.get("target_stage") or run.mode or stage)
+    return {
+        "run_uid": run.run_uid,
+        "status": status,
+        "message": run.message,
+        "is_alive": is_alive,
+        "job_type": _ASSESSMENT_PIPELINE_RUN_TYPE,
+        "target_stage": target_stage,
+        "target_stage_label": _PIPELINE_STAGE_LABELS.get(target_stage, target_stage.title()),
+        "stage": stage,
+        "stage_label": _PIPELINE_STAGE_LABELS.get(stage, stage.title()),
+        "progress_percent": int(run.progress_pct or 0),
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "updated_at": run.updated_at.isoformat() if run.updated_at else None,
+        "finished_at": run.completed_at.isoformat() if run.completed_at else None,
+    }
+
+
+def _set_assessment_pipeline_job_state(
+    assessment_id: int,
+    *,
+    stage: Optional[str] = None,
+    status: Optional[str] = None,
+    message: Optional[str] = None,
+    progress_percent: Optional[int] = None,
+) -> None:
+    run_uid: Optional[str] = None
+    resolved_stage = stage
+    resolved_status = status
+    resolved_message = message
+    resolved_progress = progress_percent
+
+    with _ASSESSMENT_PIPELINE_JOBS_LOCK:
+        job = _ASSESSMENT_PIPELINE_JOBS.get(assessment_id)
+        if not job:
+            return
+        run_uid = job.run_uid
+        if stage is not None:
+            job.stage = _pipeline_stage_value(stage)
+        if status is not None:
+            job.status = status
+        if message is not None:
+            job.message = message
+        if progress_percent is not None:
+            job.progress_percent = max(0, min(100, int(progress_percent)))
+        job.updated_at = datetime.utcnow()
+        if job.status in {"completed", "failed"}:
+            job.finished_at = job.updated_at
+
+        resolved_stage = job.stage
+        resolved_status = job.status
+        resolved_message = job.message
+        resolved_progress = job.progress_percent
+
+    if resolved_stage and resolved_status and resolved_message is not None:
+        _update_assessment_pipeline_run_state(
+            assessment_id,
+            run_uid,
+            stage=resolved_stage,
+            status=resolved_status,
+            message=resolved_message,
+            progress_percent=resolved_progress,
+        )
+
+
+def _get_assessment_pipeline_job_snapshot(
+    assessment_id: int,
+    *,
+    session: Session,
+) -> Optional[Dict[str, Any]]:
+    with _ASSESSMENT_PIPELINE_JOBS_LOCK:
+        in_memory = _ASSESSMENT_PIPELINE_JOBS.get(assessment_id)
+        if in_memory:
+            is_alive = bool(in_memory.thread and in_memory.thread.is_alive())
+            if in_memory.status == "running" and not is_alive:
+                in_memory.status = "failed"
+                if not in_memory.message:
+                    in_memory.message = "Pipeline job exited unexpectedly."
+                in_memory.updated_at = datetime.utcnow()
+                in_memory.finished_at = in_memory.updated_at
+            return {
+                "run_uid": in_memory.run_uid,
+                "status": in_memory.status,
+                "message": in_memory.message,
+                "is_alive": is_alive,
+                "job_type": _ASSESSMENT_PIPELINE_RUN_TYPE,
+                "target_stage": in_memory.target_stage,
+                "target_stage_label": _PIPELINE_STAGE_LABELS.get(in_memory.target_stage, in_memory.target_stage.title()),
+                "stage": in_memory.stage,
+                "stage_label": _PIPELINE_STAGE_LABELS.get(in_memory.stage, in_memory.stage.title()),
+                "progress_percent": max(0, min(100, int(in_memory.progress_percent))),
+                "started_at": in_memory.started_at.isoformat() if in_memory.started_at else None,
+                "updated_at": in_memory.updated_at.isoformat() if in_memory.updated_at else None,
+                "finished_at": in_memory.finished_at.isoformat() if in_memory.finished_at else None,
+            }
+
+    run = _find_assessment_pipeline_run(session, assessment_id, active_only=False)
+    if not run:
+        return None
+    return _serialize_assessment_pipeline_run(run, is_alive=False)
+
+
+def _set_assessment_pipeline_stage(
+    assessment_id: int,
+    stage: str,
+    *,
+    session: Optional[Session] = None,
+) -> None:
+    target_stage = _pipeline_stage_value(stage)
+    now = datetime.utcnow()
+    if session is not None:
+        assessment = session.get(Assessment, assessment_id)
+        if not assessment:
+            return
+        assessment.pipeline_stage = PipelineStage(target_stage)
+        assessment.pipeline_stage_updated_at = now
+        assessment.updated_at = now
+        session.add(assessment)
+        session.commit()
+        return
+
+    with Session(engine) as run_session:
+        assessment = run_session.get(Assessment, assessment_id)
+        if not assessment:
+            return
+        assessment.pipeline_stage = PipelineStage(target_stage)
+        assessment.pipeline_stage_updated_at = now
+        assessment.updated_at = now
+        run_session.add(assessment)
+        run_session.commit()
+
+
+def _assessment_review_gate_summary(session: Session, assessment_id: int) -> Dict[str, Any]:
+    rows = session.exec(
+        select(ScanResult.review_status, func.count())
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .where(Scan.assessment_id == assessment_id)
+        .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
+        .group_by(ScanResult.review_status)
+    ).all()
+
+    reviewed = 0
+    pending = 0
+    in_progress = 0
+    for status, count in rows:
+        key = status.value if hasattr(status, "value") else str(status)
+        normalized = str(key or "").strip().lower()
+        value = int(count or 0)
+        if normalized == ReviewStatus.reviewed.value:
+            reviewed += value
+        elif normalized == ReviewStatus.review_in_progress.value:
+            in_progress += value
+        else:
+            pending += value
+
+    total = reviewed + pending + in_progress
+    return {
+        "reviewed": reviewed,
+        "pending": pending,
+        "in_progress": in_progress,
+        "total_customized": total,
+        "all_reviewed": total > 0 and reviewed >= total,
+    }
 
 
 def _assessment_scan_metadata(raw: Optional[str]) -> Dict[str, Any]:
@@ -942,6 +1330,227 @@ def _start_assessment_scan_job(assessment_id: int, mode: str) -> bool:
         )
         job.thread = thread
         _ASSESSMENT_SCAN_JOBS[assessment_id] = job
+        thread.start()
+        return True
+
+
+def _mark_remaining_customizations_reviewed(session: Session, assessment_id: int) -> int:
+    """Bulk mark pending customized results as reviewed for review-gate bypass."""
+    rows = session.exec(
+        select(ScanResult)
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .where(Scan.assessment_id == assessment_id)
+        .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
+        .where(ScanResult.review_status != ReviewStatus.reviewed)
+    ).all()
+    if not rows:
+        return 0
+
+    ids: List[int] = []
+    for row in rows:
+        row.review_status = ReviewStatus.reviewed
+        session.add(row)
+        if row.id is not None:
+            ids.append(int(row.id))
+    session.commit()
+
+    if ids:
+        customization_rows = session.exec(
+            select(Customization).where(Customization.scan_result_id.in_(ids))
+        ).all()
+        for custom in customization_rows:
+            custom.review_status = ReviewStatus.reviewed
+            session.add(custom)
+        session.commit()
+    return len(rows)
+
+
+def _run_assessment_pipeline_stage(
+    assessment_id: int,
+    *,
+    target_stage: str,
+    skip_review: bool = False,
+) -> None:
+    stage = _pipeline_stage_value(target_stage)
+    _set_assessment_pipeline_job_state(
+        assessment_id,
+        stage=stage,
+        status="running",
+        message=f"Starting {stage} stage.",
+        progress_percent=15,
+    )
+    _set_assessment_pipeline_stage(assessment_id, stage)
+
+    with Session(engine) as session:
+        assessment = session.get(Assessment, assessment_id)
+        if not assessment:
+            raise ValueError(f"Assessment not found: {assessment_id}")
+
+        success_message = f"{stage} stage completed."
+
+        if stage == PipelineStage.engines.value:
+            result = run_preprocessing_engines_handle({"assessment_id": assessment_id}, session)
+            if not result.get("success"):
+                errors = result.get("errors") or []
+                raise RuntimeError("; ".join(errors) if errors else "Engine run failed.")
+            engines_run = len(result.get("engines_run") or [])
+            success_message = f"Engines stage completed ({engines_run} engine(s) run)."
+
+        elif stage == PipelineStage.observations.value:
+            result = generate_observations_handle({"assessment_id": assessment_id}, session)
+            if not result.get("success"):
+                raise RuntimeError(result.get("error") or "Observation generation failed.")
+            processed = int(result.get("processed_count") or 0)
+            total = int(result.get("total_customized") or 0)
+            success_message = f"Observations generated for {processed}/{total} customized artifacts."
+
+        elif stage == PipelineStage.grouping.value:
+            if skip_review:
+                _mark_remaining_customizations_reviewed(session, assessment_id)
+            result = seed_feature_groups_handle({"assessment_id": assessment_id}, session)
+            if not result.get("success"):
+                raise RuntimeError(result.get("error") or "Feature grouping failed.")
+            features_created = int(result.get("features_created") or 0)
+            grouped_count = int(result.get("grouped_count") or 0)
+            success_message = (
+                f"Grouping stage completed ({grouped_count} customized results grouped; "
+                f"{features_created} feature(s) created)."
+            )
+
+        elif stage == PipelineStage.recommendations.value:
+            pass_count = 0
+            response = run_feature_reasoning_handle(
+                {"assessment_id": assessment_id, "pass_type": "auto"},
+                session,
+            )
+            pass_count += 1
+            while response.get("should_continue"):
+                max_iterations = int(response.get("max_iterations") or 3)
+                if pass_count >= max_iterations:
+                    break
+                response = run_feature_reasoning_handle(
+                    {
+                        "assessment_id": assessment_id,
+                        "run_id": response.get("run_id"),
+                        "pass_type": "auto",
+                    },
+                    session,
+                )
+                pass_count += 1
+            if not response.get("success", True):
+                raise RuntimeError(response.get("error") or "Feature reasoning failed.")
+            success_message = (
+                f"Recommendation stage verification completed in {pass_count} pass(es); "
+                f"converged={bool(response.get('converged'))}."
+            )
+
+        elif stage == PipelineStage.review.value:
+            gate = _assessment_review_gate_summary(session, assessment_id)
+            if not gate.get("all_reviewed") and not skip_review:
+                raise RuntimeError(
+                    "Review gate not satisfied. Mark all customized artifacts reviewed or pass skip_review=true."
+                )
+            if skip_review:
+                reviewed_count = _mark_remaining_customizations_reviewed(session, assessment_id)
+                success_message = f"Review gate bypassed; marked {reviewed_count} result(s) as reviewed."
+            else:
+                success_message = "Review gate satisfied."
+
+        next_stage = _PIPELINE_STAGE_AUTONEXT.get(stage)
+        if next_stage:
+            _set_assessment_pipeline_stage(assessment_id, next_stage, session=session)
+
+    _set_assessment_pipeline_job_state(
+        assessment_id,
+        stage=stage,
+        status="completed",
+        message=success_message,
+        progress_percent=100,
+    )
+
+
+def _start_assessment_pipeline_job(
+    assessment_id: int,
+    *,
+    target_stage: str,
+    skip_review: bool = False,
+) -> bool:
+    """Start a post-scan pipeline stage if no active pipeline stage is running."""
+    normalized_target = _pipeline_stage_value(target_stage)
+    with Session(engine) as session:
+        existing_run = _find_assessment_pipeline_run(session, assessment_id, active_only=True)
+        if existing_run:
+            return False
+
+    with _ASSESSMENT_PIPELINE_JOBS_LOCK:
+        existing = _ASSESSMENT_PIPELINE_JOBS.get(assessment_id)
+        if existing and existing.thread and existing.thread.is_alive() and existing.status == "running":
+            return False
+
+        run_uid = _create_assessment_pipeline_run_record(assessment_id, normalized_target)
+        if not run_uid:
+            return False
+
+        now = datetime.utcnow()
+        job = _AssessmentPipelineJob(
+            assessment_id=assessment_id,
+            run_uid=run_uid,
+            target_stage=normalized_target,
+            stage=normalized_target,
+            status="running",
+            message=f"Queued pipeline stage: {normalized_target}",
+            progress_percent=5,
+            started_at=now,
+            updated_at=now,
+            finished_at=None,
+            thread=None,
+        )
+
+        def _runner(job_ref: _AssessmentPipelineJob) -> None:
+            try:
+                _run_assessment_pipeline_stage(
+                    assessment_id,
+                    target_stage=normalized_target,
+                    skip_review=skip_review,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Assessment pipeline stage failed for assessment_id=%s stage=%s",
+                    assessment_id,
+                    normalized_target,
+                )
+                _set_assessment_pipeline_job_state(
+                    assessment_id,
+                    stage=normalized_target,
+                    status="failed",
+                    message=f"Pipeline stage failed: {exc}",
+                    progress_percent=100,
+                )
+            finally:
+                with Session(engine) as session:
+                    run = _load_data_pull_run(session, job_ref.run_uid)
+                    if run and run.status in {JobRunStatus.queued, JobRunStatus.running}:
+                        _update_assessment_pipeline_run_state(
+                            assessment_id,
+                            job_ref.run_uid,
+                            stage=normalized_target,
+                            status="failed",
+                            message="Background pipeline worker exited unexpectedly.",
+                            progress_percent=100,
+                        )
+                with _ASSESSMENT_PIPELINE_JOBS_LOCK:
+                    current = _ASSESSMENT_PIPELINE_JOBS.get(assessment_id)
+                    if current is job_ref:
+                        current.thread = None
+
+        thread = threading.Thread(
+            target=_runner,
+            daemon=True,
+            name=f"assessment_pipeline_{assessment_id}_{normalized_target}",
+            args=(job,),
+        )
+        job.thread = thread
+        _ASSESSMENT_PIPELINE_JOBS[assessment_id] = job
         thread.start()
         return True
 
@@ -4608,6 +5217,8 @@ async def start_assessment(
 
     assessment.state = AssessmentState.in_progress
     assessment.started_at = datetime.utcnow()
+    assessment.pipeline_stage = PipelineStage.scans
+    assessment.pipeline_stage_updated_at = datetime.utcnow()
     assessment.updated_at = datetime.utcnow()
     session.add(assessment)
     session.commit()
@@ -4628,6 +5239,12 @@ async def run_assessment_scans(
     if assessment.state != AssessmentState.in_progress:
         raise HTTPException(status_code=400, detail="Assessment must be in progress to run scans")
 
+    assessment.pipeline_stage = PipelineStage.scans
+    assessment.pipeline_stage_updated_at = datetime.utcnow()
+    assessment.updated_at = datetime.utcnow()
+    session.add(assessment)
+    session.commit()
+
     _start_assessment_scan_job(assessment_id, "full")
 
     return RedirectResponse(url=f"/assessments/{assessment_id}", status_code=303)
@@ -4645,6 +5262,12 @@ async def refresh_assessment_scans(
 
     if assessment.state != AssessmentState.in_progress:
         raise HTTPException(status_code=400, detail="Assessment must be in progress to refresh scans")
+
+    assessment.pipeline_stage = PipelineStage.scans
+    assessment.pipeline_stage_updated_at = datetime.utcnow()
+    assessment.updated_at = datetime.utcnow()
+    session.add(assessment)
+    session.commit()
 
     _start_assessment_scan_job(assessment_id, "full")
 
@@ -4664,6 +5287,12 @@ async def refresh_assessment_scans_delta(
     if assessment.state != AssessmentState.in_progress:
         raise HTTPException(status_code=400, detail="Assessment must be in progress to refresh scans")
 
+    assessment.pipeline_stage = PipelineStage.scans
+    assessment.pipeline_stage_updated_at = datetime.utcnow()
+    assessment.updated_at = datetime.utcnow()
+    session.add(assessment)
+    session.commit()
+
     _start_assessment_scan_job(assessment_id, "delta")
 
     return RedirectResponse(url=f"/assessments/{assessment_id}", status_code=303)
@@ -4681,6 +5310,12 @@ async def rebuild_assessment_scans(
 
     if assessment.state != AssessmentState.in_progress:
         raise HTTPException(status_code=400, detail="Assessment must be in progress to rebuild scans")
+
+    assessment.pipeline_stage = PipelineStage.scans
+    assessment.pipeline_stage_updated_at = datetime.utcnow()
+    assessment.updated_at = datetime.utcnow()
+    session.add(assessment)
+    session.commit()
 
     _start_assessment_scan_job(assessment_id, "rebuild")
 
@@ -4702,6 +5337,8 @@ async def complete_assessment(
 
     assessment.state = AssessmentState.completed
     assessment.completed_at = datetime.utcnow()
+    assessment.pipeline_stage = PipelineStage.complete
+    assessment.pipeline_stage_updated_at = datetime.utcnow()
     assessment.updated_at = datetime.utcnow()
     session.add(assessment)
     session.commit()
@@ -5140,6 +5777,60 @@ async def update_result(
     return RedirectResponse(url=f"/results/{result_id}", status_code=303)
 
 
+@app.post("/api/results/{result_id}/review-status")
+async def api_update_result_review_status(
+    result_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Update result review status (and optional observations) via JSON API."""
+    result = session.get(ScanResult, result_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Result not found")
+
+    payload: Dict[str, Any] = {}
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            payload = {}
+    except Exception:
+        payload = {}
+
+    review_status_raw = str(payload.get("review_status") or "").strip()
+    if review_status_raw not in ReviewStatus._value2member_map_:
+        raise HTTPException(
+            status_code=400,
+            detail=f"review_status must be one of: {', '.join(ReviewStatus._value2member_map_.keys())}",
+        )
+
+    observations_raw = payload.get("observations")
+    observations: Optional[str] = None
+    if observations_raw is not None:
+        observations_text = str(observations_raw).strip()
+        observations = observations_text or None
+
+    result.review_status = ReviewStatus(review_status_raw)
+    if observations_raw is not None:
+        result.observations = observations
+    session.add(result)
+    session.commit()
+    session.refresh(result)
+
+    from .services.customization_sync import sync_single_result
+
+    sync_single_result(session, result)
+
+    return {
+        "success": True,
+        "result": {
+            "id": result.id,
+            "scan_id": result.scan_id,
+            "review_status": result.review_status.value if hasattr(result.review_status, "value") else str(result.review_status),
+            "observations": result.observations,
+        },
+    }
+
+
 # ============================================
 # API ROUTES (for AJAX and future MCP)
 # ============================================
@@ -5240,6 +5931,10 @@ async def api_assessment_scan_status(
                 except Exception:
                     pass
 
+    pipeline_stage = _pipeline_stage_value(assessment.pipeline_stage)
+    pipeline_run = _get_assessment_pipeline_job_snapshot(assessment_id, session=session)
+    review_gate = _assessment_review_gate_summary(session, assessment_id)
+
     return {
         "assessment_id": assessment_id,
         "counts": {
@@ -5250,7 +5945,129 @@ async def api_assessment_scan_status(
         "run_status": run_status,
         "data_sync": data_sync,
         "postflight_details": postflight_details,
+        "pipeline": {
+            "stage": pipeline_stage,
+            "stage_label": _PIPELINE_STAGE_LABELS.get(pipeline_stage, pipeline_stage.title()),
+            "stage_updated_at": (
+                assessment.pipeline_stage_updated_at.isoformat()
+                if assessment.pipeline_stage_updated_at
+                else None
+            ),
+            "active_run": pipeline_run,
+            "review_gate": review_gate,
+        },
         "last_updated": datetime.utcnow().isoformat(),
+    }
+
+
+@app.post("/api/assessments/{assessment_id}/advance-pipeline")
+async def api_advance_pipeline_stage(
+    assessment_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Advance assessment reasoning pipeline by triggering the next stage job."""
+    assessment = session.get(Assessment, assessment_id)
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    payload: Dict[str, Any] = {}
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            payload = {}
+    except Exception:
+        payload = {}
+
+    raw_target_stage = payload.get("target_stage")
+    if not raw_target_stage:
+        raise HTTPException(status_code=400, detail="target_stage is required")
+    target_stage = _pipeline_stage_value(raw_target_stage)
+
+    allowed_targets = {
+        PipelineStage.engines.value,
+        PipelineStage.observations.value,
+        PipelineStage.review.value,
+        PipelineStage.grouping.value,
+        PipelineStage.recommendations.value,
+    }
+    if target_stage not in allowed_targets:
+        raise HTTPException(
+            status_code=400,
+            detail=f"target_stage must be one of: {', '.join(sorted(allowed_targets))}",
+        )
+
+    skip_review = bool(payload.get("skip_review", False))
+    force = bool(payload.get("force", False))
+
+    current_stage = _pipeline_stage_value(assessment.pipeline_stage)
+    current_index = _pipeline_stage_index(current_stage)
+    target_index = _pipeline_stage_index(target_stage)
+
+    if not force:
+        if target_index < current_index:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot move backwards from {current_stage} to {target_stage}.",
+            )
+        allow_review_bypass = (
+            current_stage == PipelineStage.review.value
+            and target_stage == PipelineStage.grouping.value
+            and skip_review
+        )
+        if target_index > current_index + 1 and not allow_review_bypass:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Invalid stage transition from {current_stage} to {target_stage}. "
+                    "Advance stages sequentially."
+                ),
+            )
+
+    review_gate = _assessment_review_gate_summary(session, assessment_id)
+    if target_stage == PipelineStage.grouping.value and not skip_review and not review_gate["all_reviewed"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Review gate not satisfied. Mark all customized results reviewed or pass skip_review=true.",
+        )
+
+    if target_stage == PipelineStage.review.value:
+        skipped_count = 0
+        if skip_review and not review_gate["all_reviewed"]:
+            skipped_count = _mark_remaining_customizations_reviewed(session, assessment_id)
+            review_gate = _assessment_review_gate_summary(session, assessment_id)
+        _set_assessment_pipeline_stage(assessment_id, PipelineStage.review.value, session=session)
+        return {
+            "success": True,
+            "assessment_id": assessment_id,
+            "requested_stage": target_stage,
+            "current_stage": PipelineStage.review.value,
+            "skipped_review_count": skipped_count,
+            "review_gate": review_gate,
+            "pipeline_run": None,
+        }
+
+    started = _start_assessment_pipeline_job(
+        assessment_id,
+        target_stage=target_stage,
+        skip_review=skip_review,
+    )
+    if not started:
+        raise HTTPException(
+            status_code=409,
+            detail="A pipeline stage run is already active for this assessment.",
+        )
+
+    pipeline_run = _get_assessment_pipeline_job_snapshot(assessment_id, session=session)
+    refreshed = session.get(Assessment, assessment_id)
+    return {
+        "success": True,
+        "assessment_id": assessment_id,
+        "requested_stage": target_stage,
+        "current_stage": _pipeline_stage_value(refreshed.pipeline_stage if refreshed else assessment.pipeline_stage),
+        "skip_review": skip_review,
+        "pipeline_run": pipeline_run,
+        "review_gate": _assessment_review_gate_summary(session, assessment_id),
     }
 
 
@@ -5661,3 +6478,98 @@ async def api_instance_inventory(
         return {"success": True, "inventory": inventory}
     except ServiceNowClientError as e:
         return {"success": False, "error": str(e)}
+
+
+# ── Best Practice Admin API ──────────────────────────────────────────
+
+def _best_practice_to_dict(bp: BestPractice) -> Dict[str, Any]:
+    """Serialize a BestPractice row to a JSON-safe dict."""
+    return {
+        "id": bp.id,
+        "code": bp.code,
+        "title": bp.title,
+        "category": bp.category.value if hasattr(bp.category, "value") else bp.category,
+        "severity": bp.severity,
+        "description": bp.description,
+        "detection_hint": bp.detection_hint,
+        "recommendation": bp.recommendation,
+        "applies_to": bp.applies_to,
+        "is_active": bp.is_active,
+        "source_url": bp.source_url,
+    }
+
+
+@app.get("/api/best-practices")
+async def api_list_best_practices(
+    category: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    session: Session = Depends(get_session),
+):
+    """List all best practice checks with optional filtering."""
+    stmt = select(BestPractice).order_by(BestPractice.category, BestPractice.severity, BestPractice.code)
+    if category:
+        stmt = stmt.where(BestPractice.category == category)
+    if is_active is not None:
+        stmt = stmt.where(BestPractice.is_active == is_active)
+    rows = session.exec(stmt).all()
+    return {"best_practices": [_best_practice_to_dict(bp) for bp in rows]}
+
+
+@app.post("/api/best-practices", status_code=201)
+async def api_create_best_practice(
+    payload: Dict[str, Any] = Body(...),
+    session: Session = Depends(get_session),
+):
+    """Create a new best practice check."""
+    bp = BestPractice(
+        code=payload["code"],
+        title=payload["title"],
+        category=BestPracticeCategory(payload["category"]),
+        severity=payload.get("severity", "medium"),
+        description=payload.get("description"),
+        detection_hint=payload.get("detection_hint"),
+        recommendation=payload.get("recommendation"),
+        applies_to=payload.get("applies_to"),
+        is_active=payload.get("is_active", True),
+        source_url=payload.get("source_url"),
+    )
+    session.add(bp)
+    session.commit()
+    session.refresh(bp)
+    return _best_practice_to_dict(bp)
+
+
+@app.put("/api/best-practices/{bp_id}")
+async def api_update_best_practice(
+    bp_id: int,
+    payload: Dict[str, Any] = Body(...),
+    session: Session = Depends(get_session),
+):
+    """Update an existing best practice check."""
+    bp = session.get(BestPractice, bp_id)
+    if not bp:
+        raise HTTPException(status_code=404, detail="Best practice not found")
+    for key in ("title", "severity", "description", "detection_hint",
+                "recommendation", "applies_to", "is_active", "source_url"):
+        if key in payload:
+            setattr(bp, key, payload[key])
+    if "category" in payload:
+        bp.category = BestPracticeCategory(payload["category"])
+    bp.updated_at = datetime.utcnow()
+    session.add(bp)
+    session.commit()
+    session.refresh(bp)
+    return _best_practice_to_dict(bp)
+
+
+@app.get("/admin/best-practices", response_class=HTMLResponse)
+async def admin_best_practices_page(
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Admin page for managing best practice checks."""
+    categories = [c.value for c in BestPracticeCategory]
+    return templates.TemplateResponse("admin_best_practices.html", {
+        "request": request,
+        "categories": categories,
+    })
