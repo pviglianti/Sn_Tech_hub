@@ -378,6 +378,8 @@ TOOL_SPEC = ToolSpec(
 **Estimated effort**: 2-3 sessions
 **File**: Rewrite `src/mcp/tools/pipeline/feature_grouping.py`
 
+> Execution addendum (2026-03-04): UI surfacing + iterative AI orchestration details are defined in `docs/plans/2026-03-04-reasoning-layer-phase3-ui-ai-feature-orchestration.md`.
+
 ### 3.1 Architecture
 
 The enhanced grouping algorithm consumes all engine outputs and applies the 4-phase clustering design:

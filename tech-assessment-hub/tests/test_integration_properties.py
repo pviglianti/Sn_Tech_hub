@@ -7,9 +7,13 @@ from src.services.integration_properties import (
     FETCH_MAX_BATCHES,
     FETCH_REQUEST_TIMEOUT,
     PREFLIGHT_CONCURRENT_TYPES,
+    REASONING_FEATURE_MAX_ITERATIONS,
+    REASONING_FEATURE_MEMBERSHIP_DELTA_THRESHOLD,
+    REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE,
     list_integration_property_snapshots,
     load_fetch_properties,
     load_preflight_concurrent_types,
+    load_reasoning_engine_properties,
     update_integration_properties,
 )
 
@@ -216,3 +220,27 @@ def test_multiselect_snapshot_includes_options_and_max(db_session):
     assert prop["value_type"] == "multiselect"
     assert prop["max_selections"] == 5
     assert any(opt["value"] == "version_history" for opt in prop["options"])
+
+
+def test_load_reasoning_properties_feature_defaults(db_session):
+    props = load_reasoning_engine_properties(db_session)
+    assert props.feature_max_iterations == 3
+    assert props.feature_membership_delta_threshold == 0.02
+    assert props.feature_min_assignment_confidence == 0.6
+
+
+def test_load_reasoning_properties_feature_overrides(db_session, sample_instance):
+    update_integration_properties(
+        db_session,
+        {
+            REASONING_FEATURE_MAX_ITERATIONS: "7",
+            REASONING_FEATURE_MEMBERSHIP_DELTA_THRESHOLD: "0.15",
+            REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE: "0.85",
+        },
+        instance_id=sample_instance.id,
+    )
+
+    props = load_reasoning_engine_properties(db_session, instance_id=sample_instance.id)
+    assert props.feature_max_iterations == 7
+    assert props.feature_membership_delta_threshold == 0.15
+    assert props.feature_min_assignment_confidence == 0.85

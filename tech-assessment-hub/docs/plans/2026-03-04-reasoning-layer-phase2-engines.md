@@ -2334,3 +2334,11 @@ git commit -m "docs: update admin files for Phase 2 engine completion"
 | `src/database.py` | Register new tables + ALTER TABLE migration |
 | `src/mcp/tools/pipeline/run_engines.py` | Add 4 engines to registry |
 | `tests/test_reasoning_data_model.py` | Tests for new models |
+
+---
+
+## Next Plan Link
+
+After Phase 2 completion, continue with UI + iterative AI grouping orchestration in:
+
+`docs/plans/2026-03-04-reasoning-layer-phase3-ui-ai-feature-orchestration.md`

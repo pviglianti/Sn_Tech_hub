@@ -1,4 +1,4 @@
-"""Tests for MCP assessment methodology prompt content (Phase 2)."""
+"""Tests for MCP assessment methodology prompt content (Phase 2 + 3/4)."""
 
 import pytest
 
@@ -127,3 +127,111 @@ def test_expert_prompt_accepts_assessment_id_argument():
     assert "messages" in result
     text = result["messages"][0]["content"]["text"]
     assert len(text) > 100
+
+
+# --- Phase 3/4: Feature Reasoning Orchestrator prompt tests ---
+
+
+def test_feature_reasoning_orchestrator_prompt_registered():
+    """The feature_reasoning_orchestrator prompt must be registered."""
+    assert PROMPT_REGISTRY.has_prompt("feature_reasoning_orchestrator")
+
+
+def test_orchestrator_prompt_returns_valid_mcp_messages():
+    """Orchestrator prompt handler must return MCP-compliant message structure."""
+    result = PROMPT_REGISTRY.get_prompt(
+        "feature_reasoning_orchestrator", {"assessment_id": "99"}
+    )
+
+    assert "description" in result
+    assert "messages" in result
+    assert isinstance(result["messages"], list)
+    assert len(result["messages"]) >= 1
+
+    msg = result["messages"][0]
+    assert msg["role"] == "user"
+    assert msg["content"]["type"] == "text"
+    assert len(msg["content"]["text"]) > 100
+
+
+def test_orchestrator_prompt_includes_assessment_id_context():
+    """When assessment_id is provided, prompt should include active context."""
+    result = PROMPT_REGISTRY.get_prompt(
+        "feature_reasoning_orchestrator", {"assessment_id": "42"}
+    )
+    text = result["messages"][0]["content"]["text"]
+
+    assert "assessment_id=42" in text
+
+
+def test_orchestrator_prompt_references_pipeline_tools():
+    """Orchestrator prompt must reference the four key pipeline tools."""
+    result = PROMPT_REGISTRY.get_prompt(
+        "feature_reasoning_orchestrator", {"assessment_id": "1"}
+    )
+    text = result["messages"][0]["content"]["text"]
+
+    for tool_name in (
+        "seed_feature_groups",
+        "run_feature_reasoning",
+        "feature_grouping_status",
+        "upsert_feature_recommendation",
+    ):
+        assert tool_name in text, f"Missing tool reference: {tool_name}"
+
+
+def test_orchestrator_prompt_covers_convergence_logic():
+    """Orchestrator prompt must explain convergence criteria and decision logic."""
+    result = PROMPT_REGISTRY.get_prompt(
+        "feature_reasoning_orchestrator", {"assessment_id": "1"}
+    )
+    text = result["messages"][0]["content"]["text"]
+
+    assert "converged" in text.lower()
+    assert "should_continue" in text
+    assert "delta" in text
+
+
+def test_orchestrator_prompt_covers_pass_types():
+    """Orchestrator prompt must explain all four pass types."""
+    result = PROMPT_REGISTRY.get_prompt(
+        "feature_reasoning_orchestrator", {"assessment_id": "1"}
+    )
+    text = result["messages"][0]["content"]["text"]
+
+    for pass_type in ("auto", "observe", "group_refine", "verify"):
+        assert pass_type in text, f"Missing pass type: {pass_type}"
+
+
+def test_orchestrator_prompt_covers_ootb_recommendations():
+    """Orchestrator prompt must guide OOTB replacement recommendation flow."""
+    result = PROMPT_REGISTRY.get_prompt(
+        "feature_reasoning_orchestrator", {"assessment_id": "1"}
+    )
+    text = result["messages"][0]["content"]["text"]
+
+    assert "recommendation_type" in text
+    assert "ootb_capability_name" in text or "OOTB" in text
+    assert "product_name" in text or "product" in text.lower()
+
+
+def test_orchestrator_prompt_covers_non_negotiable_rules():
+    """Orchestrator must emphasize customized-only and human-override rules."""
+    result = PROMPT_REGISTRY.get_prompt(
+        "feature_reasoning_orchestrator", {"assessment_id": "1"}
+    )
+    text = result["messages"][0]["content"]["text"]
+
+    assert "customized" in text.lower()
+    assert "human" in text.lower()
+
+
+def test_expert_prompt_now_references_pipeline_tools():
+    """Expert prompt (Phase 2) should now also reference Phase 3+ pipeline tools."""
+    result = PROMPT_REGISTRY.get_prompt("tech_assessment_expert")
+    text = result["messages"][0]["content"]["text"]
+
+    assert "seed_feature_groups" in text
+    assert "run_feature_reasoning" in text
+    assert "feature_grouping_status" in text
+    assert "upsert_feature_recommendation" in text

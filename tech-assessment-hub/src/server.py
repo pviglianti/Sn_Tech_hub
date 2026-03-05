@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from .database import get_session, create_db_and_tables, engine
 from .models import (
-    Instance, Assessment, Scan, ScanResult, Feature, FeatureScanResult,
+    Instance, Assessment, Scan, ScanResult, Feature, FeatureScanResult, FeatureContextArtifact, FeatureRecommendation,
     GlobalApp, AppFileClass, NumberSequence,
     ConnectionStatus, AssessmentState, AssessmentType,
     ScanStatus,
@@ -26,7 +26,9 @@ from .models import (
     InstanceDataPull, DataPullType, DataPullStatus,
     Scope, Package, Application, UpdateSet, CustomerUpdateXML, VersionHistory,
     MetadataCustomization, InstancePlugin, PluginView, TableDefinition, InstanceAppFileType,
-    AppConfig, JobRun, JobEvent, JobRunStatus
+    AppConfig, JobRun, JobEvent, JobRunStatus,
+    CodeReference, StructuralRelationship, UpdateSetOverlap,
+    TemporalCluster, NamingCluster, TableColocationSummary, UpdateSetArtifactLink,
 )
 from .services.encryption import encrypt_password, decrypt_password
 from .services.sn_client import ServiceNowClient, ServiceNowClientError
@@ -1689,6 +1691,855 @@ def _query_scan_results_payload(
         "offset": offset,
         "limit": limit,
         "results": results,
+    }
+
+
+def _origin_type_value(result: ScanResult) -> Optional[str]:
+    if result.origin_type is None:
+        return None
+    if hasattr(result.origin_type, "value"):
+        return result.origin_type.value
+    return str(result.origin_type)
+
+
+def _is_customized_result(result: ScanResult) -> bool:
+    return (_origin_type_value(result) or "") in _CUSTOMIZED_ORIGIN_VALUES
+
+
+def _build_compact_result_payload(result: ScanResult) -> Dict[str, Any]:
+    origin_value = _origin_type_value(result)
+    return {
+        "id": result.id,
+        "scan_id": result.scan_id,
+        "sys_id": result.sys_id,
+        "name": result.name,
+        "table_name": result.table_name,
+        "origin_type": origin_value,
+        "is_customized": origin_value in _CUSTOMIZED_ORIGIN_VALUES,
+        "sys_updated_on": result.sys_updated_on.isoformat() if result.sys_updated_on else None,
+    }
+
+
+def _parse_result_id_list(value: Optional[str]) -> List[int]:
+    parsed = _safe_json(value, [])
+    result_ids: List[int] = []
+    if not isinstance(parsed, list):
+        return result_ids
+    for item in parsed:
+        candidate = None
+        if isinstance(item, dict):
+            candidate = item.get("scan_result_id") or item.get("result_id") or item.get("id")
+        else:
+            candidate = item
+        try:
+            if candidate is not None:
+                result_ids.append(int(candidate))
+        except (TypeError, ValueError):
+            continue
+    return result_ids
+
+
+def _scoped_scan_results(
+    session: Session,
+    *,
+    assessment_id: int,
+    scan_id: Optional[int] = None,
+) -> List[ScanResult]:
+    stmt = (
+        select(ScanResult)
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .where(Scan.assessment_id == assessment_id)
+    )
+    if scan_id is not None:
+        stmt = stmt.where(Scan.id == scan_id)
+    return session.exec(stmt).all()
+
+
+def _safe_float(value: Any, default: float = 1.0) -> float:
+    try:
+        if value is None:
+            return float(default)
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+_GROUPING_SIGNAL_KEYS = [
+    "update_set_overlap",
+    "update_set_artifact_link",
+    "code_reference",
+    "structural_relationship",
+    "temporal_cluster",
+    "naming_cluster",
+    "table_colocation",
+]
+
+
+def _build_grouping_signals_payload(
+    session: Session,
+    *,
+    assessment_id: int,
+    scan_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    scoped_results = _scoped_scan_results(session, assessment_id=assessment_id, scan_id=scan_id)
+    scoped_result_ids = {row.id for row in scoped_results if row.id is not None}
+
+    update_set_name_by_id: Dict[int, str] = {}
+    # Requery update-set names only for rows related to this assessment to keep payload scoped.
+    assessment_update_set_ids = {
+        row
+        for row in session.exec(
+            select(UpdateSetArtifactLink.update_set_id)
+            .where(UpdateSetArtifactLink.assessment_id == assessment_id)
+        ).all()
+        if row is not None
+    }
+    assessment_update_set_ids.update(
+        row
+        for row in session.exec(
+            select(UpdateSetOverlap.update_set_a_id)
+            .where(UpdateSetOverlap.assessment_id == assessment_id)
+        ).all()
+        if row is not None
+    )
+    assessment_update_set_ids.update(
+        row
+        for row in session.exec(
+            select(UpdateSetOverlap.update_set_b_id)
+            .where(UpdateSetOverlap.assessment_id == assessment_id)
+        ).all()
+        if row is not None
+    )
+    if assessment_update_set_ids:
+        for update_set in session.exec(
+            select(UpdateSet).where(UpdateSet.id.in_(list(assessment_update_set_ids)))
+        ).all():
+            if update_set.id is not None:
+                update_set_name_by_id[update_set.id] = update_set.name
+
+    signal_counts: Dict[str, int] = {key: 0 for key in _GROUPING_SIGNAL_KEYS}
+    signals: List[Dict[str, Any]] = []
+
+    def _add_signal(
+        *,
+        signal_type: str,
+        signal_id: int,
+        label: str,
+        member_ids: List[int],
+        confidence: float = 1.0,
+        metadata: Optional[Dict[str, Any]] = None,
+        evidence: Optional[Any] = None,
+        fallback_member_count: int = 0,
+    ) -> None:
+        scoped_member_ids = sorted({mid for mid in member_ids if mid in scoped_result_ids})
+        if scan_id is not None and not scoped_member_ids:
+            return
+
+        member_count = len(scoped_member_ids)
+        if member_count == 0 and scan_id is None and fallback_member_count > 0:
+            member_count = int(fallback_member_count)
+        if member_count <= 0:
+            return
+
+        signal_counts[signal_type] = signal_counts.get(signal_type, 0) + 1
+        signals.append(
+            {
+                "type": signal_type,
+                "id": signal_id,
+                "label": label,
+                "member_count": member_count,
+                "confidence": _safe_float(confidence, default=1.0),
+                "links": {
+                    "member_result_ids": scoped_member_ids,
+                    "member_result_urls": [f"/results/{rid}" for rid in scoped_member_ids],
+                },
+                "metadata": metadata or {},
+                "evidence": evidence if evidence is not None else {},
+            }
+        )
+
+    for row in session.exec(
+        select(UpdateSetOverlap).where(UpdateSetOverlap.assessment_id == assessment_id)
+    ).all():
+        member_ids = _parse_result_id_list(row.shared_records_json)
+        name_a = update_set_name_by_id.get(row.update_set_a_id, f"Update Set {row.update_set_a_id}")
+        name_b = update_set_name_by_id.get(row.update_set_b_id, f"Update Set {row.update_set_b_id}")
+        _add_signal(
+            signal_type="update_set_overlap",
+            signal_id=row.id,
+            label=f"{name_a} <> {name_b} ({row.signal_type})",
+            member_ids=member_ids,
+            confidence=_safe_float(row.overlap_score, default=1.0),
+            metadata={
+                "update_set_a_id": row.update_set_a_id,
+                "update_set_b_id": row.update_set_b_id,
+                "update_set_a_name": name_a,
+                "update_set_b_name": name_b,
+                "signal_type": row.signal_type,
+                "shared_record_count": row.shared_record_count,
+            },
+            evidence=_safe_json(row.evidence_json, {}),
+            fallback_member_count=int(row.shared_record_count or 0),
+        )
+
+    link_stmt = (
+        select(UpdateSetArtifactLink, ScanResult)
+        .join(ScanResult, UpdateSetArtifactLink.scan_result_id == ScanResult.id)
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .where(UpdateSetArtifactLink.assessment_id == assessment_id)
+    )
+    if scan_id is not None:
+        link_stmt = link_stmt.where(Scan.id == scan_id)
+    for link, result in session.exec(link_stmt).all():
+        update_set_name = update_set_name_by_id.get(link.update_set_id, f"Update Set {link.update_set_id}")
+        _add_signal(
+            signal_type="update_set_artifact_link",
+            signal_id=link.id,
+            label=f"{update_set_name} -> {result.name} ({link.link_source})",
+            member_ids=[result.id] if result.id is not None else [],
+            confidence=_safe_float(link.confidence, default=1.0),
+            metadata={
+                "update_set_id": link.update_set_id,
+                "update_set_name": update_set_name,
+                "scan_result_id": result.id,
+                "link_source": link.link_source,
+                "is_current": bool(link.is_current),
+            },
+            evidence=_safe_json(link.evidence_json, {}),
+            fallback_member_count=1,
+        )
+
+    code_stmt = (
+        select(CodeReference)
+        .where(CodeReference.assessment_id == assessment_id)
+    )
+    for ref in session.exec(code_stmt).all():
+        member_ids = [ref.source_scan_result_id]
+        if ref.target_scan_result_id:
+            member_ids.append(ref.target_scan_result_id)
+        _add_signal(
+            signal_type="code_reference",
+            signal_id=ref.id,
+            label=f"{ref.source_name} -> {ref.target_identifier} ({ref.reference_type})",
+            member_ids=member_ids,
+            confidence=_safe_float(ref.confidence, default=1.0),
+            metadata={
+                "source_scan_result_id": ref.source_scan_result_id,
+                "target_scan_result_id": ref.target_scan_result_id,
+                "source_table": ref.source_table,
+                "source_field": ref.source_field,
+                "reference_type": ref.reference_type,
+                "line_number": ref.line_number,
+            },
+            evidence={"code_snippet": ref.code_snippet} if ref.code_snippet else {},
+        )
+
+    structural_stmt = (
+        select(StructuralRelationship)
+        .where(StructuralRelationship.assessment_id == assessment_id)
+    )
+    for rel in session.exec(structural_stmt).all():
+        _add_signal(
+            signal_type="structural_relationship",
+            signal_id=rel.id,
+            label=f"{rel.relationship_type}: {rel.parent_scan_result_id} -> {rel.child_scan_result_id}",
+            member_ids=[rel.parent_scan_result_id, rel.child_scan_result_id],
+            confidence=_safe_float(rel.confidence, default=1.0),
+            metadata={
+                "relationship_type": rel.relationship_type,
+                "parent_scan_result_id": rel.parent_scan_result_id,
+                "child_scan_result_id": rel.child_scan_result_id,
+                "parent_field": rel.parent_field,
+            },
+        )
+
+    for cluster in session.exec(
+        select(TemporalCluster).where(TemporalCluster.assessment_id == assessment_id)
+    ).all():
+        member_ids = _parse_result_id_list(cluster.record_ids_json)
+        _add_signal(
+            signal_type="temporal_cluster",
+            signal_id=cluster.id,
+            label=f"{cluster.developer} ({cluster.cluster_start.isoformat()} - {cluster.cluster_end.isoformat()})",
+            member_ids=member_ids,
+            confidence=1.0,
+            metadata={
+                "developer": cluster.developer,
+                "cluster_start": cluster.cluster_start.isoformat() if cluster.cluster_start else None,
+                "cluster_end": cluster.cluster_end.isoformat() if cluster.cluster_end else None,
+                "avg_gap_minutes": cluster.avg_gap_minutes,
+            },
+            fallback_member_count=int(cluster.record_count or 0),
+        )
+
+    for cluster in session.exec(
+        select(NamingCluster).where(NamingCluster.assessment_id == assessment_id)
+    ).all():
+        member_ids = _parse_result_id_list(cluster.member_ids_json)
+        _add_signal(
+            signal_type="naming_cluster",
+            signal_id=cluster.id,
+            label=f"{cluster.cluster_label} ({cluster.pattern_type})",
+            member_ids=member_ids,
+            confidence=_safe_float(cluster.confidence, default=1.0),
+            metadata={
+                "cluster_label": cluster.cluster_label,
+                "pattern_type": cluster.pattern_type,
+            },
+            fallback_member_count=int(cluster.member_count or 0),
+        )
+
+    for summary in session.exec(
+        select(TableColocationSummary).where(TableColocationSummary.assessment_id == assessment_id)
+    ).all():
+        member_ids = _parse_result_id_list(summary.record_ids_json)
+        _add_signal(
+            signal_type="table_colocation",
+            signal_id=summary.id,
+            label=f"{summary.target_table} ({summary.record_count} artifacts)",
+            member_ids=member_ids,
+            confidence=1.0,
+            metadata={
+                "target_table": summary.target_table,
+                "artifact_types": _safe_json(summary.artifact_types_json, []),
+                "developers": _safe_json(summary.developers_json, []),
+            },
+            fallback_member_count=int(summary.record_count or 0),
+        )
+
+    signals.sort(
+        key=lambda row: (
+            row.get("type") or "",
+            -(int(row.get("member_count") or 0)),
+            -(float(row.get("confidence") or 0.0)),
+            int(row.get("id") or 0),
+        )
+    )
+
+    return {
+        "assessment_id": assessment_id,
+        "scan_id": scan_id,
+        "signal_counts": signal_counts,
+        "signals": signals,
+        "total_signals": len(signals),
+        "generated_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _build_feature_hierarchy_payload(
+    session: Session,
+    *,
+    assessment_id: int,
+    scan_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    scoped_results = _scoped_scan_results(session, assessment_id=assessment_id, scan_id=scan_id)
+    scoped_result_by_id = {row.id: row for row in scoped_results if row.id is not None}
+    scoped_result_ids = set(scoped_result_by_id.keys())
+
+    features = session.exec(
+        select(Feature)
+        .where(Feature.assessment_id == assessment_id)
+        .order_by(Feature.id.asc())
+    ).all()
+    feature_ids = [feature.id for feature in features if feature.id is not None]
+    recommendations_by_feature: Dict[int, List[Dict[str, Any]]] = {}
+    if feature_ids:
+        recommendation_rows = session.exec(
+            select(FeatureRecommendation)
+            .where(FeatureRecommendation.assessment_id == assessment_id)
+            .where(FeatureRecommendation.feature_id.in_(feature_ids))
+            .order_by(FeatureRecommendation.id.asc())
+        ).all()
+        for recommendation in recommendation_rows:
+            recommendations_by_feature.setdefault(recommendation.feature_id, []).append(
+                {
+                    "id": recommendation.id,
+                    "recommendation_type": recommendation.recommendation_type,
+                    "ootb_capability_name": recommendation.ootb_capability_name,
+                    "product_name": recommendation.product_name,
+                    "sku_or_license": recommendation.sku_or_license,
+                    "requires_plugins": _safe_json(recommendation.requires_plugins_json, []),
+                    "fit_confidence": recommendation.fit_confidence,
+                    "rationale": recommendation.rationale,
+                    "evidence": _safe_json(recommendation.evidence_json, {}),
+                    "created_at": recommendation.created_at.isoformat() if recommendation.created_at else None,
+                    "updated_at": recommendation.updated_at.isoformat() if recommendation.updated_at else None,
+                }
+            )
+
+    members_by_feature: Dict[int, List[Dict[str, Any]]] = {}
+    context_by_feature: Dict[int, List[Dict[str, Any]]] = {}
+    assigned_customized_result_ids: set = set()
+
+    if feature_ids:
+        link_stmt = (
+            select(FeatureScanResult, ScanResult)
+            .join(ScanResult, FeatureScanResult.scan_result_id == ScanResult.id)
+            .join(Scan, ScanResult.scan_id == Scan.id)
+            .where(FeatureScanResult.feature_id.in_(feature_ids))
+            .where(Scan.assessment_id == assessment_id)
+        )
+        if scan_id is not None:
+            link_stmt = link_stmt.where(Scan.id == scan_id)
+
+        for link, result in session.exec(link_stmt).all():
+            if result.id not in scoped_result_ids:
+                continue
+            origin_value = _origin_type_value(result)
+            payload = {
+                "link_id": link.id,
+                "feature_id": link.feature_id,
+                "scan_result": _build_compact_result_payload(result),
+                "membership_type": link.membership_type,
+                "assignment_source": link.assignment_source,
+                "assignment_confidence": link.assignment_confidence,
+                "iteration_number": link.iteration_number,
+                "is_primary": bool(link.is_primary),
+                "notes": link.notes,
+                "evidence": _safe_json(link.evidence_json, {}),
+            }
+            if origin_value in _CUSTOMIZED_ORIGIN_VALUES:
+                members_by_feature.setdefault(link.feature_id, []).append(payload)
+                assigned_customized_result_ids.add(result.id)
+            else:
+                context_payload = {
+                    "id": None,
+                    "feature_id": link.feature_id,
+                    "scan_result": _build_compact_result_payload(result),
+                    "context_type": "legacy_feature_link",
+                    "confidence": link.assignment_confidence if link.assignment_confidence is not None else 1.0,
+                    "iteration_number": link.iteration_number,
+                    "assignment_source": link.assignment_source,
+                    "evidence": _safe_json(link.evidence_json, {}),
+                }
+                context_by_feature.setdefault(link.feature_id, []).append(context_payload)
+
+        context_stmt = (
+            select(FeatureContextArtifact, ScanResult)
+            .join(ScanResult, FeatureContextArtifact.scan_result_id == ScanResult.id)
+            .join(Scan, ScanResult.scan_id == Scan.id)
+            .where(FeatureContextArtifact.assessment_id == assessment_id)
+            .where(FeatureContextArtifact.feature_id.in_(feature_ids))
+        )
+        if scan_id is not None:
+            context_stmt = context_stmt.where(Scan.id == scan_id)
+
+        for context, result in session.exec(context_stmt).all():
+            if result.id not in scoped_result_ids:
+                continue
+            payload = {
+                "id": context.id,
+                "feature_id": context.feature_id,
+                "scan_result": _build_compact_result_payload(result),
+                "context_type": context.context_type,
+                "confidence": context.confidence,
+                "iteration_number": context.iteration_number,
+                "evidence": _safe_json(context.evidence_json, {}),
+            }
+            context_by_feature.setdefault(context.feature_id, []).append(payload)
+
+    feature_nodes: Dict[int, Dict[str, Any]] = {}
+    children_by_parent: Dict[int, List[int]] = {}
+    root_feature_ids: List[int] = []
+    for feature in features:
+        if feature.id is None:
+            continue
+        node = {
+            "id": feature.id,
+            "name": feature.name,
+            "description": feature.description,
+            "parent_id": feature.parent_id,
+            "disposition": feature.disposition.value if feature.disposition else None,
+            "recommendation": feature.recommendation,
+            "ai_summary": feature.ai_summary,
+            "recommendations": recommendations_by_feature.get(feature.id, []),
+            "confidence_score": feature.confidence_score,
+            "confidence_level": feature.confidence_level,
+            "members": sorted(
+                members_by_feature.get(feature.id, []),
+                key=lambda item: (
+                    str(item["scan_result"].get("table_name") or ""),
+                    str(item["scan_result"].get("name") or ""),
+                    int(item["scan_result"].get("id") or 0),
+                ),
+            ),
+            "context_artifacts": sorted(
+                context_by_feature.get(feature.id, []),
+                key=lambda item: (
+                    str(item["scan_result"].get("table_name") or ""),
+                    str(item["scan_result"].get("name") or ""),
+                    int(item["scan_result"].get("id") or 0),
+                ),
+            ),
+            "children": [],
+        }
+        feature_nodes[feature.id] = node
+        if feature.parent_id and feature.parent_id in feature_nodes:
+            children_by_parent.setdefault(feature.parent_id, []).append(feature.id)
+        elif feature.parent_id and feature.parent_id not in feature_nodes:
+            # Parent may be defined later in sequence.
+            children_by_parent.setdefault(feature.parent_id, []).append(feature.id)
+        else:
+            root_feature_ids.append(feature.id)
+
+    # Resolve parent/child links now that all nodes exist.
+    for feature_id, node in feature_nodes.items():
+        parent_id = node.get("parent_id")
+        if parent_id and parent_id in feature_nodes:
+            if feature_id not in children_by_parent.setdefault(parent_id, []):
+                children_by_parent[parent_id].append(feature_id)
+            if feature_id in root_feature_ids:
+                root_feature_ids.remove(feature_id)
+
+    def _render_feature_node(feature_id: int) -> Optional[Dict[str, Any]]:
+        node = feature_nodes[feature_id]
+        rendered_children: List[Dict[str, Any]] = []
+        for child_id in sorted(children_by_parent.get(feature_id, [])):
+            if child_id not in feature_nodes:
+                continue
+            child = _render_feature_node(child_id)
+            if child is not None:
+                rendered_children.append(child)
+        rendered = dict(node)
+        rendered["children"] = rendered_children
+        rendered["member_count"] = len(rendered["members"])
+        rendered["context_artifact_count"] = len(rendered["context_artifacts"])
+        rendered["subtree_member_count"] = rendered["member_count"] + sum(
+            child.get("subtree_member_count", 0) for child in rendered_children
+        )
+        rendered["subtree_context_artifact_count"] = rendered["context_artifact_count"] + sum(
+            child.get("subtree_context_artifact_count", 0) for child in rendered_children
+        )
+        if scan_id is not None and rendered["subtree_member_count"] == 0 and rendered["subtree_context_artifact_count"] == 0:
+            return None
+        return rendered
+
+    hierarchy: List[Dict[str, Any]] = []
+    for feature_id in sorted(set(root_feature_ids)):
+        if feature_id not in feature_nodes:
+            continue
+        rendered = _render_feature_node(feature_id)
+        if rendered is not None:
+            hierarchy.append(rendered)
+
+    # Include orphaned children if parent rows are missing from scope.
+    rendered_ids = set()
+    stack = list(hierarchy)
+    while stack:
+        node = stack.pop()
+        rendered_ids.add(node["id"])
+        stack.extend(node.get("children", []))
+    for feature_id in sorted(feature_nodes.keys()):
+        if feature_id in rendered_ids:
+            continue
+        rendered = _render_feature_node(feature_id)
+        if rendered is not None:
+            hierarchy.append(rendered)
+
+    ungrouped_by_class: Dict[str, List[Dict[str, Any]]] = {}
+    for result in scoped_results:
+        if result.id is None or not _is_customized_result(result):
+            continue
+        if result.id in assigned_customized_result_ids:
+            continue
+        key = str(result.table_name or "unknown")
+        ungrouped_by_class.setdefault(key, []).append(_build_compact_result_payload(result))
+
+    ungrouped = [
+        {
+            "app_file_class": app_file_class,
+            "count": len(rows),
+            "results": sorted(
+                rows,
+                key=lambda row: (
+                    str(row.get("name") or ""),
+                    int(row.get("id") or 0),
+                ),
+            ),
+        }
+        for app_file_class, rows in sorted(ungrouped_by_class.items(), key=lambda item: item[0])
+    ]
+
+    def _count_feature_nodes(nodes: List[Dict[str, Any]]) -> int:
+        total = 0
+        for node in nodes:
+            total += 1
+            total += _count_feature_nodes(node.get("children", []))
+        return total
+
+    context_total = sum(len(rows) for rows in context_by_feature.values())
+
+    return {
+        "assessment_id": assessment_id,
+        "scan_id": scan_id,
+        "features": hierarchy,
+        "ungrouped_customizations": ungrouped,
+        "summary": {
+            "feature_count": _count_feature_nodes(hierarchy),
+            "customized_member_count": len(assigned_customized_result_ids),
+            "context_artifact_count": context_total,
+            "ungrouped_customized_count": sum(item["count"] for item in ungrouped),
+        },
+        "generated_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _build_feature_recommendation_payload(recommendation: FeatureRecommendation) -> Dict[str, Any]:
+    return {
+        "id": recommendation.id,
+        "instance_id": recommendation.instance_id,
+        "assessment_id": recommendation.assessment_id,
+        "feature_id": recommendation.feature_id,
+        "recommendation_type": recommendation.recommendation_type,
+        "ootb_capability_name": recommendation.ootb_capability_name,
+        "product_name": recommendation.product_name,
+        "sku_or_license": recommendation.sku_or_license,
+        "requires_plugins": _safe_json(recommendation.requires_plugins_json, []),
+        "fit_confidence": recommendation.fit_confidence,
+        "rationale": recommendation.rationale,
+        "evidence": _safe_json(recommendation.evidence_json, {}),
+        "created_at": recommendation.created_at.isoformat() if recommendation.created_at else None,
+        "updated_at": recommendation.updated_at.isoformat() if recommendation.updated_at else None,
+    }
+
+
+def _build_result_grouping_evidence_payload(session: Session, *, result_id: int) -> Dict[str, Any]:
+    result = session.get(ScanResult, result_id)
+    if not result:
+        raise ValueError("Result not found")
+    scan = session.get(Scan, result.scan_id)
+    if not scan:
+        raise ValueError("Scan not found")
+    assessment = session.get(Assessment, scan.assessment_id)
+    if not assessment:
+        raise ValueError("Assessment not found")
+
+    assignment_rows = session.exec(
+        select(FeatureScanResult, Feature)
+        .join(Feature, FeatureScanResult.feature_id == Feature.id)
+        .where(FeatureScanResult.scan_result_id == result_id)
+        .where(Feature.assessment_id == assessment.id)
+        .order_by(FeatureScanResult.iteration_number.asc(), FeatureScanResult.created_at.asc(), Feature.id.asc())
+    ).all()
+
+    feature_assignments: List[Dict[str, Any]] = []
+    feature_ids: List[int] = []
+    for link, feature in assignment_rows:
+        feature_assignments.append(
+            {
+                "link_id": link.id,
+                "feature_id": feature.id,
+                "feature_name": feature.name,
+                "feature_description": feature.description,
+                "is_primary": bool(link.is_primary),
+                "membership_type": link.membership_type,
+                "assignment_source": link.assignment_source,
+                "assignment_confidence": link.assignment_confidence,
+                "iteration_number": link.iteration_number,
+                "created_at": link.created_at.isoformat() if link.created_at else None,
+                "notes": link.notes,
+                "evidence": _safe_json(link.evidence_json, {}),
+            }
+        )
+        if feature.id is not None:
+            feature_ids.append(feature.id)
+
+    feature_recommendations: List[Dict[str, Any]] = []
+    if feature_ids:
+        recommendation_rows = session.exec(
+            select(FeatureRecommendation)
+            .where(FeatureRecommendation.assessment_id == assessment.id)
+            .where(FeatureRecommendation.feature_id.in_(feature_ids))
+            .order_by(FeatureRecommendation.id.asc())
+        ).all()
+        feature_recommendations = [
+            _build_feature_recommendation_payload(row) for row in recommendation_rows
+        ]
+
+    grouping_payload = _build_grouping_signals_payload(
+        session,
+        assessment_id=assessment.id,
+        scan_id=scan.id,
+    )
+    deterministic_signals = [
+        signal
+        for signal in grouping_payload["signals"]
+        if result_id in signal.get("links", {}).get("member_result_ids", [])
+    ]
+
+    update_set_links = session.exec(
+        select(UpdateSetArtifactLink, UpdateSet)
+        .join(UpdateSet, UpdateSetArtifactLink.update_set_id == UpdateSet.id)
+        .where(UpdateSetArtifactLink.assessment_id == assessment.id)
+        .where(UpdateSetArtifactLink.scan_result_id == result_id)
+        .order_by(UpdateSetArtifactLink.id.asc())
+    ).all()
+
+    related_update_sets: List[Dict[str, Any]] = []
+    update_set_ids: set = set()
+    for link, update_set in update_set_links:
+        if update_set.id is not None:
+            update_set_ids.add(update_set.id)
+        related_update_sets.append(
+            {
+                "link_id": link.id,
+                "update_set_id": update_set.id,
+                "update_set_name": update_set.name,
+                "link_source": link.link_source,
+                "is_current": bool(link.is_current),
+                "confidence": link.confidence,
+                "evidence": _safe_json(link.evidence_json, {}),
+            }
+        )
+
+    if result.update_set_id and result.update_set_id not in update_set_ids:
+        update_set = session.get(UpdateSet, result.update_set_id)
+        if update_set:
+            update_set_ids.add(update_set.id)
+            related_update_sets.append(
+                {
+                    "link_id": None,
+                    "update_set_id": update_set.id,
+                    "update_set_name": update_set.name,
+                    "link_source": "scan_result_current_fk",
+                    "is_current": True,
+                    "confidence": 1.0,
+                    "evidence": {"source": "scan_result.update_set_id"},
+                }
+            )
+
+    related_overlaps: List[Dict[str, Any]] = []
+    overlap_rows = session.exec(
+        select(UpdateSetOverlap)
+        .where(UpdateSetOverlap.assessment_id == assessment.id)
+        .where(
+            or_(
+                UpdateSetOverlap.update_set_a_id.in_(list(update_set_ids)) if update_set_ids else False,
+                UpdateSetOverlap.update_set_b_id.in_(list(update_set_ids)) if update_set_ids else False,
+            )
+        )
+    ).all() if update_set_ids else []
+
+    for overlap in overlap_rows:
+        member_ids = _parse_result_id_list(overlap.shared_records_json)
+        if member_ids and result_id not in set(member_ids):
+            continue
+        related_overlaps.append(
+            {
+                "id": overlap.id,
+                "update_set_a_id": overlap.update_set_a_id,
+                "update_set_b_id": overlap.update_set_b_id,
+                "shared_record_count": overlap.shared_record_count,
+                "overlap_score": overlap.overlap_score,
+                "signal_type": overlap.signal_type,
+                "evidence": _safe_json(overlap.evidence_json, {}),
+            }
+        )
+
+    related_customized: List[Dict[str, Any]] = []
+    related_context: List[Dict[str, Any]] = []
+    seen_customized_ids: set = set()
+    seen_context_keys: set = set()
+
+    if feature_ids:
+        related_member_rows = session.exec(
+            select(FeatureScanResult, ScanResult, Feature)
+            .join(ScanResult, FeatureScanResult.scan_result_id == ScanResult.id)
+            .join(Feature, FeatureScanResult.feature_id == Feature.id)
+            .where(FeatureScanResult.feature_id.in_(feature_ids))
+            .where(ScanResult.id != result_id)
+            .where(Feature.assessment_id == assessment.id)
+        ).all()
+        for link, related_result, feature in related_member_rows:
+            row_payload = {
+                "feature_id": feature.id,
+                "feature_name": feature.name,
+                "scan_result": _build_compact_result_payload(related_result),
+                "membership_type": link.membership_type,
+                "assignment_source": link.assignment_source,
+                "assignment_confidence": link.assignment_confidence,
+                "iteration_number": link.iteration_number,
+                "evidence": _safe_json(link.evidence_json, {}),
+            }
+            if _is_customized_result(related_result):
+                if related_result.id in seen_customized_ids:
+                    continue
+                seen_customized_ids.add(related_result.id)
+                related_customized.append(row_payload)
+            else:
+                key = (feature.id, related_result.id, "legacy_feature_link")
+                if key in seen_context_keys:
+                    continue
+                seen_context_keys.add(key)
+                related_context.append(
+                    {
+                        "feature_id": feature.id,
+                        "feature_name": feature.name,
+                        "scan_result": _build_compact_result_payload(related_result),
+                        "context_type": "legacy_feature_link",
+                        "confidence": link.assignment_confidence if link.assignment_confidence is not None else 1.0,
+                        "iteration_number": link.iteration_number,
+                        "assignment_source": link.assignment_source,
+                        "evidence": _safe_json(link.evidence_json, {}),
+                    }
+                )
+
+        context_rows = session.exec(
+            select(FeatureContextArtifact, ScanResult, Feature)
+            .join(ScanResult, FeatureContextArtifact.scan_result_id == ScanResult.id)
+            .join(Feature, FeatureContextArtifact.feature_id == Feature.id)
+            .where(FeatureContextArtifact.feature_id.in_(feature_ids))
+            .where(ScanResult.id != result_id)
+            .where(Feature.assessment_id == assessment.id)
+        ).all()
+        for context, related_result, feature in context_rows:
+            key = (feature.id, related_result.id, context.context_type)
+            if key in seen_context_keys:
+                continue
+            seen_context_keys.add(key)
+            related_context.append(
+                {
+                    "feature_id": feature.id,
+                    "feature_name": feature.name,
+                    "scan_result": _build_compact_result_payload(related_result),
+                    "context_type": context.context_type,
+                    "confidence": context.confidence,
+                    "iteration_number": context.iteration_number,
+                    "evidence": _safe_json(context.evidence_json, {}),
+                }
+            )
+
+    iteration_history = [
+        {
+            "iteration_number": item["iteration_number"],
+            "assignment_source": item["assignment_source"],
+            "feature_id": item["feature_id"],
+            "feature_name": item["feature_name"],
+            "assignment_confidence": item["assignment_confidence"],
+            "created_at": item["created_at"],
+        }
+        for item in feature_assignments
+    ]
+
+    return {
+        "result": {
+            **_build_compact_result_payload(result),
+            "assessment_id": assessment.id,
+            "instance_id": assessment.instance_id,
+        },
+        "feature_assignments": feature_assignments,
+        "feature_recommendations": feature_recommendations,
+        "deterministic_signals": deterministic_signals,
+        "related_update_sets": {
+            "update_sets": related_update_sets,
+            "overlaps": related_overlaps,
+        },
+        "related_artifacts": {
+            "customized": related_customized,
+            "context": related_context,
+        },
+        "iteration_history": iteration_history,
+        "generated_at": datetime.utcnow().isoformat(),
     }
 
 
@@ -4601,6 +5452,183 @@ async def api_scan_results(
     )
     payload["scan_id"] = scan_id
     return payload
+
+
+@app.get("/api/assessments/{assessment_id}/grouping-signals")
+async def api_assessment_grouping_signals(
+    assessment_id: int,
+    session: Session = Depends(get_session),
+):
+    """Unified grouping-signal summary for an assessment."""
+    assessment = session.get(Assessment, assessment_id)
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    return _build_grouping_signals_payload(session, assessment_id=assessment_id)
+
+
+@app.get("/api/scans/{scan_id}/grouping-signals")
+async def api_scan_grouping_signals(
+    scan_id: int,
+    session: Session = Depends(get_session),
+):
+    """Unified grouping-signal summary for a single scan."""
+    scan = session.get(Scan, scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    return _build_grouping_signals_payload(
+        session,
+        assessment_id=scan.assessment_id,
+        scan_id=scan_id,
+    )
+
+
+@app.get("/api/results/{result_id}/grouping-evidence")
+async def api_result_grouping_evidence(
+    result_id: int,
+    session: Session = Depends(get_session),
+):
+    """Result-level evidence used for feature grouping decisions."""
+    result = session.get(ScanResult, result_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Result not found")
+    try:
+        return _build_result_grouping_evidence_payload(session, result_id=result_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/api/assessments/{assessment_id}/feature-hierarchy")
+async def api_assessment_feature_hierarchy(
+    assessment_id: int,
+    session: Session = Depends(get_session),
+):
+    """Assessment-scoped feature hierarchy with member/context split."""
+    assessment = session.get(Assessment, assessment_id)
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    return _build_feature_hierarchy_payload(session, assessment_id=assessment_id)
+
+
+@app.get("/api/scans/{scan_id}/feature-hierarchy")
+async def api_scan_feature_hierarchy(
+    scan_id: int,
+    session: Session = Depends(get_session),
+):
+    """Scan-scoped subset of feature hierarchy with ungrouped bucket."""
+    scan = session.get(Scan, scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    return _build_feature_hierarchy_payload(
+        session,
+        assessment_id=scan.assessment_id,
+        scan_id=scan_id,
+    )
+
+
+@app.get("/api/features/{feature_id}/recommendations")
+async def api_feature_recommendations(
+    feature_id: int,
+    session: Session = Depends(get_session),
+):
+    """Get structured OOTB recommendations persisted for a feature."""
+    feature = session.get(Feature, feature_id)
+    if not feature:
+        raise HTTPException(status_code=404, detail="Feature not found")
+
+    rows = session.exec(
+        select(FeatureRecommendation)
+        .where(FeatureRecommendation.feature_id == feature_id)
+        .order_by(FeatureRecommendation.id.asc())
+    ).all()
+    return {
+        "feature_id": feature_id,
+        "assessment_id": feature.assessment_id,
+        "recommendations": [_build_feature_recommendation_payload(row) for row in rows],
+    }
+
+
+@app.post("/api/features/{feature_id}/recommendations")
+async def api_upsert_feature_recommendation(
+    feature_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Create or update a structured feature recommendation row."""
+    feature = session.get(Feature, feature_id)
+    if not feature:
+        raise HTTPException(status_code=404, detail="Feature not found")
+
+    assessment = session.get(Assessment, feature.assessment_id)
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON body must be an object")
+
+    recommendation_id = payload.get("id")
+    recommendation: Optional[FeatureRecommendation] = None
+    if recommendation_id is not None:
+        recommendation = session.get(FeatureRecommendation, int(recommendation_id))
+        if not recommendation or recommendation.feature_id != feature_id:
+            raise HTTPException(status_code=404, detail="Recommendation not found for feature")
+    else:
+        recommendation = FeatureRecommendation(
+            instance_id=assessment.instance_id,
+            assessment_id=assessment.id,
+            feature_id=feature_id,
+            recommendation_type="keep",
+        )
+
+    if "recommendation_type" in payload:
+        recommendation.recommendation_type = str(payload.get("recommendation_type") or "").strip() or recommendation.recommendation_type
+    if not str(recommendation.recommendation_type or "").strip():
+        raise HTTPException(status_code=400, detail="recommendation_type is required")
+
+    for field_name in (
+        "ootb_capability_name",
+        "product_name",
+        "sku_or_license",
+        "rationale",
+    ):
+        if field_name in payload:
+            value = payload.get(field_name)
+            setattr(recommendation, field_name, None if value is None else str(value))
+
+    if "fit_confidence" in payload:
+        raw = payload.get("fit_confidence")
+        recommendation.fit_confidence = None if raw in (None, "") else float(raw)
+
+    if "requires_plugins" in payload:
+        raw_plugins = payload.get("requires_plugins")
+        if raw_plugins is None:
+            recommendation.requires_plugins_json = None
+        elif isinstance(raw_plugins, str):
+            recommendation.requires_plugins_json = raw_plugins
+        else:
+            recommendation.requires_plugins_json = json.dumps(raw_plugins, sort_keys=True)
+
+    if "evidence" in payload:
+        raw_evidence = payload.get("evidence")
+        if raw_evidence is None:
+            recommendation.evidence_json = None
+        elif isinstance(raw_evidence, str):
+            recommendation.evidence_json = raw_evidence
+        else:
+            recommendation.evidence_json = json.dumps(raw_evidence, sort_keys=True)
+
+    recommendation.updated_at = datetime.utcnow()
+    session.add(recommendation)
+    session.commit()
+    session.refresh(recommendation)
+
+    return {
+        "success": True,
+        "recommendation": _build_feature_recommendation_payload(recommendation),
+    }
 
 
 @app.get("/api/instances/{instance_id}/inventory")

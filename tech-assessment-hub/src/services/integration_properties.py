@@ -49,6 +49,9 @@ REASONING_TEMPORAL_GAP_THRESHOLD = "reasoning.temporal.gap_threshold_minutes"
 REASONING_TEMPORAL_MIN_CLUSTER_SIZE = "reasoning.temporal.min_cluster_size"
 REASONING_NAMING_MIN_CLUSTER_SIZE = "reasoning.naming.min_cluster_size"
 REASONING_NAMING_MIN_PREFIX_TOKENS = "reasoning.naming.min_prefix_tokens"
+REASONING_FEATURE_MAX_ITERATIONS = "reasoning.feature.max_iterations"
+REASONING_FEATURE_MEMBERSHIP_DELTA_THRESHOLD = "reasoning.feature.membership_delta_threshold"
+REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE = "reasoning.feature.min_assignment_confidence"
 
 # Common IANA timezone choices for the select dropdown
 TIMEZONE_OPTIONS: List[Tuple[str, str]] = [
@@ -86,6 +89,9 @@ class ReasoningEngineProperties:
     temporal_min_cluster_size: int = 2
     naming_min_cluster_size: int = 2
     naming_min_prefix_tokens: int = 2
+    feature_max_iterations: int = 3
+    feature_membership_delta_threshold: float = 0.02
+    feature_min_assignment_confidence: float = 0.6
 
 
 @dataclass(frozen=True)
@@ -137,6 +143,9 @@ PROPERTY_DEFAULTS: Dict[str, str] = {
     REASONING_TEMPORAL_MIN_CLUSTER_SIZE: "2",
     REASONING_NAMING_MIN_CLUSTER_SIZE: "2",
     REASONING_NAMING_MIN_PREFIX_TOKENS: "2",
+    REASONING_FEATURE_MAX_ITERATIONS: "3",
+    REASONING_FEATURE_MEMBERSHIP_DELTA_THRESHOLD: "0.02",
+    REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE: "0.6",
 }
 
 PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
@@ -343,6 +352,52 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         section=SECTION_REASONING,
         min_value=1,
         max_value=10,
+    ),
+    REASONING_FEATURE_MAX_ITERATIONS: IntegrationPropertyDefinition(
+        key=REASONING_FEATURE_MAX_ITERATIONS,
+        label="Feature Reasoning Max Iterations",
+        description=(
+            "Maximum reasoning passes before the feature grouping loop stops, "
+            "even if convergence has not yet been reached."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[REASONING_FEATURE_MAX_ITERATIONS],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="reasoning",
+        section=SECTION_REASONING,
+        min_value=1,
+        max_value=20,
+    ),
+    REASONING_FEATURE_MEMBERSHIP_DELTA_THRESHOLD: IntegrationPropertyDefinition(
+        key=REASONING_FEATURE_MEMBERSHIP_DELTA_THRESHOLD,
+        label="Feature Membership Delta Threshold",
+        description=(
+            "Convergence threshold for feature grouping passes. "
+            "If membership change ratio falls below this value and no high-confidence "
+            "changes remain, the run is considered converged."
+        ),
+        value_type="float",
+        default=PROPERTY_DEFAULTS[REASONING_FEATURE_MEMBERSHIP_DELTA_THRESHOLD],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="reasoning",
+        section=SECTION_REASONING,
+        min_value=0.0,
+        max_value=1.0,
+    ),
+    REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE: IntegrationPropertyDefinition(
+        key=REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE,
+        label="Feature Min Assignment Confidence",
+        description=(
+            "Minimum confidence considered high-confidence when evaluating "
+            "membership-change convergence in reasoning passes."
+        ),
+        value_type="float",
+        default=PROPERTY_DEFAULTS[REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="reasoning",
+        section=SECTION_REASONING,
+        min_value=0.0,
+        max_value=1.0,
     ),
 }
 
@@ -611,6 +666,24 @@ def load_reasoning_engine_properties(
             session,
             REASONING_NAMING_MIN_PREFIX_TOKENS,
             defaults.naming_min_prefix_tokens,
+            instance_id=instance_id,
+        ),
+        feature_max_iterations=_get_int(
+            session,
+            REASONING_FEATURE_MAX_ITERATIONS,
+            defaults.feature_max_iterations,
+            instance_id=instance_id,
+        ),
+        feature_membership_delta_threshold=_get_float(
+            session,
+            REASONING_FEATURE_MEMBERSHIP_DELTA_THRESHOLD,
+            defaults.feature_membership_delta_threshold,
+            instance_id=instance_id,
+        ),
+        feature_min_assignment_confidence=_get_float(
+            session,
+            REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE,
+            defaults.feature_min_assignment_confidence,
             instance_id=instance_id,
         ),
     )

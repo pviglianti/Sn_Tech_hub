@@ -10,7 +10,12 @@
 - [ ] [owner:human] Visual QA deep-link flow: preflight → Job Log with preloaded conditions.
 - [ ] [owner:human] Visual QA #2 Phase 2 durable status (dictionary modal, CSDM ingestion bar, scan runtime bar).
 - [ ] [owner:human] Reasoning Phase 2 validation: run `run_preprocessing_engines` (all 6 engines) on a real assessment and spot-check generated rows in Data Browser.
-- [ ] [owner:both] Generalize coordination protocol: make `phase2_coordination.md` pattern into a generic, reusable agent-to-agent protocol (per user request).
+- [x] [owner:both] Generalize coordination protocol: `agent_coordination_protocol.md` created, `AGENTS.md` updated.
+- [x] [owner:both] **Phase 3 planning**: Engine output UI + enhanced features tab + AI reasoning loop + OOTB replacement analysis. Plan published at `tech-assessment-hub/docs/plans/2026-03-04-reasoning-layer-phase3-ui-ai-feature-orchestration.md`; chat coordination in `phase3_planning_chat.md`.
+- [x] [owner:codex] Phase 3 Codex scope complete (P3A/P3B/P3D/P4A + P4C backend): data model/API/provenance, unified grouping-signal/hierarchy/evidence APIs, deterministic `seed_feature_groups`, one-pass `run_feature_reasoning`, `feature_grouping_status`, structured feature recommendation persistence surfaces, full regression green (`305 passed`).
+- [x] [owner:claude] Phase 3 implementation kickoff (P3C/P4B): grouping-signal tabs + feature hierarchy UI and prompt/skill updates; align to Codex API contracts.
+- [x] [owner:claude] Cross-review Codex Phase 3 backend contracts and confirm/patch any UI-required payload diffs in `phase3_planning_chat.md`.
+- [ ] [owner:human] Phase 3/P4D final gate: execute manual QA checklist from `phase3_planning_chat.md` (QA-1..QA-14) on real assessment data after running `run_preprocessing_engines` → `seed_feature_groups` / `run_feature_reasoning`, then mark phase done.
 - [ ] [owner:human] Reasoning Phase 1 validation: run `run_preprocessing_engines` tool on a real assessment and spot-check generated `code_reference` + `structural_relationship` rows in Data Browser.
 - [ ] [owner:any] Rabbit hole priority config — modular/adjustable rules for which dependency types to follow.
 - [ ] [owner:any] Catch-all label table — mapping app file class → display label (sys_dictionary → "Form Fields", etc.).

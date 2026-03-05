@@ -1,9 +1,13 @@
-"""Assessment methodology prompts for MCP (Phase 2).
+"""Assessment methodology prompts for MCP (Phase 2 + Phase 3/4).
 
 These prompts teach an AI model how to conduct a ServiceNow technical
 assessment using the tools and data available through this MCP server.
 Content is derived from the assessment guide v3, AI reasoning pipeline
 domain knowledge, and grouping signals documentation.
+
+Phase 3/4 additions:
+- feature_reasoning_orchestrator prompt — drives the iterative AI reasoning
+  loop for feature grouping, convergence, and OOTB recommendations.
 """
 
 from typing import Any, Dict, List
@@ -218,6 +222,19 @@ as they emerge.
 (e.g., "which customized records share update sets with this one?").
 - **`get_feature_detail`** — Read existing feature with all linked results.
 
+**Automated feature grouping pipeline (Phase 3+):**
+- **`seed_feature_groups`** — Deterministic seeding: builds a weighted graph \
+from all 7 engine signal types, clusters via connected components, creates \
+Features with customized members and context artifacts. Run once before AI \
+reasoning passes.
+- **`run_feature_reasoning`** — Execute one AI reasoning pass (auto, observe, \
+group_refine, or verify). Returns convergence status, delta metrics, and \
+recommendation on whether to continue. Call iteratively until converged.
+- **`feature_grouping_status`** — Check current grouping progress: run status, \
+iterations completed, coverage ratio, feature count.
+- **`upsert_feature_recommendation`** — Persist OOTB replacement recommendations \
+per feature with product, SKU, plugins, confidence, and rationale.
+
 ---
 
 ## 8. Token Efficiency Rules
@@ -290,6 +307,175 @@ truly unused? Could removal break something?
 """
 
 
+FEATURE_REASONING_ORCHESTRATOR_TEXT = """\
+# Feature Grouping Reasoning Orchestrator
+
+You are orchestrating an iterative AI reasoning loop that refines feature \
+grouping for a ServiceNow technical assessment. The deterministic engines \
+have already run; your job is to use their outputs as seeds, then reason \
+about merges, splits, and reassignments until groupings are stable.
+
+---
+
+## 1. Prerequisite Check
+
+Before starting the reasoning loop, ensure:
+- An assessment exists and has completed scans.
+- Preprocessing engines have been run (`run_preprocessing_engines`).
+- You know the `assessment_id`.
+
+---
+
+## 2. Pipeline Steps (in order)
+
+### Step 1: Seed Feature Groups
+
+Call **`seed_feature_groups`** with the `assessment_id`. This:
+- Builds a weighted graph from 7 engine signal types.
+- Clusters connected components into candidate features.
+- Creates Feature rows with customized records as members and non-customized \
+records as context artifacts.
+
+Review the output: `cluster_count`, `grouped_count`, `ungrouped_count`. If \
+`ungrouped_count` is large relative to total customized records, note this — \
+those records need manual analysis or weaker-signal grouping in later passes.
+
+### Step 2: Iterative Reasoning Loop
+
+Call **`run_feature_reasoning`** repeatedly. Each call executes ONE pass.
+
+**Pass type selection:**
+- Use `pass_type="auto"` unless you have a specific reason to override.
+- `auto` selects `group_refine` on first pass (if no engine memberships exist) \
+and `verify` on subsequent passes.
+- Use `pass_type="group_refine"` explicitly to force merge/split analysis.
+- Use `pass_type="verify"` to validate current assignments are stable.
+- Use `pass_type="observe"` for read-only analysis without mutations.
+
+**After each pass, read the response:**
+```
+{
+  "converged": true/false,
+  "should_continue": true/false,
+  "delta": {
+    "changed_results": 5,
+    "delta_ratio": 0.03,
+    "high_confidence_changes": 0
+  },
+  "iteration_number": 2,
+  "seed_result": { ... }  // only on first pass if seeding occurred
+}
+```
+
+**Decision logic after each pass:**
+1. If `converged` is `true` → STOP. Groupings are stable.
+2. If `should_continue` is `false` → STOP. Max iterations reached.
+3. If `delta.changed_results` is 0 AND `delta.high_confidence_changes` is 0 → \
+STOP. No movement.
+4. Otherwise → call `run_feature_reasoning` again (next iteration).
+
+**Typical loop: 2–4 passes.** If you reach 5+ passes without convergence, \
+stop and check `feature_grouping_status` for anomalies.
+
+### Step 3: Review and Refine Features
+
+After convergence, use **`feature_grouping_status`** to check coverage:
+- `coverage.coverage_ratio` should be > 0.8 (80%+ customized records assigned).
+- `coverage.feature_count` shows how many features were formed.
+
+For each significant feature, use **`get_feature_detail`** to inspect members \
+and context artifacts. Then:
+- Use **`update_feature`** to refine feature names and descriptions with \
+human-readable summaries based on what the members actually do.
+- If a feature has members that clearly don't belong, update observations \
+explaining why — the next verify pass will catch this.
+
+### Step 4: Handle Ungrouped Records
+
+Check `feature_grouping_status` for ungrouped customized records. These are \
+records that didn't cluster with any group. Options:
+- If they're clearly related to an existing feature, use `update_feature` \
+or `update_scan_result` to manually assign them.
+- If they're standalone utilities (e.g., one-off ACLs, isolated fields), \
+they stay ungrouped — that's fine, the UI shows them in catch-all buckets \
+grouped by app file class.
+
+### Step 5: OOTB Replacement Recommendations
+
+After groupings are final, evaluate each feature for OOTB replacement:
+
+For each feature, call **`upsert_feature_recommendation`** with:
+- `feature_id`: the feature being evaluated.
+- `recommendation_type`: one of `replace`, `refactor`, `keep`, `remove`.
+- `ootb_capability_name`: the OOTB feature/module that replaces this \
+(e.g., "Flow Designer", "Agent Workspace", "CMDB Health Dashboard").
+- `product_name`: the ServiceNow product line (e.g., "ITSM", "HRSD", "CSM").
+- `sku_or_license`: licensing tier (e.g., "Pro", "Enterprise", "Standard").
+- `requires_plugins`: plugin prerequisites as an array \
+(e.g., ["com.glide.hub.flow_designer", "com.snc.agent_workspace"]).
+- `fit_confidence`: 0.0–1.0 confidence in the replacement fit.
+- `rationale`: human-readable explanation of why this recommendation applies.
+- `evidence`: structured supporting data.
+
+**Disposition decision tree:**
+```
+IF feature implements something ServiceNow now provides OOTB:
+  IF OOTB capability covers 80%+ of the custom functionality:
+    → recommendation_type = "replace"
+  ELSE:
+    → recommendation_type = "refactor" (keep custom parts, migrate what OOTB covers)
+ELSE IF feature is well-built and serves a real business need:
+  → recommendation_type = "keep"
+ELSE IF feature is broken, dead, or clearly abandoned:
+  → recommendation_type = "remove"
+```
+
+---
+
+## 3. Convergence Properties (configurable per instance)
+
+These properties control reasoning behavior and can be overridden per call:
+- **`reasoning.feature.max_iterations`** (default: 3) — maximum reasoning passes.
+- **`reasoning.feature.membership_delta_threshold`** (default: 0.02) — stop when \
+< 2% of assignments change between passes.
+- **`reasoning.feature.min_assignment_confidence`** (default: 0.6) — assignments \
+below this threshold are tracked as "high confidence changes" for convergence.
+
+---
+
+## 4. Tool Reference
+
+| Tool | Purpose |
+|---|---|
+| `seed_feature_groups` | Deterministic graph-based initial clustering |
+| `run_feature_reasoning` | One reasoning pass (auto/observe/group_refine/verify) |
+| `feature_grouping_status` | Check run status and coverage metrics |
+| `get_feature_detail` | Read feature with linked results and recommendations |
+| `update_feature` | Update feature name, description, observations |
+| `update_scan_result` | Update individual result observations/disposition |
+| `upsert_feature_recommendation` | Persist OOTB replacement recommendation per feature |
+| `get_assessment_results` | Browse results with filters |
+| `get_customization_summary` | Aggregate customization stats |
+
+---
+
+## 5. Important Rules
+
+1. **Only customized records can be feature members.** Non-customized records are \
+context artifacts only.
+2. **Human assignments always win.** Records manually linked by humans are never \
+overridden by engine or AI passes.
+3. **Deterministic first, AI refines.** Always seed before reasoning. Never skip \
+the deterministic pass.
+4. **Evidence required.** Every recommendation must include rationale and evidence. \
+Customers need to understand WHY, not just WHAT.
+5. **Don't over-iterate.** If convergence doesn't happen in 4 passes, stop and \
+check the data. Likely there's conflicting signals or data quality issues.
+6. **Write as you go.** Update feature descriptions and result observations during \
+the loop, not just at the end.
+"""
+
+
 # ── Prompt handlers ─────────────────────────────────────────────────
 
 
@@ -326,6 +512,32 @@ def _reviewer_handler(arguments: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _reasoning_orchestrator_handler(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the feature reasoning orchestrator prompt."""
+    assessment_id = arguments.get("assessment_id")
+    text = FEATURE_REASONING_ORCHESTRATOR_TEXT
+    if assessment_id:
+        text += (
+            f"\n---\n\n**Active context:** You are working on "
+            f"assessment_id={assessment_id}. Start with Step 1 (seed) "
+            f"unless seeding has already been done for this assessment.\n"
+        )
+    return {
+        "description": "Iterative AI feature reasoning orchestrator — "
+                       "drives seeding, merge/split/verify loop, convergence, "
+                       "and OOTB replacement recommendations.",
+        "messages": [
+            {
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": text,
+                },
+            }
+        ],
+    }
+
+
 # ── Prompt specs (exported for registration) ────────────────────────
 
 PROMPT_SPECS: List[PromptSpec] = [
@@ -349,5 +561,19 @@ PROMPT_SPECS: List[PromptSpec] = [
                     "findings — disposition criteria and review workflow.",
         arguments=[],
         handler=_reviewer_handler,
+    ),
+    PromptSpec(
+        name="feature_reasoning_orchestrator",
+        description="Iterative AI feature reasoning orchestrator — drives the "
+                    "seed → observe → group_refine → verify loop for automated "
+                    "feature grouping and OOTB replacement recommendations.",
+        arguments=[
+            {
+                "name": "assessment_id",
+                "description": "Assessment ID to run feature reasoning for",
+                "required": True,
+            }
+        ],
+        handler=_reasoning_orchestrator_handler,
     ),
 ]

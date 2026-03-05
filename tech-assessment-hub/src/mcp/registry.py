@@ -179,23 +179,29 @@ def build_registry() -> ToolRegistry:
 
     # --- Level 2 analysis tools (pipeline) ---
     from .tools.pipeline.customization_summary import TOOL_SPEC as customization_summary_tool
-    from .tools.pipeline.feature_grouping import TOOL_SPEC as feature_grouping_tool
+    from .tools.pipeline.seed_feature_groups import TOOL_SPEC as seed_feature_groups_tool
+    from .tools.pipeline.run_feature_reasoning import TOOL_SPEC as run_feature_reasoning_tool
+    from .tools.pipeline.feature_grouping_status import TOOL_SPEC as feature_grouping_status_tool
     from .tools.pipeline.run_engines import TOOL_SPEC as run_engines_tool
 
     registry.register(customization_summary_tool)
-    registry.register(feature_grouping_tool)
+    registry.register(seed_feature_groups_tool)
+    registry.register(run_feature_reasoning_tool)
+    registry.register(feature_grouping_status_tool)
     registry.register(run_engines_tool)
 
     # --- Level 1 write-back tools ---
     from .tools.core.update_result import TOOL_SPEC as update_result_tool
     from .tools.core.update_feature import TOOL_SPEC as update_feature_tool
     from .tools.core.feature_detail import TOOL_SPEC as feature_detail_tool
+    from .tools.core.feature_recommendation import TOOL_SPEC as feature_recommendation_tool
     from .tools.core.update_set_contents import TOOL_SPEC as update_set_contents_tool
     from .tools.core.general_recommendation import TOOL_SPEC as general_recommendation_tool
 
     registry.register(update_result_tool)
     registry.register(update_feature_tool)
     registry.register(feature_detail_tool)
+    registry.register(feature_recommendation_tool)
     registry.register(update_set_contents_tool)
     registry.register(general_recommendation_tool)
 

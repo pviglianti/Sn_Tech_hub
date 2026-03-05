@@ -183,6 +183,9 @@
             <button type="button" class="tab-btn" data-result-tab-btn="artifact" onclick="openTab(event, 'artifact')">
                 Configuration Artifact
             </button>
+            <button type="button" class="tab-btn" data-result-tab-btn="grouping-evidence" onclick="openTab(event, 'grouping-evidence')">
+                Grouping Evidence <span class="badge" id="groupingEvidenceBadge">0</span>
+            </button>
         </div>
 
         <div id="version-history" class="tab-content active">
@@ -331,6 +334,26 @@
                 {% endif %}
             </div>
         </div>
+
+        <!-- Grouping Evidence Tab -->
+        <div id="grouping-evidence" class="tab-content">
+            <div class="table-scroll" style="position: relative;">
+                <div class="table-loading-overlay is-hidden" id="groupingEvidenceLoading">
+                    <span class="table-spinner"></span>
+                </div>
+                <div id="groupingEvidenceMeta" class="filter-meta muted" style="margin-bottom: 0.5rem;"></div>
+                <div id="groupingEvidenceContainer"></div>
+            </div>
+            <div class="is-hidden" id="groupingEvidenceEmpty">
+                <div class="empty-state p-2">
+                    <p class="text-muted-plain">No grouping evidence for this result.</p>
+                    <p class="text-muted-sm mt-05">
+                        Run preprocessing engines to generate grouping signals.
+                    </p>
+                </div>
+            </div>
+        </div>
+
     </div>
 </div>
 
@@ -551,8 +574,220 @@ document.addEventListener('DOMContentLoaded', function () {
 // ── Artifact Detail Tab (lazy load) ─────────────────────────────────
 
 let _artifactDetailLoaded = false;
+let _groupingEvidenceLoaded = false;
+const resultId = {{ result.id }};
 
-// Lazy-load artifact detail on first tab open
+// ── Grouping Evidence loader ────────────────────────────────────────
+function loadGroupingEvidence() {
+    var container = document.getElementById('groupingEvidenceContainer');
+    var empty = document.getElementById('groupingEvidenceEmpty');
+    var loading = document.getElementById('groupingEvidenceLoading');
+    var meta = document.getElementById('groupingEvidenceMeta');
+    var badge = document.getElementById('groupingEvidenceBadge');
+
+    if (loading) loading.style.display = 'flex';
+    if (meta) meta.textContent = 'Loading evidence...';
+
+    fetch('/api/results/' + resultId + '/grouping-evidence', { cache: 'no-store' })
+        .then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        })
+        .then(function (data) {
+            var html = '';
+            var totalSignals = 0;
+            var esc = function(s) { if (s == null) return ''; var d = document.createElement('div'); d.appendChild(document.createTextNode(String(s))); return d.innerHTML; };
+
+            // Feature assignments
+            if (data.feature_assignments && data.feature_assignments.length) {
+                html += '<div class="fht-section"><div class="fht-section-label">Feature Assignments</div>';
+                html += '<table class="related-table"><thead><tr>';
+                html += '<th>Feature</th><th>Type</th><th>Source</th><th>Confidence</th><th>Iteration</th>';
+                html += '</tr></thead><tbody>';
+                data.feature_assignments.forEach(function (fa) {
+                    html += '<tr>';
+                    html += '<td><a href="/features/' + fa.feature_id + '">' + esc(fa.feature_name || '-') + '</a></td>';
+                    html += '<td>' + esc((fa.membership_type || 'primary').replace(/_/g, ' ')) + '</td>';
+                    html += '<td><span class="fht-badge fht-source-' + (fa.assignment_source || 'engine') + '">' + esc(fa.assignment_source || '-') + '</span></td>';
+                    html += '<td>' + (fa.assignment_confidence != null ? Math.round(fa.assignment_confidence * 100) + '%' : '-') + '</td>';
+                    html += '<td>' + (fa.iteration_number || '-') + '</td>';
+                    html += '</tr>';
+                });
+                html += '</tbody></table></div>';
+            }
+
+            // Deterministic signals
+            var detSignals = data.deterministic_signals || [];
+            if (detSignals.length) {
+                totalSignals = detSignals.length;
+                html += '<div class="fht-section"><div class="fht-section-label">Deterministic Grouping Signals</div>';
+                html += '<table class="related-table"><thead><tr>';
+                html += '<th>Type</th><th>Label</th><th>Members</th><th>Confidence</th>';
+                html += '</tr></thead><tbody>';
+                detSignals.forEach(function (sig) {
+                    html += '<tr>';
+                    html += '<td><span class="gsp-type-badge">' + esc((sig.type || '').replace(/_/g, ' ')) + '</span></td>';
+                    html += '<td>' + esc(sig.label || '-') + '</td>';
+                    html += '<td>' + (sig.member_count || 0) + '</td>';
+                    html += '<td>' + (sig.confidence != null ? Math.round(sig.confidence * 100) + '%' : '-') + '</td>';
+                    html += '</tr>';
+                });
+                html += '</tbody></table></div>';
+            }
+
+            // Related update sets
+            var relUS = data.related_update_sets || {};
+            var updateSets = relUS.update_sets || [];
+            var overlaps = relUS.overlaps || [];
+            if (updateSets.length) {
+                html += '<div class="fht-section"><div class="fht-section-label">Related Update Sets</div>';
+                html += '<table class="related-table"><thead><tr>';
+                html += '<th>Update Set</th><th>Link Source</th><th>Current</th><th>Confidence</th>';
+                html += '</tr></thead><tbody>';
+                updateSets.forEach(function (us) {
+                    html += '<tr>';
+                    html += '<td>' + esc(us.update_set_name || '-') + '</td>';
+                    html += '<td>' + esc((us.link_source || '').replace(/_/g, ' ')) + '</td>';
+                    html += '<td>' + (us.is_current ? 'Yes' : 'No') + '</td>';
+                    html += '<td>' + (us.confidence != null ? Math.round(us.confidence * 100) + '%' : '-') + '</td>';
+                    html += '</tr>';
+                });
+                html += '</tbody></table></div>';
+            }
+            if (overlaps.length) {
+                html += '<div class="fht-section"><div class="fht-section-label">Update Set Overlaps</div>';
+                html += '<table class="related-table"><thead><tr>';
+                html += '<th>Signal Type</th><th>Shared Records</th><th>Overlap Score</th>';
+                html += '</tr></thead><tbody>';
+                overlaps.forEach(function (ol) {
+                    html += '<tr>';
+                    html += '<td>' + esc((ol.signal_type || '').replace(/_/g, ' ')) + '</td>';
+                    html += '<td>' + (ol.shared_record_count || 0) + '</td>';
+                    html += '<td>' + (ol.overlap_score != null ? Math.round(ol.overlap_score * 100) + '%' : '-') + '</td>';
+                    html += '</tr>';
+                });
+                html += '</tbody></table></div>';
+            }
+
+            // Related artifacts (customized + context)
+            var relArt = data.related_artifacts || {};
+            var customized = relArt.customized || [];
+            var ctxArt = relArt.context || [];
+            if (customized.length) {
+                html += '<div class="fht-section"><div class="fht-section-label">Related Customized Artifacts</div>';
+                html += '<table class="related-table"><thead><tr>';
+                html += '<th>Feature</th><th>Artifact</th>';
+                html += '</tr></thead><tbody>';
+                customized.forEach(function (ca) {
+                    var sr = ca.scan_result || {};
+                    html += '<tr>';
+                    html += '<td><a href="/features/' + ca.feature_id + '">' + esc(ca.feature_name || '-') + '</a></td>';
+                    html += '<td><a href="/results/' + (sr.id || '') + '">' + esc(sr.id || '-') + '</a></td>';
+                    html += '</tr>';
+                });
+                html += '</tbody></table></div>';
+            }
+            if (ctxArt.length) {
+                html += '<div class="fht-section"><div class="fht-section-label">Context Artifacts</div>';
+                html += '<table class="related-table"><thead><tr>';
+                html += '<th>Feature</th><th>Artifact</th><th>Context Type</th><th>Confidence</th>';
+                html += '</tr></thead><tbody>';
+                ctxArt.forEach(function (ca) {
+                    var sr = ca.scan_result || {};
+                    html += '<tr>';
+                    html += '<td><a href="/features/' + ca.feature_id + '">' + esc(ca.feature_name || '-') + '</a></td>';
+                    html += '<td><a href="/results/' + (sr.id || '') + '">' + esc(sr.id || '-') + '</a></td>';
+                    html += '<td>' + esc((ca.context_type || '').replace(/_/g, ' ')) + '</td>';
+                    html += '<td>' + (ca.confidence != null ? Math.round(ca.confidence * 100) + '%' : '-') + '</td>';
+                    html += '</tr>';
+                });
+                html += '</tbody></table></div>';
+            }
+
+            // Feature recommendations
+            var recs = data.feature_recommendations || [];
+            if (recs.length) {
+                html += '<div class="fht-section"><div class="fht-section-label">OOTB Recommendations</div>';
+                recs.forEach(function (rec) {
+                    var typeColors = {
+                        replace: '#d9534f', refactor: '#f0ad4e', keep: '#5cb85c', remove: '#777'
+                    };
+                    var recType = rec.recommendation_type || 'keep';
+                    var color = typeColors[recType] || '#999';
+                    var recTypeLabel = String(recType || '').replace(/_/g, ' ').toUpperCase();
+                    var confidence = rec.fit_confidence != null ? Math.round(rec.fit_confidence * 100) + '%' : '-';
+
+                    html += '<div class="fht-rec-card" style="border-left: 3px solid ' + color + '">';
+                    html += '<div class="fht-rec-header">';
+                    html += '<span class="fht-badge" style="background:' + color + ';color:#fff">';
+                    html += esc(recTypeLabel) + '</span>';
+                    html += ' <span class="fht-rec-confidence">' + confidence + ' confidence</span>';
+                    html += '</div>';
+                    if (rec.ootb_capability_name) {
+                        html += '<div class="fht-rec-capability"><strong>OOTB Capability:</strong> ' + esc(rec.ootb_capability_name) + '</div>';
+                    }
+                    if (rec.product_name || rec.sku_or_license) {
+                        html += '<div class="fht-rec-product">';
+                        if (rec.product_name) html += '<strong>Product:</strong> ' + esc(rec.product_name);
+                        if (rec.sku_or_license) html += ' <span class="fht-badge fht-sku">' + esc(rec.sku_or_license) + '</span>';
+                        html += '</div>';
+                    }
+                    if (rec.requires_plugins && rec.requires_plugins.length) {
+                        var plugins = Array.isArray(rec.requires_plugins) ? rec.requires_plugins : [rec.requires_plugins];
+                        html += '<div class="fht-rec-plugins"><strong>Plugins:</strong> ';
+                        html += plugins.map(function (p) { return '<code>' + esc(p) + '</code>'; }).join(', ');
+                        html += '</div>';
+                    }
+                    if (rec.rationale) {
+                        html += '<div class="fht-rec-rationale">' + esc(rec.rationale) + '</div>';
+                    }
+                    html += '</div>';
+                });
+                html += '</div>';
+            }
+
+            // Iteration history
+            var history = data.iteration_history || [];
+            if (history.length) {
+                html += '<div class="fht-section"><div class="fht-section-label">Assignment History</div>';
+                html += '<table class="related-table"><thead><tr>';
+                html += '<th>Iteration</th><th>Source</th><th>Feature</th>';
+                html += '</tr></thead><tbody>';
+                history.forEach(function (h) {
+                    html += '<tr>';
+                    html += '<td>' + (h.iteration_number || '-') + '</td>';
+                    html += '<td><span class="fht-badge fht-source-' + (h.assignment_source || 'engine') + '">' + esc(h.assignment_source || '-') + '</span></td>';
+                    html += '<td><a href="/features/' + h.feature_id + '">' + esc(h.feature_id || '-') + '</a></td>';
+                    html += '</tr>';
+                });
+                html += '</tbody></table></div>';
+            }
+
+            if (!html) {
+                if (container) container.innerHTML = '';
+                if (empty) empty.style.display = 'block';
+            } else {
+                if (empty) empty.style.display = 'none';
+                if (container) container.innerHTML = html;
+            }
+
+            var assignCount = data.feature_assignments ? data.feature_assignments.length : 0;
+            var recCount = data.feature_recommendations ? data.feature_recommendations.length : 0;
+            if (badge) badge.textContent = String(totalSignals + assignCount + recCount);
+            if (meta) meta.textContent = assignCount + ' assignments, ' + totalSignals + ' signals' + (recCount ? ', ' + recCount + ' recommendations' : '');
+        })
+        .catch(function (err) {
+            console.error('Grouping evidence load error:', err);
+            if (container) container.innerHTML = '';
+            if (empty) empty.style.display = 'block';
+            if (meta) meta.textContent = 'Failed to load grouping evidence.';
+        })
+        .finally(function () {
+            if (loading) loading.style.display = 'none';
+        });
+}
+
+// Lazy-load tabs on first open
 document.addEventListener('tab:activated', function(e) {
     if (e.detail.tabName === 'artifact' && !_artifactDetailLoaded) {
         _artifactDetailLoaded = true;
@@ -565,6 +800,10 @@ document.addEventListener('tab:activated', function(e) {
             emptyId: 'artifactDetailEmpty',
             loadingId: 'artifactDetailLoading',
         });
+    }
+    if (e.detail.tabName === 'grouping-evidence' && !_groupingEvidenceLoaded) {
+        _groupingEvidenceLoaded = true;
+        loadGroupingEvidence();
     }
 });
 </script>

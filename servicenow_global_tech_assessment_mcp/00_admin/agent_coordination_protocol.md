@@ -38,6 +38,33 @@
 | `BLOCKED` | Cannot proceed, needs help | Other agent investigates |
 | `APPROVED` | Final sign-off on a checkpoint | — |
 
+### Autonomous operation (CRITICAL)
+
+Agents MUST operate autonomously without human prompting between tasks:
+
+1. **On session start:** Read the active phase chat file BEFORE doing anything else. Check for pending `QUESTION`, `REVIEW_REQUEST`, or `BLOCKED` messages from the other agent and respond to them first.
+2. **After completing a task:** Immediately re-read the chat file. If the other agent has posted work, review it. If they asked a question, answer it. Do not wait for the human to prompt you to check.
+3. **After posting a `REVIEW_REQUEST`:** Continue to your next unblocked task. Do not idle waiting for review.
+4. **After posting a `QUESTION`:** If you have other unblocked tasks, continue working on those while waiting.
+5. **When all your tasks are done:** Re-read the chat file one final time. If the other agent has pending review requests, review them. If they have questions, answer them. Post a `STATUS` noting you are caught up.
+6. **Cross-verification:** After the other agent completes a task that produces code, run their tests (`pytest tests/test_<name>.py -v`) and the full regression (`pytest --tb=short -q`) to verify independently. Do not assume their reported results are current.
+7. **UI verification:** When tasks produce visible UI changes, Claude should use browser automation tools (Chrome extension MCP) to take screenshots and verify the UI renders correctly. Post screenshots or observations in the chat.
+
+### Token-efficient communication
+
+- **Chat messages:** Keep STATUS messages to 1-3 sentences. Save detail for REVIEW_REQUEST and REVIEW_FEEDBACK.
+- **Code review posts:** List files reviewed + pass/fail verdict + specific issues (if any). Do not paste full code in chat.
+- **Plan discussions:** Post proposed structure first (bullet outline), iterate on structure before writing prose.
+- **Avoid restating what the other agent said.** Reference by message timestamp if needed.
+- **Batch related updates.** If completing 3 tasks in sequence, post one combined STATUS rather than 3 separate ones.
+
+### Quality gates
+
+- **Before claiming a task `tests_passing`:** Actually run the tests and paste the summary line (e.g., "274 passed, 0 failures"). Do not rely on memory.
+- **Before claiming UI work done:** Start the app, load the page, verify no JS console errors. Claude should screenshot via browser tools when possible.
+- **Before marking a plan `approved`:** Both agents must have posted concrete feedback (not just "looks good"). Identify at least one improvement or explicitly confirm each section.
+- **Addendums:** Non-blocking improvements discovered during review should be numbered (A1, A2, ...) and tracked. Owner integrates them during the relevant implementation phase.
+
 ### Check-in cadence
 - After completing each task, check the chat file for pending questions or review requests.
 - After posting a `QUESTION`, expect the other agent to respond on their next check-in.
@@ -69,6 +96,7 @@ Before marking a task `approved`, the reviewer MUST verify:
 2. **Follows established patterns** — matches codebase conventions (idempotency, commit behavior, return shapes, import style).
 3. **No regressions** — full test suite passes (`pytest --tb=short`).
 4. **Matches the plan** — or deviations are documented with rationale.
+5. **UI verification (for frontend tasks):** If the task changes templates, JS, or CSS, Claude should start the app and use browser tools to verify the pages render correctly (tabs load, data displays, no JS console errors). Post screenshot observations in chat.
 
 ---
 
@@ -148,3 +176,4 @@ All messages go in **`<phase_name>_chat.md`** (same directory).
 | Phase | Files | Status | Outcome |
 |-------|-------|--------|---------|
 | Phase 2 Engines | `phase2_coordination.md` / `phase2_chat.md` | Complete | 6 engines, 276 tests, both agents approved |
+| Phase 3 UI + AI Feature Orchestration | `phase3_coordination.md` / `phase3_planning_chat.md` | Plan approved, execution pending | 8 tasks (P3A-P3D, P4A-P4D) |

@@ -3,7 +3,7 @@
 ## Rehydrate Snapshot
 - Active project: `servicenow_global_tech_assessment_mcp/`
 - Primary objective: stabilize and evolve `tech-assessment-hub` as an MCP-first ServiceNow assessment platform.
-- Current execution focus: AI reasoning pipeline Phase 2 engines complete (all 6 wired, full tests green) → human validation on real assessment data.
+- Current execution focus: Phase 3 technical implementation is fully approved (P3A–P4C). Remaining gate is P4D human QA checklist execution on real assessment data before final phase closeout.
 - Cross-agent model: Codex + Claude share state through `todos.md` and `run_log.md`.
 - Rehydration default: Tier 1 only (`context:Rehydrate Snapshot` + `todos:Now`).
 - Deeper continuity: Tier 2 only when needed (`insights:Active Decisions` + tail of `run_log`).
@@ -60,7 +60,8 @@ OUT OF SCOPE (current cycle):
   - Rabbit hole priorities: modular/adjustable (config-driven, not hardcoded)
   - Catch-all labels: table mapping app file class → display label (e.g., `sys_dictionary` → "Form Fields")
 - **VH workflow optimization complete (Claude, 2026-02-16)**: 7 fixes — phantom VH event (read-only lookup), VH 2M full-pull bug (state filter propagation), concurrent preflight (configurable via `PREFLIGHT_CONCURRENT_TYPES`), two-phase proactive VH pull (current-first → event → backfill), sort order for VH pulls (`state,sys_recorded_at`), generic concurrent preflight worker threads. 203 tests passing.
-- **Reasoning Layer Phase 2 engines complete** (Claude + Codex, 2026-03-04): 4 new engines implemented — `update_set_analyzer` (Codex, base+enriched modes, 5 signal types, artifact links, evidence payloads), `temporal_clusterer` (Claude agent), `naming_analyzer` (Claude agent), `table_colocation` (Claude agent). All wired into `run_preprocessing_engines` registry (6 total engines). 8 configurable reasoning properties added to Integration Properties UI. Phase 2 addendum (A1-A7) fully implemented. Claude approved Checkpoint 4; awaiting Codex final review of Tasks 2-4.
-- **Regression status**: full suite green (`276 passed`, 2026-03-04).
+- **Reasoning Layer Phase 2 engines complete** (Claude + Codex, 2026-03-04): 4 new engines implemented — `update_set_analyzer` (Codex, base+enriched modes, 5 signal types, artifact links, evidence payloads), `temporal_clusterer` (Claude agent), `naming_analyzer` (Claude agent), `table_colocation` (Claude agent). All wired into `run_preprocessing_engines` registry (6 total engines). 8 configurable reasoning properties added to Integration Properties UI. Phase 2 addendum (A1-A7) fully implemented.
+- **Reasoning Layer Phase 3 Codex backend scope complete** (Codex, 2026-03-04): P3A/P3B/P3D/P4A implemented with unified grouping APIs, deterministic `seed_feature_groups`, one-pass `run_feature_reasoning`, `feature_grouping_status`, and new feature recommendation persistence surfaces (API + MCP tool).
+- **Regression status**: full suite green (`305 passed`, 2026-03-04).
 - Next priorities: (1) End-to-end test with real assessment data using all 6 engines + prompts + tools, (2) rabbit hole priority config, (3) catch-all label table, (4) generalize agent coordination protocol.
 - Rehydration guardrails are enforced. Instruction standard is `AGENTS.md` + `CLAUDE.md` + `ACTIVE_PROJECT.md`.

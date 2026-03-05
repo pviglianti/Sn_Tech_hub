@@ -8,7 +8,7 @@ from typing import Any, Dict
 from sqlmodel import Session, select
 
 from ...registry import ToolSpec
-from ....models import Feature, FeatureScanResult, ScanResult
+from ....models import Feature, FeatureRecommendation, FeatureScanResult, ScanResult
 
 
 INPUT_SCHEMA: Dict[str, Any] = {
@@ -32,6 +32,11 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
 
     links = session.exec(
         select(FeatureScanResult).where(FeatureScanResult.feature_id == feature_id)
+    ).all()
+    recommendations = session.exec(
+        select(FeatureRecommendation)
+        .where(FeatureRecommendation.feature_id == feature_id)
+        .order_by(FeatureRecommendation.id.asc())
     ).all()
 
     scan_results = []
@@ -65,6 +70,20 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
             "created_at": feature.created_at.isoformat() if feature.created_at else None,
             "updated_at": feature.updated_at.isoformat() if feature.updated_at else None,
         },
+        "recommendations": [
+            {
+                "id": recommendation.id,
+                "recommendation_type": recommendation.recommendation_type,
+                "ootb_capability_name": recommendation.ootb_capability_name,
+                "product_name": recommendation.product_name,
+                "sku_or_license": recommendation.sku_or_license,
+                "requires_plugins": recommendation.requires_plugins_json,
+                "fit_confidence": recommendation.fit_confidence,
+                "rationale": recommendation.rationale,
+                "evidence": recommendation.evidence_json,
+            }
+            for recommendation in recommendations
+        ],
         "scan_results": scan_results,
         "scan_result_count": len(scan_results),
     }
@@ -74,7 +93,7 @@ TOOL_SPEC = ToolSpec(
     name="get_feature_detail",
     description=(
         "Get full details for a feature group including all linked scan results. "
-        "Use this after group_by_feature to inspect a specific feature's contents."
+        "Use this after seed_feature_groups or run_feature_reasoning to inspect a feature."
     ),
     input_schema=INPUT_SCHEMA,
     handler=handle,

@@ -329,7 +329,10 @@
                 Customizations <span class="badge" id="customizationsTabBadge">{{ assessment.records_customized }}</span>
             </button>
             <button class="tab-btn" onclick="openTab(event, 'features')">
-                Features <span class="badge">{{ assessment.features | length }}</span>
+                Features <span class="badge" id="featuresTabBadge">{{ assessment.features | length }}</span>
+            </button>
+            <button class="tab-btn" onclick="openTab(event, 'grouping-signals')" id="groupingSignalsTabBtn">
+                Grouping Signals <span class="badge" id="groupingSignalsTabBadge">0</span>
             </button>
             <button class="tab-btn" onclick="openTab(event, 'artifacts')" id="artifactsTabBtn">
                 Artifacts <span class="badge" id="artifactsTabBadge">0</span>
@@ -534,51 +537,44 @@
             </div>
         </div>
 
-        <!-- Features Tab -->
+        <!-- Features Tab (FeatureHierarchyTree) -->
         <div id="features" class="tab-content">
-            {% if assessment.features %}
-            <table class="related-table">
-                <thead>
-                    <tr>
-                        <th>Name</th>
-                        <th>Description</th>
-                        <th>Items</th>
-                        <th>Disposition</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for feature in assessment.features %}
-                    <tr>
-                        <td>
-                            <a href="/features/{{ feature.id }}">{{ feature.name }}</a>
-                        </td>
-                        <td>{{ feature.description or '-' }}</td>
-                        <td>{{ feature.scan_result_links | length }}</td>
-                        <td>
-                            {% if feature.disposition %}
-                            {{ feature.disposition.value | replace('_', ' ') | title }}
-                            {% else %}
-                            -
-                            {% endif %}
-                        </td>
-                        <td>
-                            <a href="/features/{{ feature.id }}" class="btn btn-sm">View</a>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-            {% else %}
-            <div class="empty-state p-2">
-                <p class="text-muted-plain">No features defined yet.</p>
-                {% if assessment.total_findings > 0 %}
-                <p class="text-muted-sm mt-05">
-                    Group related results into features for better organization.
-                </p>
-                {% endif %}
+            <div class="table-scroll" style="position: relative;">
+                <div class="table-loading-overlay is-hidden" id="featureTreeLoading">
+                    <span class="table-spinner"></span>
+                </div>
+                <div id="featureTreeMeta" class="filter-meta muted" style="margin-bottom: 0.5rem;">Loading features...</div>
+                <div id="featureTreeContainer"></div>
             </div>
-            {% endif %}
+            <div class="is-hidden" id="featureTreeEmpty">
+                <div class="empty-state p-2">
+                    <p class="text-muted-plain">No features defined yet.</p>
+                    {% if assessment.total_findings > 0 %}
+                    <p class="text-muted-sm mt-05">
+                        Run grouping engines and AI reasoning to discover features.
+                    </p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Grouping Signals Tab -->
+        <div id="grouping-signals" class="tab-content">
+            <div class="table-scroll" style="position: relative;">
+                <div class="table-loading-overlay is-hidden" id="groupingSignalsLoading">
+                    <span class="table-spinner"></span>
+                </div>
+                <div id="groupingSignalsMeta" class="filter-meta muted" style="margin-bottom: 0.5rem;">Loading signals...</div>
+                <div id="groupingSignalsContainer"></div>
+            </div>
+            <div class="is-hidden" id="groupingSignalsEmpty">
+                <div class="empty-state p-2">
+                    <p class="text-muted-plain">No grouping signals found.</p>
+                    <p class="text-muted-sm mt-05">
+                        Run preprocessing engines to generate grouping signals.
+                    </p>
+                </div>
+            </div>
         </div>
 
         <!-- Artifacts Tab -->
@@ -1348,6 +1344,29 @@ artifactList.bindControls('artifactApply', 'artifactReset');
 refreshCustomizations();
 artifactList.refresh();
 let _artifactsLoaded = true;
+
+// ── Feature Hierarchy Tree ──────────────────────────────────────────
+var featureTree = new FeatureHierarchyTree({
+    containerId: 'featureTreeContainer',
+    emptyId: 'featureTreeEmpty',
+    loadingId: 'featureTreeLoading',
+    metaId: 'featureTreeMeta',
+    badgeId: 'featuresTabBadge',
+    apiUrl: '/api/assessments/' + assessmentId + '/feature-hierarchy',
+});
+let _featuresLoaded = false;
+
+// ── Grouping Signals Panel ──────────────────────────────────────────
+var signalsPanel = new GroupingSignalsPanel({
+    containerId: 'groupingSignalsContainer',
+    emptyId: 'groupingSignalsEmpty',
+    loadingId: 'groupingSignalsLoading',
+    metaId: 'groupingSignalsMeta',
+    badgeId: 'groupingSignalsTabBadge',
+    apiUrl: '/api/assessments/' + assessmentId + '/grouping-signals',
+});
+let _signalsLoaded = false;
+
 document.addEventListener('tab:activated', function(e) {
     if (e.detail.tabName === 'customizations' && !_customizationsLoaded) {
         _customizationsLoaded = true;
@@ -1356,6 +1375,14 @@ document.addEventListener('tab:activated', function(e) {
     if (e.detail.tabName === 'artifacts' && !_artifactsLoaded) {
         _artifactsLoaded = true;
         artifactList.refresh();
+    }
+    if (e.detail.tabName === 'features' && !_featuresLoaded) {
+        _featuresLoaded = true;
+        featureTree.refresh();
+    }
+    if (e.detail.tabName === 'grouping-signals' && !_signalsLoaded) {
+        _signalsLoaded = true;
+        signalsPanel.refresh();
     }
 });
 </script>

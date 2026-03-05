@@ -625,6 +625,8 @@ class Feature(SQLModel, table=True):
     children: List["Feature"] = Relationship(back_populates="parent")
     primary_update_set: Optional["UpdateSet"] = Relationship(back_populates="features")
     scan_result_links: List["FeatureScanResult"] = Relationship(back_populates="feature")
+    context_artifacts: List["FeatureContextArtifact"] = Relationship(back_populates="feature")
+    recommendations: List["FeatureRecommendation"] = Relationship(back_populates="feature")
 
 
 # ============================================
@@ -668,12 +670,94 @@ class FeatureScanResult(SQLModel, table=True):
     # Is this a primary member or secondary/related?
     is_primary: bool = True
     notes: Optional[str] = None
+    membership_type: str = "primary"  # primary | supporting
+    assignment_source: str = "engine"  # engine | ai | human
+    assignment_confidence: Optional[float] = None
+    evidence_json: Optional[str] = None
+    iteration_number: int = 0
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     # Relationships
     feature: Feature = Relationship(back_populates="scan_result_links")
     scan_result: ScanResult = Relationship(back_populates="feature_links")
+
+
+# ============================================
+# TABLE: FeatureContextArtifact (non-member context evidence)
+# ============================================
+
+class FeatureContextArtifact(SQLModel, table=True):
+    """Links non-member artifacts used as context/evidence for a feature."""
+    __tablename__ = "feature_context_artifact"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    instance_id: int = Field(foreign_key="instance.id", index=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+    feature_id: int = Field(foreign_key="feature.id", index=True)
+    scan_result_id: int = Field(foreign_key="scan_result.id", index=True)
+
+    context_type: str
+    confidence: float = 1.0
+    evidence_json: Optional[str] = None
+    iteration_number: int = 0
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    feature: Feature = Relationship(back_populates="context_artifacts")
+    scan_result: ScanResult = Relationship()
+
+
+# ============================================
+# TABLE: FeatureGroupingRun (iteration/run tracking)
+# ============================================
+
+class FeatureGroupingRun(SQLModel, table=True):
+    """Tracks iterative grouping/reasoning runs for an assessment."""
+    __tablename__ = "feature_grouping_run"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    instance_id: int = Field(foreign_key="instance.id", index=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+
+    status: str = "pending"
+    started_at: datetime = Field(default_factory=datetime.utcnow)
+    completed_at: Optional[datetime] = None
+    max_iterations: int = 3
+    iterations_completed: int = 0
+    converged: bool = False
+    summary_json: Optional[str] = None
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============================================
+# TABLE: FeatureRecommendation (feature-level OOTB recommendation)
+# ============================================
+
+class FeatureRecommendation(SQLModel, table=True):
+    """Feature-level recommendation with OOTB product/SKU provenance."""
+    __tablename__ = "feature_recommendation"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    instance_id: int = Field(foreign_key="instance.id", index=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+    feature_id: int = Field(foreign_key="feature.id", index=True)
+
+    recommendation_type: str
+    ootb_capability_name: Optional[str] = None
+    product_name: Optional[str] = None
+    sku_or_license: Optional[str] = None
+    requires_plugins_json: Optional[str] = None
+    fit_confidence: Optional[float] = None
+    rationale: Optional[str] = None
+    evidence_json: Optional[str] = None
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    feature: Feature = Relationship(back_populates="recommendations")
 
 
 # ============================================

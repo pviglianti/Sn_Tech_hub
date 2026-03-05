@@ -468,3 +468,137 @@ def test_table_colocation_summary_round_trip(db_session):
     assert summary.id is not None
     assert summary.target_table == "sc_req_item"
     assert summary.record_count == 2
+
+
+# -------------------------------------------------------
+# Phase 3 data model tests
+# -------------------------------------------------------
+
+
+def test_feature_scan_result_phase3_fields_round_trip(db_session):
+    from src.models import FeatureScanResult
+
+    _, asmt, sr1, _ = _seed_assessment(db_session)
+
+    feature = Feature(assessment_id=asmt.id, name="Approval Flow")
+    db_session.add(feature)
+    db_session.flush()
+
+    link = FeatureScanResult(
+        feature_id=feature.id,
+        scan_result_id=sr1.id,
+        is_primary=True,
+        membership_type="primary",
+        assignment_source="ai",
+        assignment_confidence=0.91,
+        evidence_json='{"signals":["update_set_overlap","code_reference"]}',
+        iteration_number=2,
+    )
+    db_session.add(link)
+    db_session.commit()
+    db_session.refresh(link)
+
+    assert link.membership_type == "primary"
+    assert link.assignment_source == "ai"
+    assert link.assignment_confidence == 0.91
+    assert link.iteration_number == 2
+    assert "update_set_overlap" in (link.evidence_json or "")
+
+
+def test_feature_context_artifact_round_trip(db_session):
+    from src.models import FeatureContextArtifact
+
+    inst, asmt, sr1, _ = _seed_assessment(db_session)
+
+    feature = Feature(assessment_id=asmt.id, name="Contextual Feature")
+    db_session.add(feature)
+    db_session.flush()
+
+    ctx = FeatureContextArtifact(
+        instance_id=inst.id,
+        assessment_id=asmt.id,
+        feature_id=feature.id,
+        scan_result_id=sr1.id,
+        context_type="code_reference_target",
+        confidence=0.77,
+        evidence_json='{"reference_type":"script_include"}',
+        iteration_number=1,
+    )
+    db_session.add(ctx)
+    db_session.commit()
+    db_session.refresh(ctx)
+
+    assert ctx.id is not None
+    assert ctx.feature_id == feature.id
+    assert ctx.context_type == "code_reference_target"
+    assert ctx.confidence == 0.77
+    assert ctx.iteration_number == 1
+
+
+def test_feature_grouping_run_round_trip(db_session):
+    from src.models import FeatureGroupingRun
+
+    inst, asmt, _, _ = _seed_assessment(db_session)
+
+    run = FeatureGroupingRun(
+        instance_id=inst.id,
+        assessment_id=asmt.id,
+        status="running",
+        max_iterations=5,
+        iterations_completed=2,
+        converged=False,
+        summary_json='{"pass":"group_refine","membership_delta":0.14}',
+    )
+    db_session.add(run)
+    db_session.commit()
+    db_session.refresh(run)
+
+    assert run.id is not None
+    assert run.status == "running"
+    assert run.max_iterations == 5
+    assert run.iterations_completed == 2
+    assert run.converged is False
+    assert "membership_delta" in (run.summary_json or "")
+
+
+def test_feature_recommendation_round_trip(db_session):
+    from src.models import FeatureRecommendation
+
+    inst, asmt, _, _ = _seed_assessment(db_session)
+
+    feature = Feature(assessment_id=asmt.id, name="Legacy Approval Customization")
+    db_session.add(feature)
+    db_session.flush()
+
+    rec = FeatureRecommendation(
+        instance_id=inst.id,
+        assessment_id=asmt.id,
+        feature_id=feature.id,
+        recommendation_type="replace",
+        ootb_capability_name="Flow Designer Approval Actions",
+        product_name="ServiceNow ITSM Pro",
+        sku_or_license="ITSM_PRO",
+        requires_plugins_json='["com.glide.hub.flow_engine"]',
+        fit_confidence=0.88,
+        rationale="OOTB approval orchestration replaces custom BR + Script Include chain.",
+        evidence_json='{"signals":["update_set_overlap","table_colocation"]}',
+    )
+    db_session.add(rec)
+    db_session.commit()
+    db_session.refresh(rec)
+
+    assert rec.id is not None
+    assert rec.feature_id == feature.id
+    assert rec.recommendation_type == "replace"
+    assert rec.product_name == "ServiceNow ITSM Pro"
+    assert rec.sku_or_license == "ITSM_PRO"
+    assert rec.fit_confidence == 0.88
+
+
+def test_phase3_reasoning_tables_created(db_engine):
+    inspector = inspect(db_engine)
+    tables = inspector.get_table_names()
+
+    assert "feature_context_artifact" in tables
+    assert "feature_grouping_run" in tables
+    assert "feature_recommendation" in tables

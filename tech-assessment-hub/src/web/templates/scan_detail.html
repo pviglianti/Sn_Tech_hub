@@ -48,6 +48,12 @@
             <button type="button" class="tab-btn active" onclick="openTab(event, 'scan-customizations')" id="scanCustomizationsTabBtn">
                 Customizations <span class="badge" id="scanCustomizationsTabBadge">{{ scan.records_customized }}</span>
             </button>
+            <button type="button" class="tab-btn" onclick="openTab(event, 'scan-features')" id="scanFeaturesTabBtn">
+                Features <span class="badge" id="scanFeaturesTabBadge">0</span>
+            </button>
+            <button type="button" class="tab-btn" onclick="openTab(event, 'scan-grouping-signals')" id="scanSignalsTabBtn">
+                Grouping Signals <span class="badge" id="scanSignalsTabBadge">0</span>
+            </button>
             <button type="button" class="tab-btn" onclick="openTab(event, 'scan-artifacts')" id="scanArtifactsTabBtn">
                 Artifacts <span class="badge" id="scanArtifactsTabBadge">0</span>
             </button>
@@ -105,6 +111,38 @@
                 </table>
                 <div class="is-hidden" id="scanCustomizationsEmpty">
                     <p class="text-muted-plain">No customizations found.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Features Tab (scan-scoped) -->
+        <div id="scan-features" class="tab-content">
+            <div class="table-scroll" style="position: relative;">
+                <div class="table-loading-overlay is-hidden" id="scanFeatureTreeLoading">
+                    <span class="table-spinner"></span>
+                </div>
+                <div id="scanFeatureTreeMeta" class="filter-meta muted" style="margin-bottom: 0.5rem;">Loading features...</div>
+                <div id="scanFeatureTreeContainer"></div>
+            </div>
+            <div class="is-hidden" id="scanFeatureTreeEmpty">
+                <div class="empty-state p-2">
+                    <p class="text-muted-plain">No features found for this scan.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Grouping Signals Tab (scan-scoped) -->
+        <div id="scan-grouping-signals" class="tab-content">
+            <div class="table-scroll" style="position: relative;">
+                <div class="table-loading-overlay is-hidden" id="scanSignalsLoading">
+                    <span class="table-spinner"></span>
+                </div>
+                <div id="scanSignalsMeta" class="filter-meta muted" style="margin-bottom: 0.5rem;">Loading signals...</div>
+                <div id="scanSignalsContainer"></div>
+            </div>
+            <div class="is-hidden" id="scanSignalsEmpty">
+                <div class="empty-state p-2">
+                    <p class="text-muted-plain">No grouping signals found for this scan.</p>
                 </div>
             </div>
         </div>
@@ -340,6 +378,28 @@ document.getElementById('scanCustomizationsReset').addEventListener('click', fun
 // Customizations is the default tab — auto-load on page ready
 refreshScanCustomizations();
 
+// ── Feature Hierarchy Tree (scan-scoped) ────────────────────────────
+var scanFeatureTree = new FeatureHierarchyTree({
+    containerId: 'scanFeatureTreeContainer',
+    emptyId: 'scanFeatureTreeEmpty',
+    loadingId: 'scanFeatureTreeLoading',
+    metaId: 'scanFeatureTreeMeta',
+    badgeId: 'scanFeaturesTabBadge',
+    apiUrl: '/api/scans/' + scanId + '/feature-hierarchy',
+});
+let _scanFeaturesLoaded = false;
+
+// ── Grouping Signals Panel (scan-scoped) ────────────────────────────
+var scanSignalsPanel = new GroupingSignalsPanel({
+    containerId: 'scanSignalsContainer',
+    emptyId: 'scanSignalsEmpty',
+    loadingId: 'scanSignalsLoading',
+    metaId: 'scanSignalsMeta',
+    badgeId: 'scanSignalsTabBadge',
+    apiUrl: '/api/scans/' + scanId + '/grouping-signals',
+});
+let _scanSignalsLoaded = false;
+
 // ── Lazy-load non-default tabs on first open ────────────────────────
 let _scanArtifactsLoaded = false;
 let _scanResultsLoaded = false;
@@ -351,6 +411,14 @@ document.addEventListener('tab:activated', function(e) {
     if (e.detail.tabName === 'scan-results' && !_scanResultsLoaded) {
         _scanResultsLoaded = true;
         scanResultsTable.refresh();
+    }
+    if (e.detail.tabName === 'scan-features' && !_scanFeaturesLoaded) {
+        _scanFeaturesLoaded = true;
+        scanFeatureTree.refresh();
+    }
+    if (e.detail.tabName === 'scan-grouping-signals' && !_scanSignalsLoaded) {
+        _scanSignalsLoaded = true;
+        scanSignalsPanel.refresh();
     }
 });
 </script>
