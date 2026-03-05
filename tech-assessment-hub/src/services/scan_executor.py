@@ -540,40 +540,6 @@ def _existing_results_for_assessment(session: Session, assessment_id: int, sys_i
     return {f"{result.sys_id}:{result.table_name}": result for result in existing}
 
 
-def _apply_since_filter(query: str, since: Optional[datetime], field: str = "sys_updated_on") -> str:
-    if not since:
-        return query
-    stamp = since.strftime("%Y-%m-%d %H:%M:%S")
-    if query:
-        return f"{query}^{field}>={stamp}"
-    return f"{field}>={stamp}"
-
-
-def _iterate_batches(
-    client: ServiceNowClient,
-    table: str,
-    query: str,
-    fields: List[str],
-    limit: int = 1000,
-    display_value: bool = False,
-) -> List[Dict[str, Any]]:
-    offset = 0
-    while True:
-        batch = client.get_records(
-            table=table,
-            query=query,
-            fields=fields,
-            limit=limit,
-            offset=offset,
-            display_value=display_value,
-        )
-        if not batch:
-            break
-        yield batch
-        if len(batch) < limit:
-            break
-        offset += limit
-
 
 def create_scans_for_assessment(
     session: Session,
@@ -715,17 +681,20 @@ def execute_scan(
             if target_field and target_field not in fields:
                 fields.append(target_field)
 
-            query = _apply_since_filter(scan.encoded_query or "", since, "sys_updated_on")
+            base_query = scan.encoded_query or ""
+            if since:
+                wm = client._watermark_filter(since, inclusive=True)
+                query = f"{base_query}^{wm}" if base_query else wm
+            else:
+                query = base_query
             customized_count = 0
             customer_customized_count = 0
             ootb_modified_count = 0
             found_count = 0
-            for batch in _iterate_batches(
-                client,
+            for batch in client._iterate_batches(
                 table="sys_metadata",
                 query=query,
                 fields=fields,
-                display_value=False,
             ):
                 if _is_scan_cancel_requested(session, scan):
                     _cancel_scan(session, scan)
@@ -900,14 +869,17 @@ def execute_scan(
                 "sys_updated_on",
                 "sys_updated_by",
             ]
-            query = _apply_since_filter(scan.encoded_query or "", since, "sys_updated_on")
+            base_query = scan.encoded_query or ""
+            if since:
+                wm = client._watermark_filter(since, inclusive=True)
+                query = f"{base_query}^{wm}" if base_query else wm
+            else:
+                query = base_query
             found_count = 0
-            for batch in _iterate_batches(
-                client,
+            for batch in client._iterate_batches(
                 table="sys_update_xml",
                 query=query,
                 fields=fields,
-                display_value=False,
             ):
                 if _is_scan_cancel_requested(session, scan):
                     _cancel_scan(session, scan)

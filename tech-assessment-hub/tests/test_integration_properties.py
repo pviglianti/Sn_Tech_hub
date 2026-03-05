@@ -21,6 +21,9 @@ from src.services.integration_properties import (
     OBSERVATIONS_USAGE_LOOKBACK_MONTHS,
     PIPELINE_USE_REGISTERED_PROMPTS,
     PREFLIGHT_CONCURRENT_TYPES,
+    PULL_ORDER_DESC,
+    PULL_MAX_RECORDS,
+    PULL_BAIL_UNCHANGED_RUN,
     REASONING_FEATURE_MAX_ITERATIONS,
     REASONING_FEATURE_MEMBERSHIP_DELTA_THRESHOLD,
     REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE,
@@ -31,8 +34,12 @@ from src.services.integration_properties import (
     load_observation_properties,
     load_pipeline_prompt_properties,
     load_preflight_concurrent_types,
+    load_pull_order_desc,
+    load_pull_max_records,
+    load_pull_bail_unchanged_run,
     load_reasoning_engine_properties,
     update_integration_properties,
+    PROPERTY_DEFINITIONS,
 )
 
 
@@ -369,3 +376,113 @@ def test_load_ai_runtime_properties_overrides(db_session, sample_instance):
     assert props.stop_on_hard_limit is False
     assert props.max_input_tokens_per_call == 180000
     assert props.max_output_tokens_per_call == 12000
+
+
+# ---------------------------------------------------------------------------
+# New pull optimization property tests
+# ---------------------------------------------------------------------------
+
+
+def test_load_pull_order_desc_returns_true_by_default(db_session):
+    """load_pull_order_desc() must return True when no override is set (default 'true')."""
+    result = load_pull_order_desc(db_session)
+    assert result is True
+
+
+def test_load_pull_order_desc_false_when_set_to_false(db_session):
+    """load_pull_order_desc() must return False when property is set to 'false'."""
+    db_session.add(AppConfig(key=PULL_ORDER_DESC, value="false", description="test"))
+    db_session.commit()
+    result = load_pull_order_desc(db_session)
+    assert result is False
+
+
+def test_load_pull_order_desc_true_when_set_to_true(db_session):
+    """load_pull_order_desc() must return True when property is explicitly set to 'true'."""
+    db_session.add(AppConfig(key=PULL_ORDER_DESC, value="true", description="test"))
+    db_session.commit()
+    result = load_pull_order_desc(db_session)
+    assert result is True
+
+
+def test_load_pull_max_records_returns_5000_by_default(db_session):
+    """load_pull_max_records() must return 5000 when no override is set."""
+    result = load_pull_max_records(db_session)
+    assert result == 5000
+
+
+def test_load_pull_max_records_uses_override(db_session):
+    """load_pull_max_records() must return the overridden value when set."""
+    db_session.add(AppConfig(key=PULL_MAX_RECORDS, value="10000", description="test"))
+    db_session.commit()
+    result = load_pull_max_records(db_session)
+    assert result == 10000
+
+
+def test_load_pull_max_records_falls_back_on_invalid(db_session):
+    """load_pull_max_records() must fall back to 5000 on invalid (non-int) value."""
+    db_session.add(AppConfig(key=PULL_MAX_RECORDS, value="not-a-number", description="test"))
+    db_session.commit()
+    result = load_pull_max_records(db_session)
+    assert result == 5000
+
+
+def test_load_pull_bail_unchanged_run_returns_50_by_default(db_session):
+    """load_pull_bail_unchanged_run() must return 50 when no override is set."""
+    result = load_pull_bail_unchanged_run(db_session)
+    assert result == 50
+
+
+def test_load_pull_bail_unchanged_run_uses_override(db_session):
+    """load_pull_bail_unchanged_run() must return the overridden value when set."""
+    db_session.add(AppConfig(key=PULL_BAIL_UNCHANGED_RUN, value="100", description="test"))
+    db_session.commit()
+    result = load_pull_bail_unchanged_run(db_session)
+    assert result == 100
+
+
+def test_load_pull_bail_unchanged_run_falls_back_on_invalid(db_session):
+    """load_pull_bail_unchanged_run() must fall back to 50 on invalid value."""
+    db_session.add(AppConfig(key=PULL_BAIL_UNCHANGED_RUN, value="bad-value", description="test"))
+    db_session.commit()
+    result = load_pull_bail_unchanged_run(db_session)
+    assert result == 50
+
+
+def test_new_pull_properties_exist_in_property_definitions():
+    """All 3 new pull optimization keys must be registered in PROPERTY_DEFINITIONS."""
+    assert PULL_ORDER_DESC in PROPERTY_DEFINITIONS, (
+        f"PULL_ORDER_DESC ({PULL_ORDER_DESC!r}) not found in PROPERTY_DEFINITIONS"
+    )
+    assert PULL_MAX_RECORDS in PROPERTY_DEFINITIONS, (
+        f"PULL_MAX_RECORDS ({PULL_MAX_RECORDS!r}) not found in PROPERTY_DEFINITIONS"
+    )
+    assert PULL_BAIL_UNCHANGED_RUN in PROPERTY_DEFINITIONS, (
+        f"PULL_BAIL_UNCHANGED_RUN ({PULL_BAIL_UNCHANGED_RUN!r}) not found in PROPERTY_DEFINITIONS"
+    )
+
+
+def test_pull_order_desc_property_definition_is_select_type():
+    """PULL_ORDER_DESC PropertyDef must be select type with true/false options."""
+    defn = PROPERTY_DEFINITIONS[PULL_ORDER_DESC]
+    assert defn.value_type == "select"
+    option_keys = [opt[0] for opt in defn.options]
+    assert "true" in option_keys
+    assert "false" in option_keys
+
+
+def test_pull_max_records_property_definition_is_int_type():
+    """PULL_MAX_RECORDS PropertyDef must be int type with sensible min/max."""
+    defn = PROPERTY_DEFINITIONS[PULL_MAX_RECORDS]
+    assert defn.value_type == "int"
+    assert defn.default == "5000"
+    assert defn.min_value is not None and defn.min_value >= 1
+    assert defn.max_value is not None and defn.max_value >= 5000
+
+
+def test_pull_bail_unchanged_run_property_definition_is_int_type():
+    """PULL_BAIL_UNCHANGED_RUN PropertyDef must be int type with sensible min/max."""
+    defn = PROPERTY_DEFINITIONS[PULL_BAIL_UNCHANGED_RUN]
+    assert defn.value_type == "int"
+    assert defn.default == "50"
+    assert defn.min_value is not None and defn.min_value >= 1

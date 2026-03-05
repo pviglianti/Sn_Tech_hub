@@ -1281,6 +1281,15 @@ class InstanceDataPull(SQLModel, table=True):
     # avoids incorrectly deciding "full refresh" due to count mismatch.
     state_filter_applied: Optional[str] = None
 
+    # Bail-out telemetry columns — all default None so SQLite ALTER TABLE ADD COLUMN works
+    # without data migration scripts. Populated by data_pull_executor bail-out logic.
+    local_count_pre_pull: Optional[int] = Field(default=None)
+    remote_count_at_probe: Optional[int] = Field(default=None)
+    delta_probe_count: Optional[int] = Field(default=None)
+    bail_out_reason: Optional[str] = Field(default=None)
+    bail_unchanged_at_exit: Optional[int] = Field(default=None)
+    local_count_post_pull: Optional[int] = Field(default=None)
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

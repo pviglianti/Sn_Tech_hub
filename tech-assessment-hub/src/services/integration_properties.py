@@ -51,6 +51,11 @@ FETCH_INTER_BATCH_DELAY = "integration.fetch.inter_batch_delay"
 FETCH_REQUEST_TIMEOUT = "integration.fetch.request_timeout"
 FETCH_MAX_BATCHES = "integration.fetch.max_batches"
 
+# Pull optimization keys
+PULL_ORDER_DESC = "integration.pull.order_desc"
+PULL_MAX_RECORDS = "integration.pull.max_records"
+PULL_BAIL_UNCHANGED_RUN = "integration.pull.bail_unchanged_run"
+
 # Reasoning engine keys
 REASONING_US_MIN_SHARED_RECORDS = "reasoning.us.min_shared_records"
 REASONING_US_NAME_SIMILARITY_MIN_TOKENS = "reasoning.us.name_similarity_min_tokens"
@@ -234,6 +239,10 @@ PROPERTY_DEFAULTS: Dict[str, str] = {
     FETCH_INTER_BATCH_DELAY: "0.5",
     FETCH_REQUEST_TIMEOUT: "60",
     FETCH_MAX_BATCHES: "5000",
+    # Pull optimization defaults
+    PULL_ORDER_DESC: "true",
+    PULL_MAX_RECORDS: "5000",
+    PULL_BAIL_UNCHANGED_RUN: "50",
     # Reasoning engine defaults
     REASONING_US_MIN_SHARED_RECORDS: "1",
     REASONING_US_NAME_SIMILARITY_MIN_TOKENS: "2",
@@ -361,6 +370,54 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         section=SECTION_FETCH,
         min_value=10,
         max_value=50000,
+    ),
+    PULL_ORDER_DESC: IntegrationPropertyDefinition(
+        key=PULL_ORDER_DESC,
+        label="Pull Order: Newest First",
+        description=(
+            "Order all data pulls newest-first (ORDERBYDESC). "
+            "Enables bail-out to stop early once local counts match remote "
+            "and consecutive unchanged upserts exceed the bail threshold. "
+            "Recommended for large tables on re-pull scenarios."
+        ),
+        value_type="select",
+        default=PROPERTY_DEFAULTS[PULL_ORDER_DESC],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="all_sync",
+        section=SECTION_FETCH,
+        options=BOOL_OPTIONS,
+    ),
+    PULL_MAX_RECORDS: IntegrationPropertyDefinition(
+        key=PULL_MAX_RECORDS,
+        label="Max Records Per Pull",
+        description=(
+            "Maximum total records to retrieve per pull run across all batches. "
+            "Acts as an independent safety cap. When reached, the pull stops "
+            "regardless of count or content gates."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[PULL_MAX_RECORDS],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="all_sync",
+        section=SECTION_FETCH,
+        min_value=100,
+        max_value=500000,
+    ),
+    PULL_BAIL_UNCHANGED_RUN: IntegrationPropertyDefinition(
+        key=PULL_BAIL_UNCHANGED_RUN,
+        label="Bail-Out: Consecutive Unchanged Upserts",
+        description=(
+            "Number of consecutive unchanged upserts required (along with the "
+            "count gate) to trigger early bail-out during a re-pull. "
+            "A lower value exits sooner; a higher value is more thorough."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[PULL_BAIL_UNCHANGED_RUN],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="all_sync",
+        section=SECTION_FETCH,
+        min_value=1,
+        max_value=10000,
     ),
     # ----- Reasoning engine properties -----
     REASONING_US_MIN_SHARED_RECORDS: IntegrationPropertyDefinition(
@@ -1011,6 +1068,35 @@ def load_fetch_properties(session: Session, instance_id: Optional[int] = None) -
         request_timeout=_get_int(session, FETCH_REQUEST_TIMEOUT, defaults.request_timeout, instance_id=instance_id),
         max_batches=_get_int(session, FETCH_MAX_BATCHES, defaults.max_batches, instance_id=instance_id),
     )
+
+
+def load_pull_order_desc(session: Session, instance_id: Optional[int] = None) -> bool:
+    """Return True if pulls should use newest-first ordering (ORDERBYDESC).
+
+    Defaults to True to enable bail-out optimization on re-pull scenarios.
+    """
+    raw = _read_property(session, PULL_ORDER_DESC, instance_id=instance_id)
+    if raw is None or raw == "":
+        raw = PROPERTY_DEFAULTS[PULL_ORDER_DESC]
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def load_pull_max_records(session: Session, instance_id: Optional[int] = None) -> int:
+    """Return the maximum total records to retrieve per pull run.
+
+    Acts as an independent safety cap, firing regardless of count or content gates.
+    Defaults to 5000.
+    """
+    return _get_int(session, PULL_MAX_RECORDS, int(PROPERTY_DEFAULTS[PULL_MAX_RECORDS]), instance_id=instance_id)
+
+
+def load_pull_bail_unchanged_run(session: Session, instance_id: Optional[int] = None) -> int:
+    """Return the consecutive-unchanged upserts threshold for bail-out.
+
+    When this many consecutive upserts produce no data change (and the count gate
+    is also met), the pull exits early. Defaults to 50.
+    """
+    return _get_int(session, PULL_BAIL_UNCHANGED_RUN, int(PROPERTY_DEFAULTS[PULL_BAIL_UNCHANGED_RUN]), instance_id=instance_id)
 
 
 def load_display_timezone(session: Session, instance_id: Optional[int] = None) -> str:
