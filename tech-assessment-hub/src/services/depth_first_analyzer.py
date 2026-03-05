@@ -401,7 +401,15 @@ def _progressive_group(
 
 
 def _add_to_feature(session: Session, feature_id: int, sr_id: int, confidence: float) -> None:
-    """Add a scan result to a feature with DFS assignment source."""
+    """Add a scan result to a feature with DFS assignment source.
+
+    Only customized results (modified_ootb, net_new_customer) are accepted.
+    """
+    from .customization_sync import is_customized
+    sr = session.get(ScanResult, sr_id)
+    if not sr or not is_customized(sr.origin_type):
+        return
+
     # Check if already a member
     existing = session.exec(
         select(FeatureScanResult)

@@ -313,6 +313,30 @@ class TestGroupingModeAware:
 
 
 # ===========================================================================
+# Test 4b: get_suggested_groupings tool registered and read-only
+# ===========================================================================
+
+class TestGetSuggestedGroupingsRegistered:
+
+    def test_get_suggested_groupings_registered_with_read_permission(self):
+        """get_suggested_groupings is registered as a read-only MCP tool."""
+        from src.mcp.registry import build_registry
+        registry = build_registry()
+        assert registry.has_tool("get_suggested_groupings")
+        spec = registry.get_spec("get_suggested_groupings")
+        assert spec is not None
+        assert spec.permission == "read"
+
+    def test_seed_feature_groups_has_write_permission(self):
+        """seed_feature_groups retains write permission for api-mode fallback."""
+        from src.mcp.registry import build_registry
+        registry = build_registry()
+        spec = registry.get_spec("seed_feature_groups")
+        assert spec is not None
+        assert spec.permission == "write"
+
+
+# ===========================================================================
 # Test 5: depth-first telemetry recorded
 # ===========================================================================
 

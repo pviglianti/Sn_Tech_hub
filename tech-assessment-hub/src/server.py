@@ -9218,6 +9218,15 @@ async def update_result(
 
     new_feature_name_clean = _clean(new_feature_name)
     new_feature_description_clean = _clean(new_feature_description)
+
+    # Guard: reject feature assignment for non-customized results
+    wants_feature = feature_id or (new_feature_name_clean and assessment_id)
+    if wants_feature and not _is_customized_result(result):
+        raise HTTPException(
+            status_code=400,
+            detail="Only customized results (modified_ootb / net_new_customer) can be assigned to features.",
+        )
+
     if new_feature_name_clean and assessment_id:
         new_feature = Feature(
             assessment_id=assessment_id,
@@ -9235,7 +9244,12 @@ async def update_result(
         ).all()
         for link in existing_links:
             session.delete(link)
-        session.add(FeatureScanResult(feature_id=feature_id, scan_result_id=result_id, is_primary=True))
+        session.add(FeatureScanResult(
+            feature_id=feature_id,
+            scan_result_id=result_id,
+            is_primary=True,
+            assignment_source="human",
+        ))
 
     session.add(result)
     session.commit()

@@ -681,6 +681,9 @@ class GeneralRecommendation(SQLModel, table=True):
 class FeatureScanResult(SQLModel, table=True):
     """Many-to-many link between Features and ScanResults"""
     __tablename__ = "feature_scan_result"
+    __table_args__ = (
+        UniqueConstraint("feature_id", "scan_result_id"),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     feature_id: int = Field(foreign_key="feature.id", index=True)

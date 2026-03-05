@@ -193,6 +193,7 @@ def build_registry() -> ToolRegistry:
     # --- Level 2 analysis tools (pipeline) ---
     from .tools.pipeline.customization_summary import TOOL_SPEC as customization_summary_tool
     from .tools.pipeline.seed_feature_groups import TOOL_SPEC as seed_feature_groups_tool
+    from .tools.pipeline.seed_feature_groups import SUGGESTIONS_TOOL_SPEC as get_suggested_groupings_tool
     from .tools.pipeline.run_feature_reasoning import TOOL_SPEC as run_feature_reasoning_tool
     from .tools.pipeline.feature_grouping_status import TOOL_SPEC as feature_grouping_status_tool
     from .tools.pipeline.run_engines import TOOL_SPEC as run_engines_tool
@@ -200,6 +201,7 @@ def build_registry() -> ToolRegistry:
 
     registry.register(customization_summary_tool)
     registry.register(seed_feature_groups_tool)
+    registry.register(get_suggested_groupings_tool)
     registry.register(run_feature_reasoning_tool)
     registry.register(feature_grouping_status_tool)
     registry.register(run_engines_tool)

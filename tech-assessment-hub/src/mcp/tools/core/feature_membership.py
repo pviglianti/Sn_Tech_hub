@@ -10,10 +10,8 @@ from typing import Any, Dict
 from sqlmodel import Session, select
 
 from ...registry import ToolSpec
-from ....models import Feature, FeatureScanResult, OriginType, ScanResult
-
-# ── Allowed origin types ────────────────────────────────────────────
-_CUSTOMIZED_ORIGINS = {OriginType.modified_ootb, OriginType.net_new_customer}
+from ....models import Feature, FeatureScanResult, ScanResult
+from ....services.customization_sync import is_customized
 
 # ── Add tool ────────────────────────────────────────────────────────
 
@@ -49,7 +47,7 @@ def handle_add(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
         raise ValueError(f"ScanResult not found: {scan_result_id}")
 
     # Validate scan result is customized
-    if scan_result.origin_type not in _CUSTOMIZED_ORIGINS:
+    if not is_customized(scan_result.origin_type):
         raise ValueError(
             f"ScanResult {scan_result_id} is not a customized record "
             f"(origin_type={scan_result.origin_type!r}). "

@@ -54,3 +54,6 @@ iMovie-Library-backup/
 # IDE
 .vscode/
 .idea/
+
+# Local parallel-agent worktrees
+.worktrees/

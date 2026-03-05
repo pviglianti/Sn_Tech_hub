@@ -192,6 +192,33 @@ def test_remove_nonexistent(db_session):
     assert "No membership found" in result["message"]
 
 
+def test_db_unique_constraint_rejects_duplicate(db_session):
+    """DB-level UniqueConstraint prevents duplicate (feature_id, scan_result_id) pairs."""
+    from sqlalchemy.exc import IntegrityError
+
+    feature, cust_result, _ = _seed(db_session)
+
+    link1 = FeatureScanResult(
+        feature_id=feature.id,
+        scan_result_id=cust_result.id,
+        is_primary=True,
+        assignment_source="ai",
+    )
+    db_session.add(link1)
+    db_session.commit()
+
+    link2 = FeatureScanResult(
+        feature_id=feature.id,
+        scan_result_id=cust_result.id,
+        is_primary=True,
+        assignment_source="engine",
+    )
+    db_session.add(link2)
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+    db_session.rollback()
+
+
 def test_registry_includes_membership_tools():
     """Both tools are registered in the global registry."""
     from src.mcp.registry import build_registry

@@ -12,11 +12,11 @@
 
 | Task | Owner | Status | Depends On |
 |------|-------|--------|------------|
-| P11-0: Lock unified contracts (mode behavior + ownership boundaries) | Codex + Claude | `in_progress` | — |
-| P11-1: Claude independent tranche (analysis_mode cleanup, AI authoring tools, mode wiring) | Claude | `in_progress` | P11-0 |
-| P11-2: Feature membership integrity (customized-only guard + unique pair protection) | Codex | `not_started` | P11-0 |
-| P11-3: Legacy cleanup utility (`--dry-run` / `--apply`) | Codex | `not_started` | P11-2 |
-| P11-4: Cross-agent peer review (both directions) | Codex + Claude | `not_started` | P11-1, P11-2, P11-3 |
+| P11-0: Lock unified contracts (mode behavior + ownership boundaries) | Codex + Claude | `approved` | — |
+| P11-1: Claude independent tranche (analysis_mode cleanup, AI authoring tools, mode wiring) | Claude | `tests_passing` | P11-0 |
+| P11-2: Feature membership integrity (customized-only guard + unique pair protection) | Codex + Claude | `review_pass` | P11-0 |
+| P11-3: Legacy cleanup utility (`--dry-run` / `--apply`) | Codex | `dry_run_complete` | P11-2 |
+| P11-4: Cross-agent peer review (both directions) | Codex + Claude | `in_progress` | P11-1, P11-2, P11-3 |
 | P11-5: Human-approved cleanup execution + validation report | Human + Codex | `not_started` | P11-3 |
 | P11-6: Final regression + docs/admin sync + sign-off | Codex + Claude | `not_started` | P11-4, P11-5 |
 

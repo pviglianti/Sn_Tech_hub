@@ -679,3 +679,38 @@ def test_callbacks_invoked(db_session):
     # Last checkpoint should show 3 of 3
     assert checkpoint_calls[-1][1] == 3
     assert checkpoint_calls[-1][2] == 3
+
+
+# ---------------------------------------------------------------------------
+# Test 14: Non-customized results not added to features
+# ---------------------------------------------------------------------------
+
+def test_non_customized_not_added_to_feature(db_session):
+    """Non-customized (ootb_untouched) artifacts should NOT become feature members."""
+    inst, asmt, scan = _setup_base(db_session)
+
+    # One customized + one OOTB, connected with strong edge
+    sr_custom = _make_sr(db_session, scan, "nc_a", "CustomScript", origin=OriginType.net_new_customer)
+    sr_ootb = _make_sr(db_session, scan, "nc_b", "OotbScript", origin=OriginType.ootb_untouched)
+
+    graph = _build_graph(
+        customized_ids=[sr_custom.id],  # Only the customized one
+        edges=[
+            (sr_custom.id, sr_ootb.id, "code_reference", 3.0, "bidirectional"),
+        ],
+    )
+
+    result = run_depth_first_analysis(
+        db_session,
+        asmt.id,
+        inst.id,
+        graph,
+        context_enrichment="never",
+    )
+
+    assert result.analyzed == 1  # Only the customized one
+    # No FeatureScanResult should reference the OOTB artifact
+    fsr_ootb = db_session.exec(
+        select(FeatureScanResult).where(FeatureScanResult.scan_result_id == sr_ootb.id)
+    ).first()
+    assert fsr_ootb is None
