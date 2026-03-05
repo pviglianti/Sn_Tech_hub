@@ -27,6 +27,7 @@ from ..models import (
     ScanResult,
 )
 from .assessment_phase_progress import checkpoint_phase_progress, start_phase_progress, complete_phase_progress
+from .customization_sync import sync_single_result
 from .relationship_graph import RelationshipGraph, EDGE_WEIGHTS
 
 logger = logging.getLogger(__name__)
@@ -218,6 +219,7 @@ def run_depth_first_analysis(
 
         sr.observations = " | ".join(obs_parts)
         session.add(sr)
+        sync_single_result(session, sr, commit=False)
 
         # 4. Progressive grouping: find/create/extend feature
         _progressive_group(session, assessment_id, sr, graph, visited, feature_map, result)
@@ -241,6 +243,7 @@ def run_depth_first_analysis(
                     if mention not in (other_sr.observations or ""):
                         other_sr.observations = f"{other_sr.observations} | {mention}"
                         session.add(other_sr)
+                        sync_single_result(session, other_sr, commit=False)
 
         # 6. Checkpoint + commit after each artifact
         result.analyzed = len(visited)

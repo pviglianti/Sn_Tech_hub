@@ -2,15 +2,55 @@
     var tokenInput = document.getElementById("integrationAdminToken");
     var statusBox = document.getElementById("integrationPropertiesStatus");
     var reloadBtn = document.getElementById("integrationReload");
-    var saveBtn = document.getElementById("integrationSave");
+    var saveBtns = Array.from(document.querySelectorAll(".integration-save-trigger"));
     var resetBtn = document.getElementById("integrationResetDefaults");
     var sectionsContainer = document.getElementById("integrationSectionsContainer");
     var instanceScopeSelect = document.getElementById("integrationInstanceScope");
+    var dirtyStateLabels = Array.from(document.querySelectorAll(".integration-dirty-state"));
 
     var properties = Array.isArray(window.INTEGRATION_PROPERTIES) ? window.INTEGRATION_PROPERTIES : [];
     var sectionOrder = Array.isArray(window.INTEGRATION_SECTION_ORDER) ? window.INTEGRATION_SECTION_ORDER : [];
     var instanceOptions = Array.isArray(window.INTEGRATION_INSTANCE_OPTIONS) ? window.INTEGRATION_INSTANCE_OPTIONS : [];
     var selectedInstanceId = window.INTEGRATION_SELECTED_INSTANCE_ID;
+    var isDirty = false;
+    var isSaving = false;
+    var suppressBeforeUnload = false;
+
+    function setDirtyState(nextDirty) {
+        isDirty = !!nextDirty;
+        dirtyStateLabels.forEach(function (label) {
+            label.textContent = isDirty ? "Unsaved changes." : "No unsaved changes.";
+        });
+        saveBtns.forEach(function (btn) {
+            btn.disabled = isSaving || !isDirty;
+        });
+    }
+
+    function setSavingState(nextSaving) {
+        isSaving = !!nextSaving;
+        saveBtns.forEach(function (btn) {
+            btn.disabled = isSaving || !isDirty;
+            if (isSaving) {
+                btn.textContent = "Saving...";
+            } else {
+                btn.textContent = "Save Changes";
+            }
+        });
+    }
+
+    function confirmDiscardIfDirty(message) {
+        if (!isDirty || isSaving) return true;
+        return window.confirm(
+            message || "You have unsaved changes. Leave this page without saving?"
+        );
+    }
+
+    function armNavigationBypass() {
+        suppressBeforeUnload = true;
+        window.setTimeout(function () {
+            suppressBeforeUnload = false;
+        }, 1500);
+    }
 
     function adminHeaders() {
         var token = (tokenInput && tokenInput.value || "").trim();
@@ -219,29 +259,48 @@
         if (result.ok && result.body && Array.isArray(result.body.properties)) {
             properties = result.body.properties;
             selectedInstanceId = result.body.instance_id;
+            if (instanceScopeSelect) {
+                instanceScopeSelect.value = selectedInstanceId == null ? "" : String(selectedInstanceId);
+            }
             renderProperties();
+            setDirtyState(false);
         }
         setStatus(result.body);
     }
 
     async function saveToServer() {
+        if (isSaving) return;
+        if (!isDirty) {
+            setStatus({ success: true, message: "No changes to save." });
+            return;
+        }
         var updates = collectUpdates();
         setStatus({ success: true, message: "Saving properties..." });
-        var result = await fetchJson(
-            withScope("/api/integration-properties"),
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ properties: updates })
-            },
-            true
-        );
-        if (result.ok && result.body && Array.isArray(result.body.properties)) {
+        setSavingState(true);
+        var result;
+        try {
+            result = await fetchJson(
+                withScope("/api/integration-properties"),
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ properties: updates })
+                },
+                true
+            );
+        } finally {
+            setSavingState(false);
+        }
+        if (result && result.ok && result.body && Array.isArray(result.body.properties)) {
             properties = result.body.properties;
             selectedInstanceId = result.body.instance_id;
+            if (instanceScopeSelect) {
+                instanceScopeSelect.value = selectedInstanceId == null ? "" : String(selectedInstanceId);
+            }
             renderProperties();
+            setDirtyState(false);
         }
-        setStatus(result.body);
+        setStatus(result ? result.body : { success: false, error: "Save failed." });
     }
 
     function resetFormDefaults() {
@@ -249,17 +308,64 @@
             return Object.assign({}, prop, { effective_value: prop.default });
         });
         renderProperties();
+        setDirtyState(true);
         setStatus({ success: true, message: "Form values reset to defaults. Click Save Changes to persist." });
     }
 
-    if (reloadBtn) reloadBtn.addEventListener("click", reloadFromServer);
-    if (saveBtn) saveBtn.addEventListener("click", saveToServer);
-    if (resetBtn) resetBtn.addEventListener("click", resetFormDefaults);
-    if (instanceScopeSelect) {
-        instanceScopeSelect.addEventListener("change", function () {
+    if (reloadBtn) {
+        reloadBtn.addEventListener("click", function () {
+            if (!confirmDiscardIfDirty("You have unsaved changes. Reload from server and discard local edits?")) {
+                return;
+            }
             reloadFromServer();
         });
     }
+    saveBtns.forEach(function (btn) {
+        btn.addEventListener("click", saveToServer);
+    });
+    if (resetBtn) resetBtn.addEventListener("click", resetFormDefaults);
+    if (instanceScopeSelect) {
+        instanceScopeSelect.addEventListener("change", function () {
+            if (isDirty) {
+                var discard = confirm("You have unsaved changes. Switch scope and discard local edits?");
+                if (!discard) {
+                    instanceScopeSelect.value = selectedInstanceId == null ? "" : String(selectedInstanceId);
+                    return;
+                }
+            }
+            reloadFromServer();
+        });
+    }
+
+    window.addEventListener("beforeunload", function (event) {
+        if (suppressBeforeUnload || !isDirty || isSaving) return;
+        event.preventDefault();
+        event.returnValue = "";
+    });
+
+    document.addEventListener("click", function (event) {
+        var link = event.target && event.target.closest ? event.target.closest("a[href]") : null;
+        if (!link) return;
+
+        var href = (link.getAttribute("href") || "").trim();
+        if (!href || href === "#" || href.startsWith("javascript:")) return;
+        if (link.hasAttribute("download")) return;
+        if ((link.getAttribute("target") || "").toLowerCase() === "_blank") return;
+
+        if (!confirmDiscardIfDirty()) {
+            event.preventDefault();
+            return;
+        }
+        armNavigationBypass();
+    }, true);
+
+    document.addEventListener("submit", function (event) {
+        if (!confirmDiscardIfDirty()) {
+            event.preventDefault();
+            return;
+        }
+        armNavigationBypass();
+    }, true);
 
     // Multiselect dual-list event delegation
     if (sectionsContainer) {
@@ -292,9 +398,21 @@
             // Sync hidden input value
             var vals = Array.from(selectedEl.options).map(function (o) { return o.value; });
             if (hiddenInput) hiddenInput.value = vals.join(",");
+            setDirtyState(true);
+        });
+        sectionsContainer.addEventListener("input", function (e) {
+            if (e.target && e.target.classList && e.target.classList.contains("integration-prop-input")) {
+                setDirtyState(true);
+            }
+        });
+        sectionsContainer.addEventListener("change", function (e) {
+            if (e.target && e.target.classList && e.target.classList.contains("integration-prop-input")) {
+                setDirtyState(true);
+            }
         });
     }
 
     initScopeOptions();
     renderProperties();
+    setDirtyState(false);
 })();

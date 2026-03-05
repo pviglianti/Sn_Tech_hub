@@ -32,6 +32,7 @@ from ....services.assessment_phase_progress import (
     start_phase_progress,
 )
 from ....services.integration_properties import load_observation_properties
+from ....services.customization_sync import sync_single_result
 from ..core.get_usage_count import handle as get_usage_count_handle
 
 
@@ -362,6 +363,7 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
             result.review_status = ReviewStatus.pending_review
             result.ai_pass_count = int(result.ai_pass_count or 0) + 1
             session.add(result)
+            sync_single_result(session, result, commit=False)
             processed += 1
 
             absolute_completed = resume_from_index + processed

@@ -7,6 +7,7 @@
 - [x] [owner:human] **Credential key reconciliation**: Resolved — credentials re-entered, instances connecting successfully.
 
 ## Now — When Available
+- [ ] [owner:codex] **Phase 11 unified execution (integrity + cleanup tracks)**: execute Codex-owned tracks from `03_outputs/plan_phase11_unified_feature_ownership_and_legacy_cleanup_2026-03-05.md` and coordinate status in `00_admin/phase11_coordination.md` / `00_admin/phase11_chat.md` (customized-only guard, unique feature membership protection, and assessment-scoped legacy cleanup utility with dry-run/apply).
 - [ ] [owner:codex] **Phase 8A Step 0**: run full regression on combined branch state and commit runtime hardening tranche baseline (telemetry + checkpoints + AI runtime/budget properties) before human QA.
 - [ ] [owner:human] **Relationship Graph validation**: verify `/relationship-graph` launches from result detail, feature hierarchy (feature/member/context links), and table browser; confirm click-centered progressive expansion, custom origin labels (`modified_ootb` vs `net_new_customer`), dictionary/reference/table linkage quality, and development-chain overlays on real assessment data (Codex browser smoke + screenshots completed; exploratory human pass still needed).
 - [ ] [owner:codex] **API-Access Fallback Table Import Utility (next feature)**: implement instance+table-scoped upload/import flow for tables where API pulls are rejected/blocked (CSV/XLS/XLSX/JSON/XML) using plan `servicenow_global_tech_assessment_mcp/03_outputs/plan_api_access_fallback_table_import_utility_2026-03-05.md` (mandatory `sys_updated_on`, `sys_id` warning/fallback matching, dry-run + confirm + upsert/insert report).
@@ -19,6 +20,9 @@
 - [ ] [owner:human] Visual QA deep-link flow: preflight → Job Log with preloaded conditions.
 - [ ] [owner:human] Visual QA #2 Phase 2 durable status (dictionary modal, CSDM ingestion bar, scan runtime bar).
 - [ ] [owner:human] Phase 3/P4D final gate: execute manual QA checklist from `phase3_planning_chat.md` (QA-1..QA-14) on real assessment data.
+- [ ] [owner:codex] **Property contract hygiene sweep (code/docs/app_config parity)**: (1) replace stale doc key `observations.context_enrichment` with `ai_analysis.context_enrichment`, (2) replace legacy `observations.usage_query_limit` references with `observations.max_usage_queries_per_result` + historical-note wording, (3) explicitly document special non-Integration-Properties AppConfig keys (`mcp_bridge_config`, `mcp_runtime_config`, `mcp_admin_token`) and ownership boundaries, and (4) add an automated parity check/test that fails on unapproved unknown AppConfig keys.
+- [ ] [owner:codex] **AI runtime budget wiring completion**: enforce currently loaded-but-underused runtime controls in execution path: `ai.budget.assessment_soft_limit_usd` (warning/telemetry threshold), `ai.budget.monthly_hard_limit_usd` (tenant cap), `ai.budget.max_input_tokens_per_call`, `ai.budget.max_output_tokens_per_call`, plus explicit runtime behavior contract for `ai.runtime.mode/provider/model` beyond telemetry labeling.
+- [ ] [owner:claude] **Cross-review request — properties + save UX**: review Codex property-contract TODO scope and Integration Properties Save UX update (global top-right + bottom save actions, dirty-state/no-auto-save messaging) and post `REVIEW_PASS`/`REVIEW_FEEDBACK` in `phase3_planning_chat.md`.
 - [ ] [owner:any] Rabbit hole priority config — modular/adjustable rules for which dependency types to follow.
 - [ ] [owner:any] Catch-all label table — mapping app file class → display label (sys_dictionary → "Form Fields", etc.).
 
@@ -38,6 +42,20 @@
 - [ ] [owner:codex] Remove `api_config_summary` + `instance_assessment_app_file_options_page` compatibility shims from `server.py` after test imports updated to router modules.
 - [ ] [owner:codex] Add unit tests for `JobRun`/`JobEvent` state transitions, startup recovery, and ETA calculation (gap noted in Claude review of Phase 1).
 - [ ] [owner:any] Jinja2 server-rendered dates (`.strftime()` in templates like `instances.html`, `assessments.html`) still show raw UTC — add a Jinja2 filter when prioritized.
+
+## Completed (session 2026-03-05 — Customizations Visibility Recovery)
+- [x] [owner:codex] Fixed missing-customizations rendering for historical assessments by adding API-level auto-heal/backfill in `customizations` routes (`/api/assessments/{id}/customizations`, `/api/scans/{id}/customizations`, `/api/customizations/options`) to sync stale child-table rows from `scan_result` on read.
+- [x] [owner:codex] Added regression coverage (`tests/test_customizations_api.py`) validating stale-child-table auto-heal behavior for assessment listing + options endpoints.
+- [x] [owner:codex] Repaired backfill utility startup (`src/scripts/backfill_customizations.py` now imports `src.models_sn` registry) and executed one-time local DB backfill to restore historical rows.
+
+## Completed (session 2026-03-05 — MCP Result Sync Hardening)
+- [x] [owner:codex] Patched MCP `update_scan_result` tool to call `sync_single_result` after writes so customization child rows stay aligned when AI updates review/disposition/recommendation/observations.
+- [x] [owner:codex] Added regression tests (`tests/test_update_result_tool.py`) covering both existing-customization updates and missing-customization backfill via MCP write path.
+
+## Completed (session 2026-03-05 — AI/Engine Write-Back Sync Hardening)
+- [x] [owner:codex] Upgraded `customization_sync.bulk_sync_for_scan` from insert-only to full reconciliation (insert missing, update drifted rows, delete stale rows no longer customized) and added optional transactional `commit` control for batching.
+- [x] [owner:codex] Patched AI pipeline write paths to sync child rows during updates: `generate_observations` and depth-first analyzer now call `sync_single_result(..., commit=False)` before their staged commits.
+- [x] [owner:codex] Expanded regression coverage for reconciliation and AI write-back consistency (`tests/test_customization_sync.py`, `tests/test_generate_observations.py`, `tests/test_depth_first_analyzer.py`).
 
 ## Completed (session 2026-03-05 — Phases 6 + 7)
 - [x] [owner:claude] **Phase 6 complete**: MCP Skills/Prompts Library + Best Practice Knowledge Base. `BestPractice` model with 41 seed checks + `BestPracticeCategory` enum, admin CRUD API (`GET/POST/PUT /api/best-practices`), session-aware prompt infrastructure (`PromptSpec.handler`), 4 MCP prompts (`artifact_analyzer`, `relationship_tracer`, `technical_architect`, `report_writer`). 478 tests passing.
@@ -60,6 +78,12 @@
 - [x] [owner:codex] Added graph node deep links for result/artifact/table/assessment/feature navigation and introduced center-artifact development-chain visualization (artifact record, customer update XML, update set, metadata customization, version history with grouped overflow) in relationship graph payload/UI.
 - [x] [owner:codex] Added compact development-chain overlap layout in artifact mode and verified live UI rendering via Playwright screenshots on `127.0.0.1:8081` (including link rendering in Selected Node detail panel).
 - [x] [owner:codex] Shifted graph toward sample-style ergonomics: expanded canvas mode (default), panel toggles (Filters/Details), directional pan controls + arrow-key panning, `Pop Out` window action, and staircase layering for development-chain cards with off-node/staggered labels for cleaner readability.
+
+## Completed (session 2026-03-05 — Pipeline Stage Order Sync)
+- [x] [owner:codex] Reconciled backend pipeline sequencing drift with active docs/UI. **Note (corrected by Claude):** Final correct order is `scans -> engines -> ai_analysis -> observations -> review -> grouping -> ai_refinement -> recommendations -> report -> complete` (engines before ai_analysis). See commits `a337742` (stage order fix) and `6cb7399` (per-assessment analysis_mode). 585 tests passing.
+
+## Completed (session 2026-03-05 — Integration Properties Save UX)
+- [x] [owner:codex] Moved save action out of card-local context and into global page actions: added top-right and bottom Save buttons wired to same handler, added explicit dirty-state/no-auto-save messaging, added unsaved-change scope-switch confirmation, browser/in-app leave confirmation (`beforeunload` + link/form confirm), and kept Reload/Reset in Admin Access card. Validation: `tests/test_integration_properties.py` (`26 passed`).
 
 ## Completed (session 2026-03-04)
 - [x] [owner:codex] Reasoning Phase 1 data model foundation: added `GroupingSignalType`, reasoning fields on `Feature`/`ScanResult`, and 4 new reasoning tables (`code_reference`, `update_set_overlap`, `temporal_cluster`, `structural_relationship`) with explicit `instance_id` + `assessment_id` references and result/update-set foreign keys.

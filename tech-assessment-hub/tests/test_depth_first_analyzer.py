@@ -9,6 +9,7 @@ from src.models import (
     AssessmentPhaseProgress,
     AssessmentState,
     AssessmentType,
+    Customization,
     Feature,
     FeatureScanResult,
     Instance,
@@ -299,6 +300,42 @@ def test_progressive_grouping_creates_feature(db_session):
     assert fsr_a.feature_id == fsr_b.feature_id
     assert fsr_a.assignment_source == "ai"
     assert fsr_b.assignment_source == "ai"
+
+
+def test_depth_first_syncs_customization_observations(db_session):
+    """Depth-first analysis keeps customization child rows in sync."""
+    inst, asmt, scan = _setup_base(db_session)
+
+    sr_a = _make_sr(db_session, scan, "sync_a", "SyncA")
+    sr_b = _make_sr(db_session, scan, "sync_b", "SyncB")
+
+    graph = _build_graph(
+        customized_ids=[sr_a.id, sr_b.id],
+        edges=[(sr_a.id, sr_b.id, "code_reference", 3.0, "bidirectional")],
+    )
+
+    result = run_depth_first_analysis(
+        db_session,
+        asmt.id,
+        inst.id,
+        graph,
+        context_enrichment="never",
+    )
+    assert result.analyzed == 2
+
+    rows = db_session.exec(
+        select(Customization).where(Customization.scan_id == scan.id)
+    ).all()
+    assert len(rows) == 2
+    by_result_id = {row.scan_result_id: row for row in rows}
+
+    refreshed_a = db_session.get(ScanResult, sr_a.id)
+    refreshed_b = db_session.get(ScanResult, sr_b.id)
+    assert refreshed_a is not None
+    assert refreshed_b is not None
+
+    assert by_result_id[sr_a.id].observations == refreshed_a.observations
+    assert by_result_id[sr_b.id].observations == refreshed_b.observations
 
 
 # ---------------------------------------------------------------------------

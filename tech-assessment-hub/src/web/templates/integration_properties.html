@@ -3,8 +3,17 @@
 {% block title %}Integration Properties - Tech Assessment Hub{% endblock %}
 
 {% block content %}
-<div class="page-header">
-    <h1>Integration Properties</h1>
+<div class="page-header integration-properties-header">
+    <div>
+        <h1>Integration Properties</h1>
+        <p class="text-muted-sm mb-0">
+            Changes are not auto-saved.
+            <span class="integration-dirty-state" id="integrationDirtyStateTop">No unsaved changes.</span>
+        </p>
+    </div>
+    <div class="button-group">
+        <button class="btn btn-primary integration-save-trigger" id="integrationSaveTop" title="Save all edited property values for the selected scope">Save Changes</button>
+    </div>
 </div>
 
 <div class="card">
@@ -33,9 +42,11 @@
     {% include "components/admin_token_field.html" %}
     <div class="button-group">
         <button class="btn btn-secondary" id="integrationReload" title="Reload properties from server using current admin token">Reload</button>
-        <button class="btn btn-primary" id="integrationSave" title="Save edited property values to app_config">Save Changes</button>
         <button class="btn btn-secondary" id="integrationResetDefaults" title="Reset all edited values back to defaults in this form">Reset Form To Defaults</button>
     </div>
+    <p class="text-muted-sm mt-1 mb-0">
+        Save is global for this page and current scope (top-right and bottom action bar).
+    </p>
     <pre id="integrationPropertiesStatus" class="code-block mt-1">Ready.</pre>
 </div>
 
@@ -59,6 +70,21 @@
 </div>
 
 <div id="integrationSectionsContainer"></div>
+
+<div class="card mt-1 integration-properties-save-footer">
+    <div class="integration-properties-save-footer-content">
+        <div>
+            <strong>Save Properties</strong>
+            <p class="text-muted-sm mb-0">
+                Applies to all edited fields in the selected scope.
+                <span class="integration-dirty-state" id="integrationDirtyStateBottom">No unsaved changes.</span>
+            </p>
+        </div>
+        <div class="button-group">
+            <button class="btn btn-primary integration-save-trigger" id="integrationSaveBottom" title="Save all edited property values for the selected scope">Save Changes</button>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}

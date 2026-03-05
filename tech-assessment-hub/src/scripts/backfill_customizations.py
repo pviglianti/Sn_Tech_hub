@@ -19,6 +19,7 @@ if str(project_root) not in sys.path:
 from sqlmodel import Session, select
 
 from src.database import engine
+from src import models_sn  # noqa: F401  # ensure SN mirror relationships are registered
 from src.models import Customization, ScanResult
 from src.services.customization_sync import (
     CUSTOMIZED_ORIGIN_TYPES,

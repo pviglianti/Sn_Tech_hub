@@ -3,7 +3,7 @@
 ## Rehydrate Snapshot
 - Active project: `servicenow_global_tech_assessment_mcp/`
 - Primary objective: stabilize and evolve `tech-assessment-hub` as an MCP-first ServiceNow assessment platform.
-- Current execution focus: post-Phase-7 hardening + Phase 9/10 delivery are implemented and under peer-review closeout; P9B/P9C/P10A are approved and P9A (prompt integration) is awaiting final Claude `REVIEW_PASS`. Full regression is currently green (`532 passed`).
+- Current execution focus: Phase 11 unified execution planning is active (`03_outputs/plan_phase11_unified_feature_ownership_and_legacy_cleanup_2026-03-05.md`) with dedicated cross-agent trackers (`00_admin/phase11_coordination.md`, `00_admin/phase11_chat.md`) while legacy post-Phase-7/Phase-9/10 hardening remains in validation/closeout.
 - Cross-agent model: Codex + Claude share state through `todos.md` and `run_log.md`.
 - Rehydration default: Tier 1 only (`context:Rehydrate Snapshot` + `todos:Now`).
 - Deeper continuity: Tier 2 only when needed (`insights:Active Decisions` + tail of `run_log`).
@@ -39,6 +39,7 @@ OUT OF SCOPE (current cycle):
 - Use explicit file paths for traceability.
 
 ## Current Status (2026-03-05)
+- **Phase 11 unified plan established** (Codex, 2026-03-05): consolidated Codex+Claude architecture/sequence for AI-owned feature writes + legacy cleanup in `03_outputs/plan_phase11_unified_feature_ownership_and_legacy_cleanup_2026-03-05.md`; created dedicated coordination/chat files (`00_admin/phase11_coordination.md`, `00_admin/phase11_chat.md`) per protocol.
 - **Phase 7 complete** (Claude, 2026-03-05): Human-in-the-Loop Pipeline Buttons + Re-run. Extended pipeline from 7 to 10 stages (`ai_analysis`, `ai_refinement`, `report`). Added contextual lookup service (local-first, SN fallback), real AI stage handlers with context enrichment, re-run from complete, 10-step flow bar UI. 91 Phase 7 tests, **496 total tests passing**.
 - **Phase 6 complete** (Claude, 2026-03-05): MCP Skills/Prompts Library + Best Practice Knowledge Base. Added `BestPractice` model with 41 seed checks, admin CRUD API, 4 MCP prompts (`artifact_analyzer`, `relationship_tracer`, `technical_architect`, `report_writer`) with session-aware prompt infrastructure. 478 tests at completion.
 - **Phases 1-5 complete** (Codex + Claude, 2026-03-04): Reasoning Layer (6 engines, grouping signals, feature hierarchy), Pipeline Orchestration (7-stage flow bar, observation generation, review gates), MCP protocol/tools/prompts/resources, classification quality audit, durable job tracking, modularization sprint, dynamic table browser, VH workflow optimization. 330 tests at Phase 5 completion.

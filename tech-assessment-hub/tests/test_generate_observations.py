@@ -7,6 +7,7 @@ from src.models import (
     Assessment,
     AssessmentState,
     AssessmentType,
+    Customization,
     GeneralRecommendation,
     Instance,
     OriginType,
@@ -144,6 +145,16 @@ def test_generate_observations_writes_customized_results_and_landscape_summary(d
     assert "update_set_signal_count" in ai_payload
 
     assert refreshed_c.observations is None
+
+    customization_rows = db_session.exec(
+        select(Customization).where(Customization.scan_id == refreshed_a.scan_id)
+    ).all()
+    assert len(customization_rows) == 2
+    by_result_id = {row.scan_result_id: row for row in customization_rows}
+    assert by_result_id[refreshed_a.id].observations == refreshed_a.observations
+    assert by_result_id[refreshed_b.id].observations == refreshed_b.observations
+    assert by_result_id[refreshed_a.id].review_status == ReviewStatus.pending_review
+    assert by_result_id[refreshed_b.id].review_status == ReviewStatus.pending_review
 
     summary_rows = db_session.exec(
         select(GeneralRecommendation)

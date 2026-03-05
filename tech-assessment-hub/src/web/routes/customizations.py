@@ -13,10 +13,12 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from ...database import engine, get_session
-from ...models import Assessment, Customization, OriginType, Scan
+from ...models import Assessment, Customization, OriginType, Scan, ScanResult
+from ...services.customization_sync import CUSTOMIZED_ORIGIN_TYPES, bulk_sync_for_scan
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,60 @@ def _build_customization_payload(row: Customization) -> Dict[str, Any]:
         "observations": row.observations,
         "sys_updated_on": row.sys_updated_on.isoformat() if row.sys_updated_on else None,
     }
+
+
+def _heal_missing_customization_rows(session: Session, scan_ids: List[int]) -> int:
+    """Backfill customization rows for scans with stale/missing child-table data.
+
+    Returns number of inserted customization rows.
+    """
+    if not scan_ids:
+        return 0
+
+    customized_counts_stmt = (
+        select(ScanResult.scan_id, func.count(ScanResult.id))
+        .where(ScanResult.scan_id.in_(scan_ids))  # type: ignore[attr-defined]
+        .where(
+            ScanResult.origin_type.in_(  # type: ignore[attr-defined]
+                [origin.value for origin in CUSTOMIZED_ORIGIN_TYPES]
+            )
+        )
+        .group_by(ScanResult.scan_id)
+    )
+    customized_counts = {
+        scan_id: count for scan_id, count in session.exec(customized_counts_stmt).all()
+    }
+
+    existing_counts_stmt = (
+        select(Customization.scan_id, func.count(Customization.id))
+        .where(Customization.scan_id.in_(scan_ids))  # type: ignore[attr-defined]
+        .group_by(Customization.scan_id)
+    )
+    existing_counts = {
+        scan_id: count for scan_id, count in session.exec(existing_counts_stmt).all()
+    }
+
+    stale_scan_ids = [
+        scan_id
+        for scan_id in scan_ids
+        if existing_counts.get(scan_id, 0) != customized_counts.get(scan_id, 0)
+    ]
+    if not stale_scan_ids:
+        return 0
+
+    inserted = 0
+    for scan_id in stale_scan_ids:
+        inserted += bulk_sync_for_scan(session, scan_id)
+
+    if inserted:
+        logger.info(
+            "Auto-healed customization rows",
+            extra={
+                "scan_count": len(stale_scan_ids),
+                "inserted_rows": inserted,
+            },
+        )
+    return inserted
 
 
 def _query_customizations(
@@ -119,6 +175,8 @@ async def api_assessment_customizations(
     if not scan_ids:
         return {"customizations": [], "total": 0}
 
+    _heal_missing_customization_rows(session, scan_ids)
+
     rows, total = _query_customizations(
         session, scan_ids,
         origin_type=origin_type,
@@ -148,6 +206,8 @@ async def api_scan_customizations(
     scan = session.get(Scan, scan_id)
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
+
+    _heal_missing_customization_rows(session, [scan_id])
 
     rows, total = _query_customizations(
         session, [scan_id],
@@ -194,6 +254,8 @@ async def api_customization_options(
 
     if not scan_ids:
         return {"classes": []}
+
+    _heal_missing_customization_rows(session, scan_ids)
 
     stmt = select(Customization.sys_class_name).where(
         Customization.scan_id.in_(scan_ids)  # type: ignore[attr-defined]
