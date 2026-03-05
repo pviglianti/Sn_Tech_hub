@@ -4,7 +4,9 @@
 import json
 from sqlmodel import Session
 from .database import engine
-from .models import GlobalApp, AppFileClass, NumberSequence
+from sqlmodel import select
+
+from .models import GlobalApp, AppFileClass, NumberSequence, BestPractice, BestPracticeCategory
 from .app_file_class_catalog import app_file_class_seed_rows
 
 
@@ -170,6 +172,438 @@ def seed_number_sequences(session: Session):
     print(f"Seeded {len(sequences)} number sequences")
 
 
+def seed_best_practices(session: Session):
+    """Seed the BestPractice table with ServiceNow best practice checks.
+
+    Idempotent — skips records whose code already exists.
+    """
+    existing_codes = {
+        row.code
+        for row in session.exec(select(BestPractice)).all()
+    }
+
+    checks = [
+        # ── Technical — Server Side ──
+        {
+            "code": "SRV_CURRENT_UPDATE_BEFORE",
+            "title": "current.update() in Before Business Rules",
+            "category": BestPracticeCategory.technical_server,
+            "severity": "critical",
+            "description": "current.update() should never be used in Before Business Rules. ServiceNow automatically saves all values on current after Before BR execution completes.",
+            "detection_hint": "current.update() in sys_script where when=before",
+            "recommendation": "Remove current.update() — values set on current object are auto-saved after Before BR completes.",
+            "applies_to": "sys_script",
+            "source_url": "https://www.servicenow.com/community/developer-blog/never-use-current-update-in-a-business-rule/ba-p/2274329",
+        },
+        {
+            "code": "SRV_CURRENT_UPDATE_AFTER",
+            "title": "current.update() in After Business Rules",
+            "category": BestPracticeCategory.technical_server,
+            "severity": "critical",
+            "description": "current.update() in After Business Rules causes a double-update and can trigger recursive BR execution.",
+            "detection_hint": "current.update() in sys_script where when=after",
+            "recommendation": "Use workflow/flow or async BR to update related records. If updating current is truly needed, use a Before BR instead.",
+            "applies_to": "sys_script",
+            "source_url": "https://www.servicenow.com/community/developer-blog/never-use-current-update-in-a-business-rule/ba-p/2274329",
+        },
+        {
+            "code": "SRV_CURRENT_UPDATE_NO_WORKFLOW",
+            "title": "current.update() without setWorkflow(false)",
+            "category": BestPracticeCategory.technical_server,
+            "severity": "critical",
+            "description": "current.update() without setWorkflow(false) triggers all business rules again, potentially causing infinite recursion.",
+            "detection_hint": "current.update() without nearby setWorkflow(false)",
+            "recommendation": "If current.update() is absolutely needed, call current.setWorkflow(false) first. But prefer Before BR pattern instead.",
+            "applies_to": "sys_script",
+        },
+        {
+            "code": "SRV_GLIDERECORD_IN_LOOP",
+            "title": "GlideRecord queries inside loops",
+            "category": BestPracticeCategory.technical_server,
+            "severity": "high",
+            "description": "Querying the database inside a loop causes N+1 performance problems. Each iteration creates a new database query.",
+            "detection_hint": "GlideRecord constructor or .query() inside while/for loop body",
+            "recommendation": "Build a list of values first, then query once using the IN operator. Or use GlideAggregate for counts/sums.",
+            "source_url": "https://www.servicenow.com/community/developer-articles/performance-best-practices-for-server-side-coding-in-servicenow/ta-p/2324426",
+        },
+        {
+            "code": "SRV_NO_TRY_CATCH",
+            "title": "No error handling in server scripts",
+            "category": BestPracticeCategory.technical_server,
+            "severity": "medium",
+            "description": "Server-side scripts without try/catch blocks may fail silently or produce unhelpful errors.",
+            "detection_hint": "Server script code body with no try/catch block",
+            "recommendation": "Wrap significant logic in try/catch and log errors with gs.error() or gs.logError().",
+        },
+        {
+            "code": "SRV_AFTER_NOT_ASYNC",
+            "title": "After BR where Async BR would suffice",
+            "category": BestPracticeCategory.technical_server,
+            "severity": "medium",
+            "description": "After Business Rules block the user transaction. If the BR doesn't need to run synchronously, Async is faster for the user.",
+            "detection_hint": "After BR with no user-facing side effects (e.g., updating related records, sending events)",
+            "recommendation": "Change timing from After to Async. The platform runs Async BRs on a background worker thread.",
+            "applies_to": "sys_script",
+        },
+        {
+            "code": "SRV_GLOBAL_BR_NO_TABLE",
+            "title": "Global Business Rule without table filter",
+            "category": BestPracticeCategory.technical_server,
+            "severity": "medium",
+            "description": "A Business Rule with no table filter runs on every table operation in the system, which is rarely intended and impacts performance.",
+            "detection_hint": "sys_script with empty or null table/collection field",
+            "recommendation": "Set a specific table. If truly global behavior is needed, document why clearly.",
+            "applies_to": "sys_script",
+        },
+        {
+            "code": "SRV_SCRIPT_INCLUDE_NO_INIT",
+            "title": "Script Include missing initialize()",
+            "category": BestPracticeCategory.technical_server,
+            "severity": "low",
+            "description": "Class-based Script Includes should have an initialize() method for proper constructor behavior.",
+            "detection_hint": "sys_script_include with Class.create() pattern but no initialize function",
+            "recommendation": "Add initialize: function() {} to the prototype definition.",
+            "applies_to": "sys_script_include",
+        },
+        {
+            "code": "SRV_CLIENT_CALLABLE_MISUSE",
+            "title": "Script Include client-callable flag misuse",
+            "category": BestPracticeCategory.technical_server,
+            "severity": "medium",
+            "description": "A Script Include marked client_callable=true should extend AbstractAjaxProcessor. If it doesn't, the flag may be set incorrectly, exposing server logic to client-side calls.",
+            "detection_hint": "client_callable=true but no AbstractAjaxProcessor extension in code",
+            "recommendation": "If client-callable, extend AbstractAjaxProcessor. If not needed client-side, set client_callable=false.",
+            "applies_to": "sys_script_include",
+        },
+        {
+            "code": "SRV_DEPRECATED_API",
+            "title": "Deprecated API usage",
+            "category": BestPracticeCategory.technical_server,
+            "severity": "medium",
+            "description": "Using deprecated ServiceNow APIs risks breakage on upgrades.",
+            "detection_hint": "current.variables used outside of catalog context, Packages.* Java calls, obsolete GlideRecord methods",
+            "recommendation": "Replace with current supported API equivalents.",
+        },
+        # ── Technical — Client Side ──
+        {
+            "code": "CLI_DOM_MANIPULATION",
+            "title": "DOM manipulation (unsupported)",
+            "category": BestPracticeCategory.technical_client,
+            "severity": "high",
+            "description": "Direct DOM manipulation using jQuery selectors or document.getElementById is not supported by ServiceNow and may break on UI updates or upgrades. Sometimes unavoidable but should always be flagged.",
+            "detection_hint": "$(' or document.get or document.querySelector or jQuery( in client script code",
+            "recommendation": "Use supported g_form API methods (setValue, setDisplay, setMandatory, etc.). If DOM manipulation is truly needed, document the reason.",
+            "applies_to": "sys_script_client,sys_ui_script",
+            "source_url": "https://www.servicenow.com/community/queensland-snug/client-script-best-practices/ba-p/2273951",
+        },
+        {
+            "code": "CLI_SYNC_GLIDEAJAX",
+            "title": "Synchronous GlideAjax calls",
+            "category": BestPracticeCategory.technical_client,
+            "severity": "high",
+            "description": "getXMLWait() blocks the browser thread until the server responds, causing the UI to freeze.",
+            "detection_hint": "getXMLWait() in client script code",
+            "recommendation": "Use asynchronous getXMLAnswer() with a callback function instead.",
+            "applies_to": "sys_script_client,sys_ui_script",
+        },
+        {
+            "code": "CLI_GLIDERECORD_CLIENT",
+            "title": "GlideRecord used client-side",
+            "category": BestPracticeCategory.technical_client,
+            "severity": "medium",
+            "description": "Client-side GlideRecord makes direct database calls from the browser. ServiceNow recommends GlideAjax for client-server communication.",
+            "detection_hint": "GlideRecord constructor in sys_script_client or sys_ui_script code",
+            "recommendation": "Create a Script Include extending AbstractAjaxProcessor and call it via GlideAjax.",
+            "applies_to": "sys_script_client,sys_ui_script",
+        },
+        {
+            "code": "CLI_DOING_UI_POLICY_WORK",
+            "title": "Client script setting mandatory/visible/readonly",
+            "category": BestPracticeCategory.technical_client,
+            "severity": "high",
+            "description": "Client scripts that only set fields mandatory, visible, or read-only should use UI Policies instead. UI Policies are declarative, faster to load, and easier for admins to maintain.",
+            "detection_hint": "g_form.setMandatory, g_form.setVisible, g_form.setDisplay, g_form.setReadOnly as primary purpose of client script",
+            "recommendation": "Replace with UI Policy + UI Policy Actions. Reserve client scripts for complex logic that UI Policies cannot handle.",
+            "applies_to": "sys_script_client",
+            "source_url": "https://www.servicenow.com/community/developer-forum/ui-policy-and-client-script-best-practice/m-p/3247425",
+        },
+        {
+            "code": "CLI_GSCRATCHPAD_MISUSE",
+            "title": "g_scratchpad misuse",
+            "category": BestPracticeCategory.technical_client,
+            "severity": "medium",
+            "description": "g_scratchpad should only be populated from Display Business Rules and read in client scripts. Misuse includes setting values from client scripts or over-reliance for data passing.",
+            "detection_hint": "g_scratchpad used outside Display BR → Client Script pattern",
+            "recommendation": "Use Display BR to set g_scratchpad values. For complex data needs, use GlideAjax.",
+            "applies_to": "sys_script_client,sys_ui_script",
+        },
+        # ── Architecture ──
+        {
+            "code": "ARCH_EXTEND_CORE_TABLE",
+            "title": "Extending core task-child tables",
+            "category": BestPracticeCategory.architecture,
+            "severity": "critical",
+            "description": "Extending Incident, Change Request, Problem, or other core task-child tables fractures AI training data, complicates routing, SLAs, and reporting. Extending the Task table itself is acceptable.",
+            "detection_hint": "Custom table extending incident, change_request, problem, or other OOTB task children",
+            "recommendation": "Extend Task directly if task-based workflow is needed. Do not extend Incident or other core task children.",
+            "source_url": "https://www.servicenow.com/community/itsm-articles/best-practice-incident-management-to-extend-or-not-to-extend-and/ta-p/3486025",
+        },
+        {
+            "code": "ARCH_CUSTOM_FIELD_OOTB_EXISTS",
+            "title": "Custom field where OOTB field exists",
+            "category": BestPracticeCategory.architecture,
+            "severity": "high",
+            "description": "Creating custom u_ fields when an equivalent OOTB field exists wastes resources and misses built-in functionality.",
+            "detection_hint": "u_ prefixed field on a table where a similar standard field exists and is not used",
+            "recommendation": "Use the OOTB field instead. If the OOTB field doesn't quite fit, consider Dictionary Overrides before creating custom.",
+        },
+        {
+            "code": "ARCH_LOOKUP_NOT_DL",
+            "title": "Lookup table not using Data Lookup framework",
+            "category": BestPracticeCategory.architecture,
+            "severity": "high",
+            "description": "Custom tables used purely for data lookups should extend dl_matcher to leverage ServiceNow's built-in Data Lookup Definitions, Matchers, and unlimited table storage.",
+            "detection_hint": "Custom table used as a lookup/reference table that does not extend dl_matcher",
+            "recommendation": "Extend dl_matcher for lookup tables. Use Data Lookup Definitions for auto-population rules.",
+            "source_url": "https://www.servicenow.com/community/developer-blog/the-power-of-servicenow-data-matching-using-data-lookup-rules/ba-p/3008708",
+        },
+        {
+            "code": "ARCH_NOT_MODULAR",
+            "title": "Business logic not modular/reusable",
+            "category": BestPracticeCategory.architecture,
+            "severity": "medium",
+            "description": "Complex business logic embedded directly in Business Rules cannot be reused by other scripts, flows, or APIs.",
+            "detection_hint": "Business Rule with >30 lines of logic that could be extracted to a Script Include",
+            "recommendation": "Extract reusable logic into Script Includes. Call from BRs, Flows, and other scripts.",
+        },
+        {
+            "code": "ARCH_GLOBAL_NOT_SCOPED",
+            "title": "Custom code in global scope",
+            "category": BestPracticeCategory.architecture,
+            "severity": "medium",
+            "description": "Custom artifacts in global scope lack namespace isolation, are harder to manage, and create more upgrade conflicts.",
+            "detection_hint": "Custom artifacts (not OOTB modifications) that are not in a scoped application",
+            "recommendation": "Package custom development into scoped custom applications. Each feature should ideally be its own scope for easy disposal.",
+            "source_url": "https://www.servicenow.com/community/servicenow-ai-platform-blog/application-development-best-practice-1-work-in-a-scope/ba-p/2288784",
+        },
+        {
+            "code": "ARCH_LEGACY_WORKFLOW",
+            "title": "Legacy Workflow instead of Flow Designer",
+            "category": BestPracticeCategory.architecture,
+            "severity": "medium",
+            "description": "ServiceNow is deprecating legacy workflows. Flow Designer provides better testing, error handling, and async processing.",
+            "detection_hint": "Active records in wf_workflow table",
+            "recommendation": "Plan migration to Flow Designer. Use the Workflow Automation CoE migration guide.",
+            "source_url": "https://www.servicenow.com/community/workflow-automation-articles/migrate-legacy-workflows-to-flows-and-playbooks-workflow/ta-p/3132026",
+        },
+        {
+            "code": "ARCH_CATALOG_CLIENT_NOT_UI_POLICY",
+            "title": "Catalog Client Script instead of Catalog UI Policy",
+            "category": BestPracticeCategory.architecture,
+            "severity": "medium",
+            "description": "Catalog Client Scripts doing field visibility/mandatory work should use Catalog UI Policies instead.",
+            "detection_hint": "Catalog client script whose primary purpose is setMandatory/setDisplay/setReadOnly on catalog variables",
+            "recommendation": "Use Catalog UI Policy + UI Policy Actions for declarative variable control.",
+            "applies_to": "catalog_script_client",
+        },
+        {
+            "code": "ARCH_NO_VARIABLE_SETS",
+            "title": "Catalog variables not using Variable Sets",
+            "category": BestPracticeCategory.architecture,
+            "severity": "low",
+            "description": "Repeated individual variables across catalog items should be consolidated into reusable Variable Sets.",
+            "detection_hint": "Same variable definitions repeated across multiple catalog items",
+            "recommendation": "Create Variable Sets for shared variable groups. Attach to multiple catalog items.",
+        },
+        {
+            "code": "ARCH_LIST_COLLECTOR_OVERUSE",
+            "title": "List Collector variable overuse",
+            "category": BestPracticeCategory.architecture,
+            "severity": "medium",
+            "description": "List Collector (slush bucket) variables are not supported by the g_form API and are hard to customize programmatically.",
+            "detection_hint": "List Collector variable type in catalog items",
+            "recommendation": "Use Multi-Row Variable Sets or other supported variable types instead.",
+        },
+        # ── Process ──
+        {
+            "code": "PROC_DEFAULT_UPDATE_SET",
+            "title": "Artifacts in Default update set",
+            "category": BestPracticeCategory.process,
+            "severity": "high",
+            "description": "Changes captured in the Default update set indicate development done directly in the environment without proper change tracking.",
+            "detection_hint": "Artifacts linked to update set named 'Default' or 'default'",
+            "recommendation": "Always create a named update set before making changes. Use naming convention: [Project]-[Story]-[Description].",
+            "source_url": "https://www.servicenow.com/community/developer-blog/servicenow-update-set-leading-practices-part-1/ba-p/3246473",
+        },
+        {
+            "code": "PROC_NO_US_NAMING",
+            "title": "No update set naming convention",
+            "category": BestPracticeCategory.process,
+            "severity": "medium",
+            "description": "Update set names without a consistent prefix, project code, or story number make change tracking and deployment difficult.",
+            "detection_hint": "Update set names that lack a common prefix pattern or project identifier",
+            "recommendation": "Adopt a naming convention: [ProjectCode]-[StoryNumber]-[ShortDescription]. Prefix with a number for ordering.",
+        },
+        {
+            "code": "PROC_OVERSIZED_US",
+            "title": "Update set too large (>100 entries)",
+            "category": BestPracticeCategory.process,
+            "severity": "medium",
+            "description": "Update sets with more than ~100 XML entries are hard to review, deploy, and troubleshoot. Recommended max is 500-1000 XML entries.",
+            "detection_hint": "Update set with >100 artifact links or XML entries",
+            "recommendation": "Break large changes into smaller, focused update sets. Use parent/child batch grouping for related sets.",
+        },
+        {
+            "code": "PROC_NO_US_BATCHING",
+            "title": "Related update sets not batched",
+            "category": BestPracticeCategory.process,
+            "severity": "medium",
+            "description": "Related update sets without parent/child batch grouping complicate deployment ordering and rollback.",
+            "detection_hint": "Multiple related update sets (by naming or time) without a parent batch update set",
+            "recommendation": "Group related update sets under a parent batch. Limit to 5-10 children per batch.",
+        },
+        {
+            "code": "PROC_NO_CODE_COMMENTS",
+            "title": "No comments in code",
+            "category": BestPracticeCategory.process,
+            "severity": "medium",
+            "description": "Code without comments (header block and inline) is harder to maintain and review.",
+            "detection_hint": "Scriptable artifact code body with zero comment lines (// or /* patterns)",
+            "recommendation": "Add a header comment block (author, purpose, date) and inline comments for complex logic.",
+        },
+        {
+            "code": "PROC_HARDCODED_SYSID",
+            "title": "Hard-coded sys_ids in scripts",
+            "category": BestPracticeCategory.process,
+            "severity": "high",
+            "description": "Hard-coded 32-character sys_ids are not portable between instances (dev/test/prod may have different IDs).",
+            "detection_hint": "32-character hexadecimal strings in code body",
+            "recommendation": "Store sys_ids in System Properties using gs.getProperty(), or use Script Include constants.",
+            "source_url": "https://www.servicenow.com/community/developer-articles/scripting-best-practices-avoid-using-hardcoded-values-in-scripts/ta-p/2466714",
+        },
+        {
+            "code": "PROC_NO_SYSTEM_PROPERTIES",
+            "title": "Config values not in System Properties",
+            "category": BestPracticeCategory.process,
+            "severity": "high",
+            "description": "Configuration values (URLs, thresholds, feature flags) embedded directly in scripts require code changes to update.",
+            "detection_hint": "Hard-coded URLs, email addresses, threshold numbers, or feature flags in script code",
+            "recommendation": "Create System Properties and retrieve with gs.getProperty(). Allows admin changes without code deployment.",
+        },
+        # ── Security ──
+        {
+            "code": "SEC_ACL_SCRIPT_NO_ROLE",
+            "title": "Scripted ACL without role shielding",
+            "category": BestPracticeCategory.security,
+            "severity": "high",
+            "description": "ACLs with scripted conditions but no role requirement force the script to execute on every access check, impacting performance.",
+            "detection_hint": "ACL record with script condition populated but no role requirement set",
+            "recommendation": "Add a role requirement to the ACL. The role check (cached in memory) prevents unnecessary script execution.",
+            "applies_to": "sys_security_acl",
+            "source_url": "https://www.servicenow.com/community/platform-privacy-security-blog/configuring-acls-the-right-way/ba-p/3446017",
+        },
+        {
+            "code": "SEC_NO_ACL_CUSTOM_TABLE",
+            "title": "Custom table missing ACLs",
+            "category": BestPracticeCategory.security,
+            "severity": "high",
+            "description": "Custom tables without ACL records may rely on default permissions, potentially exposing data to unauthorized users.",
+            "detection_hint": "Custom table (sys_db_object) with no corresponding ACL records",
+            "recommendation": "Create table-level and field-level ACLs for custom tables. At minimum: read, write, create, delete ACLs.",
+        },
+        {
+            "code": "SEC_OVERLY_PERMISSIVE_ACL",
+            "title": "Overly permissive ACL",
+            "category": BestPracticeCategory.security,
+            "severity": "medium",
+            "description": "ACLs granting broad access (e.g., to 'itil' or 'snc_internal' roles) without additional conditions may expose sensitive data.",
+            "detection_hint": "ACL with only broad role requirement and no conditions or scripts",
+            "recommendation": "Add conditions or scripted checks to narrow access. Use least-privilege principle.",
+            "applies_to": "sys_security_acl",
+        },
+        {
+            "code": "SEC_CREDENTIALS_IN_CODE",
+            "title": "Credentials or secrets in scripts",
+            "category": BestPracticeCategory.security,
+            "severity": "critical",
+            "description": "Passwords, API keys, tokens, or other secrets hard-coded in scripts are a critical security risk.",
+            "detection_hint": "Strings resembling passwords, API keys, bearer tokens, or base64-encoded credentials in code body",
+            "recommendation": "Use ServiceNow Credential Store, Connection & Credential Aliases, or System Properties (with encryption) for secrets.",
+        },
+        # ── Performance ──
+        {
+            "code": "PERF_UNINDEXED_QUERY",
+            "title": "Queries on unindexed fields",
+            "category": BestPracticeCategory.performance,
+            "severity": "high",
+            "description": "GlideRecord queries on large tables without indexed where-clause fields cause full table scans.",
+            "detection_hint": "GlideRecord addQuery on fields not known to be indexed, especially on large tables (task, sys_audit, syslog)",
+            "recommendation": "Add database indexes for frequently queried fields. Use setLimit() to cap result sets.",
+        },
+        {
+            "code": "PERF_HEAVY_BEFORE_QUERY_BR",
+            "title": "Heavy Before Query Business Rule",
+            "category": BestPracticeCategory.performance,
+            "severity": "high",
+            "description": "Before Query Business Rules run on every query to the table, including list views. Complex scripts here severely impact page load.",
+            "detection_hint": "Before Query BR with significant scripting (>10 lines) or GlideRecord queries inside it",
+            "recommendation": "Minimize Before Query BR logic. Move complex logic to ACLs or other mechanisms.",
+            "applies_to": "sys_script",
+        },
+        {
+            "code": "PERF_SYNC_WHERE_ASYNC",
+            "title": "Synchronous processing where async works",
+            "category": BestPracticeCategory.performance,
+            "severity": "medium",
+            "description": "Blocking the user transaction for operations that could run in the background (event queue, async BR, scheduled job).",
+            "detection_hint": "After BR or script doing heavy processing (emails, integrations, bulk updates) synchronously",
+            "recommendation": "Use gs.eventQueue(), Async Business Rules, or Flow Designer for background processing.",
+        },
+        {
+            "code": "PERF_NOTIFICATION_OVERUSE",
+            "title": "Excessive record-based notifications",
+            "category": BestPracticeCategory.performance,
+            "severity": "low",
+            "description": "Many condition-based notifications are harder to troubleshoot than event-driven ones.",
+            "detection_hint": "Large number of 'Record inserted or updated' notifications on the same table",
+            "recommendation": "Consider event-driven notifications for easier troubleshooting. Events provide a clear audit trail.",
+        },
+        # ── Upgradeability ──
+        {
+            "code": "UPG_MODIFIED_OOTB_SCRIPT",
+            "title": "Direct modification of OOTB scripts",
+            "category": BestPracticeCategory.upgradeability,
+            "severity": "high",
+            "description": "Directly modifying OOTB Business Rules, Script Includes, or UI Scripts creates skipped records on every upgrade that must be manually reconciled.",
+            "detection_hint": "modified_ootb origin on scriptable artifacts (sys_script, sys_script_include, sys_ui_script)",
+            "recommendation": "Instead of modifying OOTB scripts, create new artifacts that extend or override behavior. Use scoped applications for isolation.",
+            "source_url": "https://www.servicenow.com/community/developer-blog/best-practices-to-manage-skipped-updates-effectively-during/ba-p/3421456",
+        },
+        {
+            "code": "UPG_HIGH_SKIPPED_RISK",
+            "title": "High skipped record risk on upgrade",
+            "category": BestPracticeCategory.upgradeability,
+            "severity": "medium",
+            "description": "Assessments with many modified OOTB artifacts will produce many skipped records on upgrade, requiring significant review effort.",
+            "detection_hint": "High count (>20) of modified_ootb artifacts across the assessment",
+            "recommendation": "Prioritize refactoring modified OOTB artifacts into custom scoped applications that extend rather than modify.",
+        },
+    ]
+
+    new_records = [
+        BestPractice(**data)
+        for data in checks
+        if data["code"] not in existing_codes
+    ]
+
+    if new_records:
+        for rec in new_records:
+            session.add(rec)
+        session.commit()
+
+    print(f"Seeded {len(new_records)} best practices ({len(checks)} total defined)")
+
+
 def run_seed():
     """Run all seed operations"""
     with Session(engine) as session:
@@ -177,6 +611,7 @@ def run_seed():
         seed_global_apps(session)
         seed_app_file_classes(session)
         seed_number_sequences(session)
+        seed_best_practices(session)
         print("Seed complete!")
 
 
