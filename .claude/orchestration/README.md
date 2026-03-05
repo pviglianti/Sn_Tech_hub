@@ -20,6 +20,7 @@ Orchestrator (Codex)
   ├── Launches Devs in parallel → implement in worktrees
   ├── Launches Reviewer after first [DONE] → constrained reviewer
   ├── Launches one-shot watcher snapshots on monitor triggers
+  ├── Starts rolling cross-test/fix lanes as soon as a tester is available
   ├── Re-launches Devs as cross-testers
   ├── Sends findings to Arch + PM for feedback
   ├── Merges worktrees → runs full tests → commits
@@ -32,10 +33,12 @@ Architect and PM do not require open tabs between prompts. They are re-launched 
 
 All launches should be streamable to `.jsonl` logs so Codex can steer in real time.
 Watcher runs are snapshot-based (one-shot): the orchestrator decides when to re-launch, and never tells the watcher to poll/wait.
+Optional scribe runs are also snapshot-based and never block build progress.
+Gate scripts enforce critical safety checks (bootstrap ACK coverage and target worktree/branch context for cross-tests).
 
 Model / reasoning guidance:
 - Architect stays on `opus` with highest reasoning (`--effort high` / ultrathink-equivalent).
-- Devs, PM, reviewer, cross-testers, UI tester, and live watcher are chosen case-by-case.
+- Devs, PM, reviewer, cross-testers, UI tester, and watcher/scribe snapshots are chosen case-by-case.
 - Use the cheapest tier likely to succeed, but if the stream shows drift or weak reasoning, Codex either tightens the prompt or escalates model/effort.
 - Simple, tightly prescribed tasks can use `haiku` or `opus`/medium depending on risk; complex or ambiguous dev work can absolutely stay on `opus`/high.
 

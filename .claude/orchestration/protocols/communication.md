@@ -20,6 +20,7 @@ All inline updates in plan MD use:
 | `[CROSS_TEST_START]` | Starting cross-test | Cross-testers |
 | `[CROSS_TEST_PASS]` | Cross-test verified | Cross-testers |
 | `[CROSS_TEST_FAIL]` | Cross-test found issues | Cross-testers |
+| `[CROSS_TEST_BLOCKED]` | Cross-test could not start due to wrong worktree/branch or missing prereq | Cross-testers |
 | `[FIX]` | Fixing issues from review/cross-test | Devs |
 | `[SIGN_OFF]` | Final approval | Anyone signing off |
 | `[FEEDBACK]` | Post-review feedback | Architect, PM |

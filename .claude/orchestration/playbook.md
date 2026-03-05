@@ -7,7 +7,7 @@ This is your copy-paste reference. Follow phases in order. Do NOT skip checkpoin
 1. **Arch launches first at full power.** Architect always uses `opus` + `--effort high`.
 2. **Nothing else spins up until the plan drops** (Checkpoint 0).
 3. **You are the event loop.** Agents never poll — you watch streams and nudge them.
-4. **Every launch should be streamable.** Default to `stream-json` logs for Architect, PM, devs, reviewer, cross-testers, feedback, and memory writes.
+4. **Every launch should be streamable.** Default to `stream-json` logs for Architect, PM, devs, reviewer, watcher/scribe snapshots, cross-testers, feedback, and memory writes.
 5. **Deliver then die.** Workers produce output and exit. Architect + PM persist through memory files and shared docs, not open tabs.
 6. **Live watcher is snapshot-based.** Each watcher run is one-shot; orchestrator re-launches snapshots on triggers.
 7. **Steer before you escalate.** Since the run is streamed, tighten the prompt first. Raise model/effort only when the stream shows the current tier is not enough.
@@ -22,7 +22,7 @@ Use the cheapest tier that is likely to succeed, except Architect which is fixed
 
 | Tier | Use For | Default Model / Effort | Notes |
 |------|---------|------------------------|-------|
-| Tier A | ACK/bootstrap, live watcher, exact checklist reruns, simple cross-tests | `haiku` / low | Use when the task is tightly prescribed and failure is easy to spot in-stream |
+| Tier A | ACK/bootstrap, watcher/scribe snapshots, exact checklist reruns, simple cross-tests | `haiku` / low | Use when the task is tightly prescribed and failure is easy to spot in-stream |
 | Tier B | PM formatting/refinement, most dev tasks, reviewer passes, UI checks | `sonnet` / medium | Default starting point for non-architect work |
 | Tier C | Architect, ambiguous dev work, risky refactors, migrations, security/transaction/perf review, repeated misses | `opus` / high | Use when architecture or deep reasoning matters |
 
@@ -59,6 +59,9 @@ cp .claude/orchestration/templates/findings_template.md orchestration_run/findin
 
 # 5. Create feature branch
 git checkout -b feature/<name>
+
+# 6. Set team size once per run (must match plan + coordination)
+NUM_DEVS=2
 ```
 
 ---
@@ -122,9 +125,10 @@ git commit -m "orchestration: lock plan for $(date +%Y-%m-%d)"
 ### Step 4: Create worktrees (1 per dev)
 
 ```bash
-# For each dev (example: 2 devs)
-git worktree add .worktrees/dev_1 -b dev_1/feature feature/<name>
-git worktree add .worktrees/dev_2 -b dev_2/feature feature/<name>
+# For each dev (works for 2, 3, ... N)
+for dev in $(seq 1 "$NUM_DEVS"); do
+  git worktree add ".worktrees/dev_${dev}" -b "dev_${dev}/feature" feature/<name>
+done
 ```
 
 ### Step 5: Bootstrap devs (ACK — fast, cheap)
@@ -132,19 +136,13 @@ git worktree add .worktrees/dev_2 -b dev_2/feature feature/<name>
 Use `haiku` for bootstrap unless the ACK prompt itself proves too brittle:
 
 ```bash
-# Dev-1 bootstrap
-claude -p --verbose --model haiku --effort low \
-  --dangerously-skip-permissions --disable-slash-commands \
-  --output-format stream-json --include-partial-messages \
-  "Role: Dev-1. Read plan at $PROJECT_ROOT/orchestration_run/plan.md. Read your task (Task 1). Post [ACK] to your Dev-1 Notes section there. Exit." \
-  > orchestration_run/logs/dev_1_bootstrap.jsonl 2>&1
-
-# Dev-2 bootstrap
-claude -p --verbose --model haiku --effort low \
-  --dangerously-skip-permissions --disable-slash-commands \
-  --output-format stream-json --include-partial-messages \
-  "Role: Dev-2. Read plan at $PROJECT_ROOT/orchestration_run/plan.md. Read your task (Task 2). Post [ACK] to your Dev-2 Notes section there. Exit." \
-  > orchestration_run/logs/dev_2_bootstrap.jsonl 2>&1
+for dev in $(seq 1 "$NUM_DEVS"); do
+  claude -p --verbose --model haiku --effort low \
+    --dangerously-skip-permissions --disable-slash-commands \
+    --output-format stream-json --include-partial-messages \
+    "Role: Dev-${dev}. Read plan at $PROJECT_ROOT/orchestration_run/plan.md. Read your task (Task ${dev}). Post [ACK] to your Dev-${dev} Notes section there. Exit." \
+    > "orchestration_run/logs/dev_${dev}_bootstrap.jsonl" 2>&1
+done
 ```
 
 **Wait for:** `[ACK]` in each dev's notes section.
@@ -159,7 +157,7 @@ Run the hard gate script before launching Step 6:
 # Usage: require_bootstrap_ack.sh <plan_path> <expected_dev_count>
 $PROJECT_ROOT/.claude/orchestration/scripts/require_bootstrap_ack.sh \
   "$PROJECT_ROOT/orchestration_run/plan.md" \
-  2
+  "$NUM_DEVS"
 ```
 
 If the script exits non-zero, do NOT launch execution prompts yet.
@@ -174,44 +172,39 @@ Streamed with log capture — these run in parallel:
 # - simple/prescribed task: haiku + low or sonnet + medium
 # - standard implementation: sonnet + medium
 # - ambiguous/risky task: opus + high
+# IMPORTANT: define model/effort for every Dev-1..Dev-N and launch every dev.
+# Skipping one dev launch means that task never starts.
 DEV_1_MODEL=sonnet
 DEV_1_EFFORT=medium
 DEV_2_MODEL=opus
 DEV_2_EFFORT=high
+# DEV_3_MODEL=sonnet
+# DEV_3_EFFORT=medium
 
-# Dev-1 execution (streamed — runs in worktree)
-cd .worktrees/dev_1 && \
-claude -p --verbose --model "$DEV_1_MODEL" --effort "$DEV_1_EFFORT" \
-  --dangerously-skip-permissions --disable-slash-commands \
-  --output-format stream-json --include-partial-messages \
-  "$(cat $PROJECT_ROOT/.claude/orchestration/roles/dev.md)
+for dev in $(seq 1 "$NUM_DEVS"); do
+  model_var="DEV_${dev}_MODEL"
+  effort_var="DEV_${dev}_EFFORT"
+  model="${!model_var:-sonnet}"
+  effort="${!effort_var:-medium}"
+
+  (
+    cd "$PROJECT_ROOT/.worktrees/dev_${dev}"
+    claude -p --verbose --model "$model" --effort "$effort" \
+      --dangerously-skip-permissions --disable-slash-commands \
+      --output-format stream-json --include-partial-messages \
+      "$(cat $PROJECT_ROOT/.claude/orchestration/roles/dev.md)
 
 TASK ASSIGNMENT:
-Task: 1
-Files owned: [list from plan]
+Task: ${dev}
+Files owned: [list from plan for Task ${dev}]
 Test command: [from plan]
 Done criteria: [from plan]
 Plan location: $PROJECT_ROOT/orchestration_run/plan.md
-Worktree: $PROJECT_ROOT/.worktrees/dev_1" \
-  > "$PROJECT_ROOT/orchestration_run/logs/dev_1_stream.jsonl" 2>&1 &
-DEV_1_PID=$!
-
-# Dev-2 execution (streamed — runs in worktree)
-cd .worktrees/dev_2 && \
-claude -p --verbose --model "$DEV_2_MODEL" --effort "$DEV_2_EFFORT" \
-  --dangerously-skip-permissions --disable-slash-commands \
-  --output-format stream-json --include-partial-messages \
-  "$(cat $PROJECT_ROOT/.claude/orchestration/roles/dev.md)
-
-TASK ASSIGNMENT:
-Task: 2
-Files owned: [list from plan]
-Test command: [from plan]
-Done criteria: [from plan]
-Plan location: $PROJECT_ROOT/orchestration_run/plan.md
-Worktree: $PROJECT_ROOT/.worktrees/dev_2" \
-  > "$PROJECT_ROOT/orchestration_run/logs/dev_2_stream.jsonl" 2>&1 &
-DEV_2_PID=$!
+Worktree: $PROJECT_ROOT/.worktrees/dev_${dev}" \
+      > "$PROJECT_ROOT/orchestration_run/logs/dev_${dev}_stream.jsonl" 2>&1
+  ) &
+  eval "DEV_${dev}_PID=$!"
+done
 
 # Record model/effort/PID/log choices in orchestration_run/coordination.md
 ```
@@ -225,6 +218,7 @@ Wait until the first dev posts `[DONE]` in the shared plan, then choose the revi
 ```bash
 REVIEWER_MODEL=sonnet
 REVIEWER_EFFORT=medium
+WORKTREE_LIST=$(printf ".worktrees/dev_%s, " $(seq 1 "$NUM_DEVS") | sed 's/, $//')
 
 cd "$PROJECT_ROOT" && \
 claude -p --verbose --model "$REVIEWER_MODEL" --effort "$REVIEWER_EFFORT" \
@@ -233,7 +227,7 @@ claude -p --verbose --model "$REVIEWER_MODEL" --effort "$REVIEWER_EFFORT" \
   --output-format stream-json --include-partial-messages \
   "$(cat .claude/orchestration/roles/code_reviewer.md)
 
-WORKTREES: .worktrees/dev_1, .worktrees/dev_2
+WORKTREES: $WORKTREE_LIST
 PLAN: $PROJECT_ROOT/orchestration_run/plan.md
 FINDINGS OUTPUT: $PROJECT_ROOT/orchestration_run/findings.md" \
   > orchestration_run/logs/reviewer_stream.jsonl 2>&1 &
@@ -264,6 +258,27 @@ Only run: git status --short, git diff --stat in worktrees." \
 WATCHER_PID=$!
 ```
 
+### Step 8b: Launch Scribe Snapshot (optional, one-shot)
+
+Use when the run has 3+ devs, long duration, or frequent handoffs.
+
+```bash
+SCRIBE_ENABLED=${SCRIBE_ENABLED:-false}
+if [[ "$SCRIBE_ENABLED" == "true" ]]; then
+  SCRIBE_MODEL=haiku
+  SCRIBE_EFFORT=low
+  SCRIBE_TS=$(date +%Y%m%d_%H%M%S)
+
+  claude -p --verbose --model "$SCRIBE_MODEL" --effort "$SCRIBE_EFFORT" \
+    --dangerously-skip-permissions --disable-slash-commands \
+    --tools Read,Edit,Bash \
+    --output-format stream-json --include-partial-messages \
+    "$(cat .claude/orchestration/roles/scribe.md)" \
+    > "orchestration_run/logs/scribe_${SCRIBE_TS}.jsonl" 2>&1 &
+  SCRIBE_PID=$!
+fi
+```
+
 ### Step 9: Monitor (orchestrator polling loop)
 
 ```bash
@@ -277,8 +292,9 @@ tail -f orchestration_run/findings.md &
 ps aux | grep claude
 
 # Check worktree changes
-git -C .worktrees/dev_1 status --short
-git -C .worktrees/dev_2 status --short
+for dev in $(seq 1 "$NUM_DEVS"); do
+  git -C ".worktrees/dev_${dev}" status --short
+done
 ```
 
 Watcher re-launch policy (snapshot runs):
@@ -287,13 +303,37 @@ Watcher re-launch policy (snapshot runs):
 - Relaunch when stall is suspected (no stream growth, no status updates)
 - Relaunch every 10 minutes while dev execution is active
 
+First `[DONE]` response gate (time-boxed to 2 minutes):
+- Launch reviewer (if not already running)
+- Launch watcher snapshot
+- Launch optional scribe snapshot (if enabled)
+- If any tester is idle, launch a rolling cross-test lane immediately (do NOT wait for all devs)
+
 **Intervention triggers:**
 - Reviewer flags CRITICAL → tighten the dev prompt first; escalate model/effort only if the stream still shows misses
 - Dev stalled 5+ min → kill → relaunch with narrower prompt
 - Stream size not growing → check `wc -l orchestration_run/logs/*.jsonl`
+- Crosstester posts `[CROSS_TEST_BLOCKED]` → relaunch crosstester from correct target worktree/branch
 
 Guardrail:
 - During Build phase, do not do unrelated housekeeping updates (for example todo journaling). Stay on monitoring, gating, nudges, and checkpoint progression.
+
+### Step 9b: Rolling Cross-Test + Patch Loop (while build is still active)
+
+When some devs are done and at least one dev is still implementing, start validation early:
+
+1. Task posts `[DONE]` and reviewer has begun coverage for that task
+2. Pick an idle tester from the matrix
+3. Launch crosstester in the target dev's worktree immediately
+4. If `[CROSS_TEST_FAIL]`, relaunch original dev for fix immediately
+5. Relaunch crosstester for re-verify
+
+This runs in parallel with remaining implementation work and reduces end-of-phase pileups.
+
+### CHECKPOINT 1.5 — First `[DONE]` Response
+- [ ] Reviewer launched within 2 minutes of first `[DONE]`
+- [ ] Watcher snapshot launched within 2 minutes of first `[DONE]`
+- [ ] Rolling cross-test lane launched when tester is idle
 
 ### CHECKPOINT 2 — Implementation Complete
 - [ ] All devs posted `[DONE]` with passing tests
@@ -303,24 +343,32 @@ Guardrail:
 
 ## Phase 3: CROSS-TEST (worktrees, code read-only)
 
-### Step 10: Re-launch devs as cross-testers
+### Step 10: Launch Remaining Cross-Tests (if not already closed in rolling loop)
 
 Streamed, code read-only (`Read,Edit,Bash` so the tester can append only to the shared thread):
+Use one launch per tester→target pair from the round-robin matrix (examples below show a 2-dev pair).
 
 ```bash
+# If rolling cross-test already closed a task, skip launching that lane again.
 # Simple checklist reruns can start at haiku + low.
 # If the test requires diagnosis, multi-step reasoning, or ambiguous validation, move to sonnet + medium or higher.
 CROSSTEST_1_MODEL=haiku
 CROSSTEST_1_EFFORT=low
 CROSSTEST_2_MODEL=sonnet
 CROSSTEST_2_EFFORT=medium
+WORKTREE_GATE_SCRIPT="$PROJECT_ROOT/.claude/orchestration/scripts/require_worktree_context.sh"
 
 # Dev-1 tests Dev-2's work
-claude -p --verbose --model "$CROSSTEST_1_MODEL" --effort "$CROSSTEST_1_EFFORT" \
-  --dangerously-skip-permissions --disable-slash-commands \
-  --tools Read,Edit,Bash \
-  --output-format stream-json --include-partial-messages \
-  "$(cat .claude/orchestration/roles/dev_crosstester.md)
+TARGET_DEV=2
+TARGET_WORKTREE="$PROJECT_ROOT/.worktrees/dev_${TARGET_DEV}"
+(
+  cd "$TARGET_WORKTREE"
+  "$WORKTREE_GATE_SCRIPT" "$TARGET_WORKTREE" "dev_${TARGET_DEV}/"
+  claude -p --verbose --model "$CROSSTEST_1_MODEL" --effort "$CROSSTEST_1_EFFORT" \
+    --dangerously-skip-permissions --disable-slash-commands \
+    --tools Read,Edit,Bash \
+    --output-format stream-json --include-partial-messages \
+    "$(cat $PROJECT_ROOT/.claude/orchestration/roles/dev_crosstester.md)
 
 CROSS-TEST ASSIGNMENT:
 You are Dev-1. Test Dev-2's Task 2.
@@ -328,15 +376,21 @@ Worktree: .worktrees/dev_2
 Test command: [from plan]
 Verify: [acceptance criteria from plan]
 Post results to Cross-Test Thread for Task 2 in $PROJECT_ROOT/orchestration_run/plan.md" \
-  > orchestration_run/logs/dev_1_crosstest.jsonl 2>&1 &
+    > "$PROJECT_ROOT/orchestration_run/logs/dev_1_crosstest.jsonl" 2>&1
+) &
 CROSSTEST_1_PID=$!
 
 # Dev-2 tests Dev-1's work
-claude -p --verbose --model "$CROSSTEST_2_MODEL" --effort "$CROSSTEST_2_EFFORT" \
-  --dangerously-skip-permissions --disable-slash-commands \
-  --tools Read,Edit,Bash \
-  --output-format stream-json --include-partial-messages \
-  "$(cat .claude/orchestration/roles/dev_crosstester.md)
+TARGET_DEV=1
+TARGET_WORKTREE="$PROJECT_ROOT/.worktrees/dev_${TARGET_DEV}"
+(
+  cd "$TARGET_WORKTREE"
+  "$WORKTREE_GATE_SCRIPT" "$TARGET_WORKTREE" "dev_${TARGET_DEV}/"
+  claude -p --verbose --model "$CROSSTEST_2_MODEL" --effort "$CROSSTEST_2_EFFORT" \
+    --dangerously-skip-permissions --disable-slash-commands \
+    --tools Read,Edit,Bash \
+    --output-format stream-json --include-partial-messages \
+    "$(cat $PROJECT_ROOT/.claude/orchestration/roles/dev_crosstester.md)
 
 CROSS-TEST ASSIGNMENT:
 You are Dev-2. Test Dev-1's Task 1.
@@ -344,7 +398,8 @@ Worktree: .worktrees/dev_1
 Test command: [from plan]
 Verify: [acceptance criteria from plan]
 Post results to Cross-Test Thread for Task 1 in $PROJECT_ROOT/orchestration_run/plan.md" \
-  > orchestration_run/logs/dev_2_crosstest.jsonl 2>&1 &
+    > "$PROJECT_ROOT/orchestration_run/logs/dev_2_crosstest.jsonl" 2>&1
+) &
 CROSSTEST_2_PID=$!
 ```
 
@@ -359,26 +414,33 @@ FIX_MODEL=sonnet
 FIX_EFFORT=medium
 VERIFY_MODEL=haiku
 VERIFY_EFFORT=low
+WORKTREE_GATE_SCRIPT="$PROJECT_ROOT/.claude/orchestration/scripts/require_worktree_context.sh"
+TARGET_DEV=N  # replace N with the actual task owner number
 
 # Re-launch original dev to fix (full tools, in their worktree)
-cd .worktrees/dev_N && \
+cd ".worktrees/dev_${TARGET_DEV}" && \
 claude -p --verbose --model "$FIX_MODEL" --effort "$FIX_EFFORT" \
   --dangerously-skip-permissions --disable-slash-commands \
   --output-format stream-json --include-partial-messages \
   "$(cat $PROJECT_ROOT/.claude/orchestration/roles/dev.md)
 
 FIX REQUEST:
-Cross-tester found issues in your Task N. Read the Cross-Test Thread in $PROJECT_ROOT/orchestration_run/plan.md.
-Fix the issues, re-run tests, post [FIX] to your Dev-N Notes section." \
-  > "$PROJECT_ROOT/orchestration_run/logs/dev_N_fix.jsonl" 2>&1
+Cross-tester found issues in your Task ${TARGET_DEV}. Read the Cross-Test Thread in $PROJECT_ROOT/orchestration_run/plan.md.
+Fix the issues, re-run tests, post [FIX] to your Dev-${TARGET_DEV} Notes section." \
+  > "$PROJECT_ROOT/orchestration_run/logs/dev_${TARGET_DEV}_fix.jsonl" 2>&1
 
 # After fix posted, re-launch cross-tester to verify
-claude -p --verbose --model "$VERIFY_MODEL" --effort "$VERIFY_EFFORT" \
-  --dangerously-skip-permissions --disable-slash-commands \
-  --tools Read,Edit,Bash \
-  --output-format stream-json --include-partial-messages \
-  "Dev-N posted [FIX]. Re-verify in .worktrees/dev_N. Post [CROSS_TEST_PASS] or [CROSS_TEST_FAIL] to the shared Cross-Test Thread in $PROJECT_ROOT/orchestration_run/plan.md." \
-  > "$PROJECT_ROOT/orchestration_run/logs/dev_N_reverify.jsonl" 2>&1
+TARGET_WORKTREE="$PROJECT_ROOT/.worktrees/dev_${TARGET_DEV}"
+(
+  cd "$TARGET_WORKTREE"
+  "$WORKTREE_GATE_SCRIPT" "$TARGET_WORKTREE" "dev_${TARGET_DEV}/"
+  claude -p --verbose --model "$VERIFY_MODEL" --effort "$VERIFY_EFFORT" \
+    --dangerously-skip-permissions --disable-slash-commands \
+    --tools Read,Edit,Bash \
+    --output-format stream-json --include-partial-messages \
+    "Dev-${TARGET_DEV} posted [FIX]. Re-verify in .worktrees/dev_${TARGET_DEV}. Post [CROSS_TEST_PASS], [CROSS_TEST_FAIL], or [CROSS_TEST_BLOCKED] to the shared Cross-Test Thread in $PROJECT_ROOT/orchestration_run/plan.md." \
+    > "$PROJECT_ROOT/orchestration_run/logs/dev_${TARGET_DEV}_reverify.jsonl" 2>&1
+)
 ```
 
 Repeat until both sign off.
@@ -395,12 +457,18 @@ Repeat until both sign off.
 
 ```bash
 # Prefer recorded PIDs from orchestration_run/coordination.md or your current shell.
-kill "$DEV_1_PID" "$DEV_2_PID" "$CROSSTEST_1_PID" "$CROSSTEST_2_PID" "$WATCHER_PID" 2>/dev/null
-ps -p "$DEV_1_PID" "$DEV_2_PID" "$CROSSTEST_1_PID" "$CROSSTEST_2_PID" "$WATCHER_PID"
+for dev in $(seq 1 "$NUM_DEVS"); do
+  eval "kill \${DEV_${dev}_PID:-} 2>/dev/null || true"
+done
+for pid_var in $(compgen -A variable | grep '^CROSSTEST_.*_PID$' || true); do
+  kill "${!pid_var:-}" 2>/dev/null || true
+done
+kill "${WATCHER_PID:-}" "${SCRIBE_PID:-}" 2>/dev/null || true
 
 # Fallback only if a PID was not recorded:
 pkill -f "claude.*dev_"
 pkill -f "claude.*live_watch"
+pkill -f "claude.*scribe"
 ```
 
 ### Step 13: Wait for reviewer to finish findings.md
@@ -503,8 +571,9 @@ Orchestrator asks: "Arch + PM are idle. Prep next sprint, do a deep review, or w
 
 ```bash
 # Merge each dev's worktree branch
-git merge dev_1/feature --no-edit
-git merge dev_2/feature --no-edit
+for dev in $(seq 1 "$NUM_DEVS"); do
+  git merge "dev_${dev}/feature" --no-edit
+done
 ```
 
 ### Step 17: Run full test suite

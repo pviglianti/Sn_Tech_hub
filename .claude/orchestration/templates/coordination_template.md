@@ -40,6 +40,9 @@ Record every backgrounded orchestration launch here before moving to the next st
 | PM | sonnet | medium | — | orchestration_run/logs/pm_stream.jsonl | — | — |
 | Dev-1 | sonnet | medium | — | orchestration_run/logs/dev_1_stream.jsonl | — | — |
 | Dev-2 | opus | high | — | orchestration_run/logs/dev_2_stream.jsonl | — | — |
+| Reviewer | sonnet | medium | — | orchestration_run/logs/reviewer_stream.jsonl | — | — |
+| Watcher (snapshot) | haiku | low | — | orchestration_run/logs/live_watch_*.jsonl | — | — |
+| Scribe (optional snapshot) | haiku | low | — | orchestration_run/logs/scribe_*.jsonl | — | — |
 
 ## Checkpoint Status
 
@@ -47,6 +50,7 @@ Record every backgrounded orchestration launch here before moving to the next st
 |-----------|------|--------|-----------|
 | 0 — Plan Locked | Plan + coordination exist | [ ] | — |
 | 1 — Bootstrap ACK Complete | All ACKs + gate script passed | [ ] | — |
+| 1.5 — First DONE Response | Reviewer+watcher launched, rolling cross-test started if tester idle | [ ] | — |
 | 2 — Implementation Complete | All [DONE] + reviewed | [ ] | — |
 | 3 — Cross-Test Complete | All sign-offs | [ ] | — |
 | 4 — Feedback Complete | Arch+PM feedback posted | [ ] | — |

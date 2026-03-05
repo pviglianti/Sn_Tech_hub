@@ -6,8 +6,8 @@ Full workflow from start to finish.
 
 ```
 Phase 1: PLAN        → Architect + PM produce plan (root branch)
-Phase 2: BUILD       → Devs implement in worktrees, reviewer starts after first [DONE]
-Phase 3: CROSS-TEST  → Devs re-launched as code-read-only testers
+Phase 2: BUILD       → Devs implement in worktrees, reviewer+watcher start after first [DONE], rolling cross-test/fix lanes may start immediately
+Phase 3: CROSS-TEST  → Complete remaining cross-tests/sign-offs not closed during rolling lanes
 Phase 4: FEEDBACK    → Kill workers, reviewer summary, Arch+PM re-launched for findings review
 Phase 4.5: ROADMAP   → Arch+PM prep for next sprint (optional)
 Phase 5: FINALIZE    → Merge worktrees, full test suite, commit
@@ -22,10 +22,11 @@ Phase 6: MEMORY      → Arch+PM write session memory, verify all orchestration 
 | Architect | Phase 1 | Plan, feedback, memory | Each prompt exits after deliverable | YES — multiple times via memory files |
 | PM | Phase 1 | Assignments, feedback, memory | Each prompt exits after deliverable | YES — multiple times via memory files |
 | Dev (build) | Checkpoint 1 | Code + tests | `[DONE]` posted | New `-p` as cross-tester/patcher |
-| Dev (cross-test) | After review | Test results | `[CROSS_TEST_PASS/FAIL]` | New `-p` if re-verify needed |
+| Dev (cross-test) | As soon as target task is `[DONE]` and a tester is available | Test results | `[CROSS_TEST_PASS/CROSS_TEST_FAIL/CROSS_TEST_BLOCKED]` | New `-p` if re-verify needed |
 | Dev (patch) | When issues found | Fix in worktree | `[FIX]` posted | New `-p` if fix rejected |
 | Code Reviewer | After first `[DONE]` | `findings.md` | Findings delivered | No — single run |
 | Live Watcher | After first `[DONE]` and on monitor triggers | Snapshot of actionable items | Each snapshot exits immediately | YES — one-shot relaunches by orchestrator |
+| Scribe (optional) | After first `[DONE]` and periodic checkpoints | Compact status digest in coordination docs | Each snapshot exits immediately | YES — one-shot relaunches by orchestrator |
 
 ## Deliver Then Die
 
@@ -35,7 +36,7 @@ Every role runs as a fresh `claude -p` call, produces its deliverable, and exits
 
 ## Spindown Order
 
-1. Phase 4 step 2: Kill devs and cross-testers; if a watcher snapshot is still running, kill it too. Verify recorded PIDs are gone.
+1. Phase 4 step 2: Kill devs and cross-testers; if watcher/scribe snapshots are still running, kill them too. Verify recorded PIDs are gone.
 2. Phase 4 step 5: Kill Reviewer after findings.md complete
 3. Phase 5: No worker process remains alive while orchestrator merges/tests/commits
 4. Phase 6: Arch + PM re-launch for memory writes if needed

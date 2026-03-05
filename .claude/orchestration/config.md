@@ -45,6 +45,19 @@ watcher_relaunch_triggers:
   - first_done
   - findings_updated
   - suspected_stall
+
+scribe_enabled_default: false
+scribe_model: haiku
+scribe_effort: low
+scribe_mode: one_shot
+scribe_snapshot_interval_minutes: 15
+scribe_relaunch_triggers:
+  - first_done
+  - checkpoint_change
+
+cross_test_start_policy: rolling_when_tester_idle
+cross_test_target_context_required: true
+worktree_context_gate_script: .claude/orchestration/scripts/require_worktree_context.sh
 ui_tester_model: sonnet
 ui_tester_effort: low
 bootstrap_model: haiku
