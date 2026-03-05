@@ -246,7 +246,10 @@ class TestEndpointToHandler:
     def test_ai_analysis_advances_stage_to_observations(
         self, mock_gather, mock_set_stage, mock_set_job, db_session, db_engine
     ):
-        """Running ai_analysis handler should auto-advance pipeline_stage to observations."""
+        """Running ai_analysis handler should auto-advance pipeline_stage to observations.
+
+        Note: engines now runs BEFORE ai_analysis in the pipeline (Phase 11A reorder).
+        """
         inst, asmt = _seed_instance_and_assessment(db_session, PipelineStage.ai_analysis.value)
         # Add one customized scan result so handler has work
         scan = Scan(assessment_id=asmt.id, scan_type=ScanType.metadata,

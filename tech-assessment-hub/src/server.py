@@ -439,8 +439,8 @@ _ASSESSMENT_PIPELINE_RUN_MODULE = "assessment"
 _ASSESSMENT_PIPELINE_RUN_TYPE = "reasoning_pipeline"
 _PIPELINE_STAGE_ORDER: List[str] = [
     PipelineStage.scans.value,
-    PipelineStage.ai_analysis.value,
     PipelineStage.engines.value,
+    PipelineStage.ai_analysis.value,
     PipelineStage.observations.value,
     PipelineStage.review.value,
     PipelineStage.grouping.value,
@@ -451,8 +451,8 @@ _PIPELINE_STAGE_ORDER: List[str] = [
 ]
 _PIPELINE_STAGE_LABELS: Dict[str, str] = {
     PipelineStage.scans.value: "Scans",
-    PipelineStage.ai_analysis.value: "AI Analysis",
     PipelineStage.engines.value: "Engines",
+    PipelineStage.ai_analysis.value: "AI Analysis",
     PipelineStage.observations.value: "Observations",
     PipelineStage.review.value: "Review",
     PipelineStage.grouping.value: "Grouping",
@@ -462,8 +462,8 @@ _PIPELINE_STAGE_LABELS: Dict[str, str] = {
     PipelineStage.complete.value: "Complete",
 }
 _PIPELINE_STAGE_AUTONEXT: Dict[str, str] = {
-    PipelineStage.ai_analysis.value: PipelineStage.engines.value,
-    PipelineStage.engines.value: PipelineStage.observations.value,
+    PipelineStage.engines.value: PipelineStage.ai_analysis.value,
+    PipelineStage.ai_analysis.value: PipelineStage.observations.value,
     PipelineStage.observations.value: PipelineStage.review.value,
     PipelineStage.grouping.value: PipelineStage.ai_refinement.value,
     PipelineStage.ai_refinement.value: PipelineStage.recommendations.value,
@@ -1627,18 +1627,7 @@ def _run_assessment_pipeline_stage(
                     checkpoint_callback=dfs_checkpoint_cb,
                     progress_callback=dfs_progress_cb,
                 )
-
-                complete_phase_progress(
-                    session, assessment_id, stage,
-                    checkpoint={
-                        "mode": "depth_first",
-                        "analyzed": result.analyzed,
-                        "features_created": result.features_created,
-                        "features_updated": result.features_updated,
-                        "total_customized": result.total_customized,
-                    },
-                    commit=False,
-                )
+                # Note: complete_phase_progress is called inside run_depth_first_analysis
                 success_message = (
                     f"Depth-first analysis complete: {result.analyzed}/{result.total_customized} artifacts, "
                     f"{result.features_created} features created, {result.features_updated} updated"
