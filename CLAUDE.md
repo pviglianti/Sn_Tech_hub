@@ -30,6 +30,8 @@ The rehydration contract and rollover rules must stay identical to `AGENTS.md`.
 - Do not auto-load whole folders.
 - Do not print full rehydration files into chat.
 - Prefer explicit file paths in references.
+- Exclude `archive/` from default context scans and rehydration unless explicitly requested.
+- Treat files under `archive/` as old/historical and ignore them for active planning and implementation unless user asks.
 
 ## Engineering Principles
 Follow `AGENTS.md` > "Engineering Principles" section in full. Key reminders:

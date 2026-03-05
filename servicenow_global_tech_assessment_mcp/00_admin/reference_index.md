@@ -20,7 +20,7 @@ Minimal active index of sources used by ongoing work.
 | Path | Type | Priority | Active Use |
 |---|---|---|---|
 | `03_outputs/13_csdm_data_foundations_spec.md` | output | high | CSDM ingestion/module implementation reference |
-| `03_outputs/api_standardization_plan_codex_2026-02-13.md` | output | high | delta/keyset/API standardization baseline |
+| `archive/2026-03-05_markdown_cleanup/servicenow_global_tech_assessment_mcp/03_outputs/api_standardization_plan_codex_2026-02-13.md` | archived_output | med | historical delta/keyset/API standardization baseline |
 | `03_outputs/00_delivery_index.md` | output | high | deliverable status and lifecycle index |
 
 ## Archive Note

@@ -21,6 +21,7 @@
 - [x] [owner:claude] Phase 5 UI scope: flow bar rendering/wiring, observation cards + review controls, review gate UI, and grouping/recommendation trigger UX using Codex backend contracts.
 - [x] [owner:both] Phase 5 cross-review + end-to-end validation (backend+UI integration) and updated human QA checklist — automated validation green (`330` full regression after new dedupe tests) and live pipeline re-validation completed on `pdi` (`assessment_id=19`) through `engines → observations → review gate → grouping → recommendations → complete`.
 - [x] [owner:codex] Phase 6 Task 3 UI prep: drafted `src/web/templates/admin_best_practices.html` with DataTable-based list + editor form and endpoint wiring assumptions (`GET/POST/PUT /api/best-practices`), then posted contract notes to `phase3_planning_chat.md` for Claude route wiring.
+- [x] [owner:codex] Markdown archive pass (2026-03-05): created tracked `archive/2026-03-05_markdown_cleanup/`, moved 14 stale/duplicate plan docs, and added archive exclusion rules for agent context (`AGENTS.md`, `CLAUDE.md`).
 - [ ] [owner:claude] Phase 6 Task 3 backend wiring: add page route/nav + `best-practices` API routes to match Codex template contract, then request Codex cross-review + targeted test run.
 - [ ] [owner:human] Reasoning Phase 1 validation: run `run_preprocessing_engines` tool on a real assessment and spot-check generated `code_reference` + `structural_relationship` rows in Data Browser.
 - [ ] [owner:any] Rabbit hole priority config — modular/adjustable rules for which dependency types to follow.

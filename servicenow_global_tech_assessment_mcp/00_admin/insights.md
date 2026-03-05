@@ -5,6 +5,7 @@
 - Canonical workspace is `servicenow_global_tech_assessment_mcp/`; legacy dated workspace is archive-only.
 - Rehydration defaults to minimal context (Tier 1) to prevent token waste and context noise.
 - Tier 2 is opt-in and limited to durable decisions + recent run-log tail.
+- Archive policy update (2026-03-05): stale/implemented markdown plans are moved to `archive/2026-03-05_markdown_cleanup/`; `archive/` is excluded from default agent rehydration/context scans unless explicitly requested.
 - `server.py` decomposition is a priority maintainability investment, not optional refactor debt.
 - Test hardening (pytest fixtures + smoke coverage) is a prerequisite for safe structural refactors.
 - Classification quality must follow Assessment Guide logic, including fallback linkage behavior.

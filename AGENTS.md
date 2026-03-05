@@ -34,6 +34,11 @@ This file is the single shared standard for Claude, Codex, and other tools.
 - Read only explicitly referenced files from `02_working/` or `03_outputs/`.
 - Never bulk-read folders.
 
+## Context Exclusions (Required)
+- Never include `archive/` in default rehydration or exploratory scans.
+- Read files under `archive/` only when the user explicitly asks for archived material.
+- Treat files moved into `archive/` as historical/old docs and ignore them for active implementation decisions.
+
 ## Core Memory File Shapes
 - `context.md`: includes `## Rehydrate Snapshot` (8-12 bullets max).
 - `todos.md`: only 3 sections: `## Now`, `## Next`, `## Backlog`.

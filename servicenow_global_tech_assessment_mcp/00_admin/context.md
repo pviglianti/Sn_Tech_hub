@@ -9,6 +9,7 @@
 - Deeper continuity: Tier 2 only when needed (`insights:Active Decisions` + tail of `run_log`).
 - Canonical codebase: `tech-assessment-hub/`.
 - Canonical admin memory: `servicenow_global_tech_assessment_mcp/00_admin/`.
+- Local markdown archive (2026-03-05): `archive/2026-03-05_markdown_cleanup/` for stale/implemented plans; excluded from default rehydration unless explicitly requested.
 - Historical high-volume notes/logs were archived externally on 2026-02-14.
 - Archive location: `/Users/pviglianti/Library/Mobile Documents/com~apple~CloudDocs/Cloud Archive/2026-02-14_rehydration_guardrails`.
 

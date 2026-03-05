@@ -175,5 +175,5 @@ All messages go in **`<phase_name>_chat.md`** (same directory).
 
 | Phase | Files | Status | Outcome |
 |-------|-------|--------|---------|
-| Phase 2 Engines | `phase2_coordination.md` / `phase2_chat.md` | Complete | 6 engines, 276 tests, both agents approved |
+| Phase 2 Engines | `archive/2026-03-05_markdown_cleanup/servicenow_global_tech_assessment_mcp/00_admin/phase2_coordination.md` / `archive/2026-03-05_markdown_cleanup/servicenow_global_tech_assessment_mcp/00_admin/phase2_chat.md` | Complete | 6 engines, 276 tests, both agents approved |
 | Phase 3 UI + AI Feature Orchestration | `phase3_coordination.md` / `phase3_planning_chat.md` | Plan approved, execution pending | 8 tasks (P3A-P3D, P4A-P4D) |

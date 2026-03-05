@@ -6,6 +6,9 @@
 - `/Users/pviglianti/Library/Mobile Documents/com~apple~CloudDocs/Cloud Archive/2026-02-14_legacy_non_md_cleanup_round3`
 - `/Users/pviglianti/Library/Mobile Documents/com~apple~CloudDocs/Cloud Archive/2026-02-14_core_md_compression_round4`
 
+## Local Archive Roots
+- `archive/2026-03-05_markdown_cleanup/`
+
 ## 2026-02-14_rehydration_guardrails
 Purpose:
 - Preserve pre-guardrail versions of core instructions/admin memory before compression.
@@ -46,6 +49,20 @@ Backed-up files (pre-compression):
 - `02_working/01_notes/data_model_exports_analysis.md`
 - `02_working/01_notes/stabilization_validation.md`
 - `02_working/01_notes/mcp_app_blueprint.md`
+
+## 2026-03-05_markdown_cleanup (local workspace archive)
+Purpose:
+- Move stale/implemented markdown plans and duplicate `* 2.md` files out of active paths while preserving traceability in-repo.
+
+Archived set:
+- Closed Phase 2 coordination/chat files.
+- Completed Feb-2026 implementation instruction/plan docs.
+- Duplicated markdown files with suffix ` 2.md`.
+- Implemented customization child-table design/implementation plans.
+
+Traceability files:
+- `archive/2026-03-05_markdown_cleanup/MANIFEST.md`
+- `archive/2026-03-05_markdown_cleanup/PRE_MOVE_REVIEW.md`
 
 ## Manifest Files
 - Each archive root now uses a single consolidated `MANIFEST.md`.
