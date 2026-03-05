@@ -273,6 +273,7 @@ def _populate_prompt_registry() -> None:
     from .prompts.artifact_analyzer import PROMPT_SPECS as ARTIFACT_ANALYZER_SPECS
     from .prompts.relationship_tracer import PROMPT_SPECS as RELATIONSHIP_TRACER_SPECS
     from .prompts.technical_architect import PROMPT_SPECS as technical_architect_specs
+    from .prompts.report_writer import PROMPT_SPECS as report_writer_specs
 
     for spec in PROMPT_SPECS:
         PROMPT_REGISTRY.register(spec)
@@ -283,6 +284,8 @@ def _populate_prompt_registry() -> None:
     for spec in RELATIONSHIP_TRACER_SPECS:
         PROMPT_REGISTRY.register(spec)
     for spec in technical_architect_specs:
+        PROMPT_REGISTRY.register(spec)
+    for spec in report_writer_specs:
         PROMPT_REGISTRY.register(spec)
 
 
