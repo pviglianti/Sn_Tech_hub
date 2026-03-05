@@ -38,6 +38,14 @@
 - Job Log metric semantics (2026-03-04): unified `rows_inserted` column is a processed-count metric for preflight/dictionary/assessment runs (e.g., `records_pulled`, `queue_completed`), not guaranteed net-new row inserts. UI label updated to "Rows/Items Processed" to avoid duplicate-data false positives.
 - End-to-end validation status (2026-03-04): P1–P6 validation executed with phase-grouped pytest suites (all green), full regression (`330 passed`), MCP prompt/resource/runtime suites green (`56 passed`), and live pipeline progression verified on `pdi` assessment 19 (`scans -> engines -> observations -> review -> grouping -> recommendations -> complete`) including review-gate enforcement and review-status API updates.
 - Phase 6 Task 3 UI contract (2026-03-04): `admin_best_practices.html` is DataTable-based with static client schema and expects `GET /api/best-practices`, `POST /api/best-practices`, and `PUT /api/best-practices/{id}`; backend wiring should preserve this path contract to avoid page-script drift.
+- QA durability decision (2026-03-05): preflight `data_pull` and `dict_pull` status surfaces now auto-finalize orphaned active durable runs when no worker thread is alive and heartbeat age exceeds grace (30s), preventing persistent "running" UI/modals and stale Job Log states.
+- AI runtime control decision (2026-03-05): model execution mode/provider/model and budget guardrails are first-class integration properties (`ai.runtime.*`, `ai.budget.*`) with per-instance overrides and typed loader (`load_ai_runtime_properties`).
+- Runtime telemetry decision (2026-03-05): `assessment_runtime_usage` is the canonical per-assessment cost/perf telemetry surface (results/features/recommendations counts, MCP call splits, token usage, estimated cost, runtime mode/model), exposed at `/integration-properties/assessment-runtime-usage`.
+- Resume checkpoint decision (2026-03-05): `assessment_phase_progress` is the canonical resumable cursor per assessment+phase. Pipeline stages and MCP tools update `resume_from_index`/`completed_items` at chunk boundaries and use explicit failure statuses (`blocked_rate_limit`, `blocked_cost_limit`, `failed`) to support deterministic rehydrate/resume.
+- Phase sequencing decision (2026-03-05): prompt integration is promoted from deferred Phase 10 work into Phase 9 scope (Option A), and will ship together with Excel/Word exports + process recommendations UI after Phase 8A stabilization/validation gate.
+- Phase 9 execution decision (2026-03-05): keep existing JSON contracts in stage fields and append registered-prompt context under additive keys (`registered_prompt`, `prompt_context`, `registered_prompt_error`) so enabling prompt integration is reversible and backward compatible with existing consumers/tests.
+- Phase 9 export format decision (2026-03-05): generate XLSX/DOCX using minimal OpenXML zip writers in-app (no new runtime dependencies), sourced from latest `assessment_report` row plus recommendation/feature context.
+- Phase 10 scope decision (2026-03-05): summary dashboard delivered at `/assessments/summary` as cross-assessment operational view (pipeline stage/state distribution + cost/token/MCP aggregate telemetry) while deep per-assessment metrics remain on `/integration-properties/assessment-runtime-usage`.
 
 ### ARCHITECTURE: Dynamic Registry is Canonical for ALL SN Table Mirroring
 - **`SnTableRegistry` + `SnFieldMapping`** (in `models_sn.py`) is the ONE system for mirroring any ServiceNow table — CSDM, preflight, custom, or future modules. Renamed from `Csdm*` prefix on 2026-02-15.
@@ -105,6 +113,36 @@
 - **Gap 3 — `changed_baseline_now` unused**: Stored on ScanResult but not input to `_classify_origin()`. Guide uses it as a signal.
 - **Gap 4 — V3 user existence check**: Guide v3 adds `created_by_in_user_table` for unknown records. Not implemented.
 - **File**: `src/services/scan_executor.py:457`
+
+### ARCHITECTURE: Phase 7 — 10-Stage Pipeline with AI Handlers + Re-run
+- **PipelineStage extended to 10**: scans → ai_analysis → engines → observations → review → grouping → ai_refinement → recommendations → report → complete. 3 new AI stages added before engines and after grouping.
+- **Human-Edit-as-Context principle**: AI checks for existing human content at every stage and never overwrites — only refines. AI may rewrite human content for better flow/grammar/spelling while preserving the human's core point.
+- **Local-first contextual enrichment**: `src/services/contextual_lookup.py` — 6 functions: `detect_references`, `check_local_table_data`, `lookup_reference_local`, `lookup_reference_remote`, `resolve_references`, `gather_artifact_context`. Checks Fact cache → local DB (TableDefinition, ScanResult, UpdateSet) → SN via sn_client if allowed.
+- **Enrichment modes controlled by property**: `observations.context_enrichment` — "auto" (default, local first + remote fallback), "always" (always remote), "never" (local only).
+- **Reference detection**: Regex patterns for INC, CHG, RITM, REQ, PRB, TASK, WO, WOTASK/WOT, KB with longest-prefix-first alternation.
+- **Fact caching**: `_FACT_MODULE = "tech_assessment"`, 12hr TTL, `topic_type="reference_lookup"`. Prevents redundant SN queries.
+- **ai_analysis handler**: Loads `AIAnalysisProperties`, queries customized ScanResults, calls `gather_artifact_context()`, writes JSON to `sr.ai_observations`.
+- **ai_refinement handler**: 3 sub-steps — (1) complex features (5+ members) get `Feature.ai_summary`, (2) Mode A per-artifact review enriches each ScanResult, (3) Mode B assessment-wide technical findings stored as `GeneralRecommendation(category="technical_findings")`.
+- **Report handler**: Aggregates statistics, features, recommendations, review status into `GeneralRecommendation(category="assessment_report")`. Replaces existing report on re-run.
+- **Re-run from complete**: `rerun: true` flag on advance-pipeline endpoint → resets to `scans` stage then immediately starts `ai_analysis` job. Preserves all Features, GeneralRecommendations, and human edits.
+- **Auto-advance config**: `_PIPELINE_STAGE_AUTONEXT` dict defines which stages auto-advance after completion (e.g., ai_analysis→engines, ai_refinement→recommendations, report→complete).
+- **Key files**: `src/server.py` (stage config + handlers), `src/services/contextual_lookup.py` (enrichment), `src/services/integration_properties.py` (AIAnalysisProperties), `src/web/templates/assessment_detail.html` (10-step flow bar).
+
+### ARCHITECTURE: Resume + Telemetry Hardening (2026-03-05)
+- **Resumable progress table**: `AssessmentPhaseProgress` (`assessment_phase_progress`) stores per-phase status, totals, `resume_from_index`, checkpoint JSON, and terminal/error state.
+- **Checkpoint service**: `src/services/assessment_phase_progress.py` (`start_phase_progress`, `checkpoint_phase_progress`, `complete_phase_progress`, `fail_phase_progress`) is the single update path used by pipeline + MCP runtime.
+- **Stage resume semantics**: `ai_analysis`, `observations`, and `recommendations` read prior checkpoint cursors and continue from saved index/pass counters instead of replaying already-completed work.
+- **Failure-classification semantics**: stage/tool failures are normalized into `blocked_cost_limit`, `blocked_rate_limit`, or `failed`, preserving a resumable state marker for operator rehydrate.
+- **Telemetry snapshot table**: `AssessmentRuntimeUsage` (`assessment_runtime_usage`) stores run metadata, pipeline/result aggregates, MCP call split (`local`, `servicenow`, `local_db`), token counters, and estimated cost.
+- **Telemetry refresh service**: `src/services/assessment_runtime_usage.py` updates snapshots during stage transitions and runtime tool execution, and supports full refresh for admin table reads.
+- **Admin visibility path**: integration properties page links to `/integration-properties/assessment-runtime-usage`, and records are served by `/api/integration-properties/assessment-runtime-usage/*` (DataTable schema + records endpoints).
+
+### ARCHITECTURE: Phase 6 — MCP Skills/Prompts Library + Best Practices
+- **BestPractice model**: `BestPractice` + `BestPracticeCategory` enum (14 categories covering ServiceNow domains). 41 seed checks auto-populated at DB creation.
+- **Admin CRUD API**: `GET/POST/PUT /api/best-practices` + `/admin/best-practices` list page with DataTable.
+- **Session-aware prompt infrastructure**: `PromptSpec.handler` callback replaces static `arguments` — enables prompts to dynamically load assessment context, scan results, and best practices at invocation time.
+- **4 MCP prompts**: `artifact_analyzer` (per-artifact deep analysis), `relationship_tracer` (cross-artifact dependency tracing), `technical_architect` (dual-mode full/focused review), `report_writer` (assessment deliverable generation). All registered in `PROMPT_REGISTRY`.
+- **Key files**: `src/models.py` (BestPractice), `src/mcp/prompts/` (4 prompt modules), `src/mcp/registry.py` (registration).
 
 ## Open Questions
 - (none currently — all resolved this session)

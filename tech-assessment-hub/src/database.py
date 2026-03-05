@@ -76,6 +76,8 @@ def create_db_and_tables():
         "job_run",
         "job_event",
         "app_config",
+        "assessment_runtime_usage",
+        "assessment_phase_progress",
         "code_reference",
         "update_set_overlap",
         "temporal_cluster",

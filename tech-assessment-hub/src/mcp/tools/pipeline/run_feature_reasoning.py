@@ -22,6 +22,11 @@ from ....models import (
     Scan,
     ScanResult,
 )
+from ....services.assessment_phase_progress import (
+    checkpoint_phase_progress,
+    complete_phase_progress,
+    start_phase_progress,
+)
 from ....services.integration_properties import load_reasoning_engine_properties
 from .seed_feature_groups import seed_feature_groups
 
@@ -234,10 +239,30 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
         params.get("min_assignment_confidence", props.feature_min_assignment_confidence)
     )
 
+    phase_progress = start_phase_progress(
+        session,
+        assessment_id,
+        "recommendations",
+        total_items=max(1, max_iterations),
+        allow_resume=True,
+        checkpoint={"source": "run_feature_reasoning_tool"},
+        commit=False,
+    )
+    checkpoint_payload = {}
+    if phase_progress.checkpoint_json:
+        try:
+            parsed_checkpoint = json.loads(phase_progress.checkpoint_json)
+            if isinstance(parsed_checkpoint, dict):
+                checkpoint_payload = parsed_checkpoint
+        except Exception:
+            checkpoint_payload = {}
+
+    run_id = params.get("run_id") or checkpoint_payload.get("run_id")
+
     run = _resolve_run(
         session,
         assessment_id=assessment_id,
-        run_id=params.get("run_id"),
+        run_id=run_id,
         max_iterations=max_iterations,
     )
 
@@ -300,6 +325,37 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
     run.summary_json = json.dumps(summary_payload, sort_keys=True)
     run.updated_at = datetime.utcnow()
     session.add(run)
+
+    checkpoint_phase_progress(
+        session,
+        assessment_id,
+        "recommendations",
+        total_items=max(1, max_iterations),
+        completed_items=int(run.iterations_completed or 0),
+        status="running" if not is_done else "completed",
+        checkpoint={
+            "run_id": run.id,
+            "iterations_completed": int(run.iterations_completed or 0),
+            "max_iterations": int(run.max_iterations or max_iterations),
+            "converged": bool(run.converged),
+            "resume_from_index": int(run.iterations_completed or 0),
+        },
+        commit=False,
+    )
+    if is_done:
+        complete_phase_progress(
+            session,
+            assessment_id,
+            "recommendations",
+            checkpoint={
+                "run_id": run.id,
+                "iterations_completed": int(run.iterations_completed or 0),
+                "converged": bool(run.converged),
+                "resume_from_index": int(run.iterations_completed or 0),
+            },
+            commit=False,
+        )
+
     session.commit()
     session.refresh(run)
 
@@ -332,4 +388,3 @@ TOOL_SPEC = ToolSpec(
     handler=handle,
     permission="write",
 )
-

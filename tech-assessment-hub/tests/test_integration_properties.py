@@ -2,6 +2,15 @@ import pytest
 
 from src.models import AppConfig
 from src.services.integration_properties import (
+    AI_BUDGET_ASSESSMENT_HARD_LIMIT_USD,
+    AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD,
+    AI_BUDGET_MAX_INPUT_TOKENS_PER_CALL,
+    AI_BUDGET_MAX_OUTPUT_TOKENS_PER_CALL,
+    AI_BUDGET_MONTHLY_HARD_LIMIT_USD,
+    AI_BUDGET_STOP_ON_HARD_LIMIT,
+    AI_RUNTIME_MODE,
+    AI_RUNTIME_MODEL,
+    AI_RUNTIME_PROVIDER,
     FETCH_DEFAULT_BATCH_SIZE,
     FETCH_INTER_BATCH_DELAY,
     FETCH_MAX_BATCHES,
@@ -10,13 +19,17 @@ from src.services.integration_properties import (
     OBSERVATIONS_INCLUDE_USAGE_QUERIES,
     OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT,
     OBSERVATIONS_USAGE_LOOKBACK_MONTHS,
+    PIPELINE_USE_REGISTERED_PROMPTS,
     PREFLIGHT_CONCURRENT_TYPES,
     REASONING_FEATURE_MAX_ITERATIONS,
     REASONING_FEATURE_MEMBERSHIP_DELTA_THRESHOLD,
     REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE,
+    PipelinePromptProperties,
     list_integration_property_snapshots,
     load_fetch_properties,
+    load_ai_runtime_properties,
     load_observation_properties,
+    load_pipeline_prompt_properties,
     load_preflight_concurrent_types,
     load_reasoning_engine_properties,
     update_integration_properties,
@@ -275,3 +288,84 @@ def test_load_observation_properties_overrides(db_session, sample_instance):
     assert props.batch_size == 25
     assert props.include_usage_queries == "always"
     assert props.max_usage_queries_per_result == 4
+
+
+def test_pipeline_prompt_property_present_in_snapshot(db_session):
+    rows = list_integration_property_snapshots(db_session)
+    by_key = {row["key"]: row for row in rows}
+    assert PIPELINE_USE_REGISTERED_PROMPTS in by_key
+    assert by_key[PIPELINE_USE_REGISTERED_PROMPTS]["default"] == "false"
+
+
+def test_load_pipeline_prompt_properties_defaults(db_session):
+    props = load_pipeline_prompt_properties(db_session)
+    assert isinstance(props, PipelinePromptProperties)
+    assert props.use_registered_prompts is False
+
+
+def test_load_pipeline_prompt_properties_override(db_session, sample_instance):
+    update_integration_properties(
+        db_session,
+        {
+            PIPELINE_USE_REGISTERED_PROMPTS: "true",
+        },
+        instance_id=sample_instance.id,
+    )
+    props = load_pipeline_prompt_properties(db_session, instance_id=sample_instance.id)
+    assert props.use_registered_prompts is True
+
+
+def test_ai_runtime_properties_present_in_snapshot(db_session):
+    rows = list_integration_property_snapshots(db_session)
+    by_key = {row["key"]: row for row in rows}
+    assert AI_RUNTIME_MODE in by_key
+    assert AI_RUNTIME_PROVIDER in by_key
+    assert AI_RUNTIME_MODEL in by_key
+    assert AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD in by_key
+    assert AI_BUDGET_ASSESSMENT_HARD_LIMIT_USD in by_key
+    assert AI_BUDGET_MONTHLY_HARD_LIMIT_USD in by_key
+    assert AI_BUDGET_STOP_ON_HARD_LIMIT in by_key
+    assert AI_BUDGET_MAX_INPUT_TOKENS_PER_CALL in by_key
+    assert AI_BUDGET_MAX_OUTPUT_TOKENS_PER_CALL in by_key
+
+
+def test_load_ai_runtime_properties_defaults(db_session):
+    props = load_ai_runtime_properties(db_session)
+    assert props.mode == "local_subscription"
+    assert props.provider == "openai"
+    assert props.model == "gpt-5-mini"
+    assert props.assessment_soft_limit_usd == 10.0
+    assert props.assessment_hard_limit_usd == 25.0
+    assert props.monthly_hard_limit_usd == 200.0
+    assert props.stop_on_hard_limit is True
+    assert props.max_input_tokens_per_call == 200000
+    assert props.max_output_tokens_per_call == 40000
+
+
+def test_load_ai_runtime_properties_overrides(db_session, sample_instance):
+    update_integration_properties(
+        db_session,
+        {
+            AI_RUNTIME_MODE: "api_key",
+            AI_RUNTIME_PROVIDER: "anthropic",
+            AI_RUNTIME_MODEL: "claude-sonnet-4-5",
+            AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD: "15.5",
+            AI_BUDGET_ASSESSMENT_HARD_LIMIT_USD: "35",
+            AI_BUDGET_MONTHLY_HARD_LIMIT_USD: "500",
+            AI_BUDGET_STOP_ON_HARD_LIMIT: "false",
+            AI_BUDGET_MAX_INPUT_TOKENS_PER_CALL: "180000",
+            AI_BUDGET_MAX_OUTPUT_TOKENS_PER_CALL: "12000",
+        },
+        instance_id=sample_instance.id,
+    )
+
+    props = load_ai_runtime_properties(db_session, instance_id=sample_instance.id)
+    assert props.mode == "api_key"
+    assert props.provider == "anthropic"
+    assert props.model == "claude-sonnet-4-5"
+    assert props.assessment_soft_limit_usd == 15.5
+    assert props.assessment_hard_limit_usd == 35.0
+    assert props.monthly_hard_limit_usd == 500.0
+    assert props.stop_on_hard_limit is False
+    assert props.max_input_tokens_per_call == 180000
+    assert props.max_output_tokens_per_call == 12000

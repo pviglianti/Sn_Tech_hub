@@ -21,6 +21,7 @@ from ...models import (
     Instance,
     InstanceAppFileType,
     InstanceDataPull,
+    JobEvent,
     JobRun,
     JobRunStatus,
     InstancePlugin,
@@ -50,6 +51,7 @@ def create_pulls_router(
     """Create pulls router with injected server helpers."""
     pulls_router = APIRouter(tags=["pulls"])
     _ACTIVE_RUN_STATUSES = [JobRunStatus.queued, JobRunStatus.running]
+    _ORPHAN_RUN_GRACE_SECONDS = 30
 
     def _data_type_label(data_type: str) -> str:
         return str(data_type or "").replace("_", " ").title()
@@ -165,6 +167,44 @@ def create_pulls_router(
             "updated_at": run.updated_at.isoformat() if run.updated_at else None,
             "last_heartbeat_at": run.last_heartbeat_at.isoformat() if run.last_heartbeat_at else None,
         }
+
+    def _finalize_orphaned_data_pull_run(session: Session, run: JobRun) -> None:
+        """Mark stale active data-pull state failed when no worker thread is alive."""
+        now = datetime.utcnow()
+        run.status = JobRunStatus.failed
+        run.completed_at = now
+        run.current_data_type = None
+        run.current_index = None
+        run.progress_pct = 100
+        run.estimated_remaining_seconds = 0
+        run.error_message = run.error_message or "Data pull worker not running"
+        run.message = "Data pull interrupted (worker not running)."
+        run.updated_at = now
+        run.last_heartbeat_at = now
+        session.add(run)
+        session.add(
+            JobEvent(
+                run_id=run.id,
+                event_type=JobRunStatus.failed.value,
+                summary="Data pull run marked failed (orphaned run state).",
+                data_json=json.dumps({"reason": "orphaned_run_state"}, sort_keys=True),
+                created_at=now,
+            )
+        )
+
+        stale_pulls = session.exec(
+            select(InstanceDataPull)
+            .where(InstanceDataPull.instance_id == run.instance_id)
+            .where(InstanceDataPull.status == DataPullStatus.running)
+        ).all()
+        for pull in stale_pulls:
+            pull.status = DataPullStatus.failed
+            pull.completed_at = now
+            pull.error_message = pull.error_message or "Interrupted (worker not running)"
+            pull.updated_at = now
+            session.add(pull)
+
+        session.commit()
 
     def _get_active_run_uid(session: Session, instance_id: int) -> Optional[str]:
         active = session.exec(
@@ -503,6 +543,27 @@ def create_pulls_router(
         if not instance:
             raise HTTPException(status_code=404, detail="Instance not found")
 
+        active_run = session.exec(
+            select(JobRun)
+            .where(JobRun.instance_id == instance_id)
+            .where(JobRun.module == "preflight")
+            .where(JobRun.job_type == "data_pull")
+            .where(JobRun.status.in_(_ACTIVE_RUN_STATUSES))
+            .order_by(JobRun.created_at.desc())
+        ).first()
+        active_job = get_active_data_pull_job(instance_id)
+        if active_run and not active_job:
+            heartbeat = (
+                active_run.last_heartbeat_at
+                or active_run.updated_at
+                or active_run.started_at
+                or active_run.created_at
+            )
+            age_seconds = (datetime.utcnow() - heartbeat).total_seconds() if heartbeat else 0
+            if age_seconds >= _ORPHAN_RUN_GRACE_SECONDS:
+                _finalize_orphaned_data_pull_run(session, active_run)
+                active_run = None
+
         data_pulls = session.exec(
             select(InstanceDataPull)
             .where(InstanceDataPull.instance_id == instance_id)
@@ -534,14 +595,6 @@ def create_pulls_router(
                 "record_count": record_counts.get(pull.data_type.value, 0),
             }
 
-        active_run = session.exec(
-            select(JobRun)
-            .where(JobRun.instance_id == instance_id)
-            .where(JobRun.module == "preflight")
-            .where(JobRun.job_type == "data_pull")
-            .where(JobRun.status.in_(_ACTIVE_RUN_STATUSES))
-            .order_by(JobRun.created_at.desc())
-        ).first()
         latest_run = session.exec(
             select(JobRun)
             .where(JobRun.instance_id == instance_id)

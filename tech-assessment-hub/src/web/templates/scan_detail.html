@@ -306,8 +306,7 @@ function renderScanCustomizationRows(rows) {
         empty.classList.remove('is-hidden');
         return;
     }
-    empty.classList.add('is-hidden');
-    tbody.innerHTML = rows.map(function (row) {
+    var html = rows.map(function (row) {
         var updated = formatDate(row.sys_updated_on);
         var originLabel = row.origin_type === 'modified_ootb' ? 'Modified OOTB'
             : row.origin_type === 'net_new_customer' ? 'Net New Customer' : (row.origin_type || '-');
@@ -322,6 +321,8 @@ function renderScanCustomizationRows(rows) {
             + '<td><a class="btn btn-sm" href="/results/' + row.scan_result_id + '">View</a></td>'
             + '</tr>';
     }).join('');
+    tbody.innerHTML = html;
+    empty.classList.toggle('is-hidden', tbody.querySelectorAll('tr').length > 0);
 }
 
 function refreshScanCustomizations() {

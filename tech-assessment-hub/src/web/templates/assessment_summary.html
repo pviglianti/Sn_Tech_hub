@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}Assessment Summary - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Assessment Summary</h1>
+    <div class="button-group">
+        <a href="/assessments" class="btn btn-secondary">Back to Assessments</a>
+        <a href="/integration-properties/assessment-runtime-usage" class="btn btn-secondary">Runtime Usage Table</a>
+    </div>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>Assessments</h3>
+        <p class="stat-number">{{ assessment_count }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>Estimated Cost</h3>
+        <p class="stat-number">${{ '%.2f'|format(total_estimated_cost_usd) }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>Total Tokens</h3>
+        <p class="stat-number">{{ total_llm_tokens }}</p>
+    </div>
+    <div class="stat-card">
+        <h3>MCP Calls (Total)</h3>
+        <p class="stat-number">{{ total_mcp_calls_local + total_mcp_calls_servicenow + total_mcp_calls_local_db }}</p>
+        <p class="text-muted-sm">Local: {{ total_mcp_calls_local }} | SN: {{ total_mcp_calls_servicenow }} | Local DB: {{ total_mcp_calls_local_db }}</p>
+    </div>
+</div>
+
+<div class="card mt-1">
+    <h2>Pipeline Stage Distribution</h2>
+    <div class="info-grid">
+        {% for stage, count in stage_counts.items() %}
+        <div class="info-item">
+            <div class="info-label">{{ stage | replace('_', ' ') | title }}</div>
+            <div class="info-value">{{ count }}</div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="card mt-1">
+    <h2>Assessment States</h2>
+    <div class="info-grid">
+        {% for state, count in state_counts.items() %}
+        <div class="info-item">
+            <div class="info-label">{{ state | replace('_', ' ') | title }}</div>
+            <div class="info-value">{{ count }}</div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="card mt-1">
+    <h2>Recent Assessments (Top 50)</h2>
+    {% if rows %}
+    <div class="assessment-summary-list">
+        {% for row in rows %}
+        <div class="assessment-summary-item">
+            <div>
+                <a href="/assessments/{{ row.id }}"><strong>{{ row.number }}</strong> — {{ row.name }}</a>
+                <div class="text-muted-sm">{{ row.instance_name }} | {{ row.state | replace('_', ' ') | title }} | Stage: {{ row.pipeline_stage | replace('_', ' ') | title }}</div>
+            </div>
+            <div class="text-muted-sm">
+                Results: {{ row.total_results }} | Customized: {{ row.customized_results }} | Features: {{ row.total_features }} | Cost: ${{ '%.2f'|format(row.estimated_cost_usd) }}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <p class="text-muted-plain">No assessments available yet.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

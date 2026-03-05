@@ -4,26 +4,19 @@
 - [ ] [owner:human] **Job Log cancellation validation**: run UI checklist in `03_outputs/human_ui_validation_job_log_cancellation_2026-02-16.md` (per-row cancel + cancel-all-active + filtered cancel-all behavior). ~10 min.
 - [ ] [owner:human] **MCP Prompts + Resources validation**: 8 curl tests against running server. Start app, run curl commands from `03_outputs/human_ui_validation_instance_scoped_config_2026-02-15.md` (bottom section). Verifies the MCP server correctly serves methodology prompts and reference docs to AI clients. ~10 min.
 - [ ] [owner:human] **Instance-scoped Integration Properties validation**: UI walkthrough from same file (top section). Verifies global vs per-instance config scope selector + override behavior. ~10 min.
-- [ ] [owner:human] **Credential key reconciliation (integration blocker)**: `POST /instances/{id}/test` currently returns 500 (`cryptography.fernet.InvalidToken`) for connected instances, including `testweis` (`instance_id=4`). Restore the matching `data/.encryption_key` for this DB or re-enter instance credentials, then rerun integration smoke.
+- [x] [owner:human] **Credential key reconciliation**: Resolved — credentials re-entered, instances connecting successfully.
 
 ## Now — When Available
+- [ ] [owner:codex] **Phase 8A Step 0**: run full regression on combined branch state and commit runtime hardening tranche baseline (telemetry + checkpoints + AI runtime/budget properties) before human QA.
+- [ ] [owner:human] **Full pipeline live QA**: Run complete 10-stage pipeline on real assessment with live SN instance after credential reconciliation.
+- [ ] [owner:human] **Assessment Runtime Usage validation**: run one full pipeline and verify `/integration-properties/assessment-runtime-usage` shows mode/provider/model, MCP local/SN/local-DB call counters, token totals, and estimated cost.
+- [ ] [owner:human] **Resume + rehydrate validation**: interrupt an in-progress stage (`observations`, `grouping`, or `recommendations`) and confirm resume picks up from saved checkpoint/index instead of restarting completed work.
+- [ ] [owner:human] **Phase 9/10 feature validation**: verify prompt-toggle behavior (`pipeline.use_registered_prompts`), assessment exports (`/assessments/{id}/export/excel`, `/assessments/{id}/export/word`), process recommendations tab DataTable, and `/assessments/summary` dashboard metrics on real assessment data.
+- [ ] [owner:claude] **Phase 9/10 peer review pass**: review each deliverable checkpoint in `phase3_planning_chat.md` (prompt integration, exports, process recommendations UI/API, summary dashboard) and return `REVIEW_PASS` or actionable `REVIEW_FEEDBACK`.
 - [ ] [owner:human] Visual QA: Data Browser page, template component changes, routed pages (instances, pulls).
 - [ ] [owner:human] Visual QA deep-link flow: preflight → Job Log with preloaded conditions.
 - [ ] [owner:human] Visual QA #2 Phase 2 durable status (dictionary modal, CSDM ingestion bar, scan runtime bar).
-- [ ] [owner:human] Reasoning Phase 2 validation: run `run_preprocessing_engines` (all 6 engines) on a real assessment and spot-check generated rows in Data Browser.
-- [x] [owner:both] Generalize coordination protocol: `agent_coordination_protocol.md` created, `AGENTS.md` updated.
-- [x] [owner:both] **Phase 3 planning**: Engine output UI + enhanced features tab + AI reasoning loop + OOTB replacement analysis. Plan published at `tech-assessment-hub/docs/plans/2026-03-04-reasoning-layer-phase3-ui-ai-feature-orchestration.md`; chat coordination in `phase3_planning_chat.md`.
-- [x] [owner:codex] Phase 3 Codex scope complete (P3A/P3B/P3D/P4A + P4C backend): data model/API/provenance, unified grouping-signal/hierarchy/evidence APIs, deterministic `seed_feature_groups`, one-pass `run_feature_reasoning`, `feature_grouping_status`, structured feature recommendation persistence surfaces, full regression green (`305 passed`).
-- [x] [owner:claude] Phase 3 implementation kickoff (P3C/P4B): grouping-signal tabs + feature hierarchy UI and prompt/skill updates; align to Codex API contracts.
-- [x] [owner:claude] Cross-review Codex Phase 3 backend contracts and confirm/patch any UI-required payload diffs in `phase3_planning_chat.md`.
-- [ ] [owner:human] Phase 3/P4D final gate: execute manual QA checklist from `phase3_planning_chat.md` (QA-1..QA-14) on real assessment data after running `run_preprocessing_engines` → `seed_feature_groups` / `run_feature_reasoning`, then mark phase done.
-- [x] [owner:codex] Phase 5 backend (P5A/P5B/P5C/P5D + P5E backend trigger wiring): pipeline stage model/API contracts, observation properties, `get_usage_count`, `generate_observations`, review-status API, and `advance-pipeline` stage execution. Full regression green (`328 passed`).
-- [x] [owner:claude] Phase 5 UI scope: flow bar rendering/wiring, observation cards + review controls, review gate UI, and grouping/recommendation trigger UX using Codex backend contracts.
-- [x] [owner:both] Phase 5 cross-review + end-to-end validation (backend+UI integration) and updated human QA checklist — automated validation green (`330` full regression after new dedupe tests) and live pipeline re-validation completed on `pdi` (`assessment_id=19`) through `engines → observations → review gate → grouping → recommendations → complete`.
-- [x] [owner:codex] Phase 6 Task 3 UI prep: drafted `src/web/templates/admin_best_practices.html` with DataTable-based list + editor form and endpoint wiring assumptions (`GET/POST/PUT /api/best-practices`), then posted contract notes to `phase3_planning_chat.md` for Claude route wiring.
-- [x] [owner:codex] Markdown archive pass (2026-03-05): created tracked `archive/2026-03-05_markdown_cleanup/`, moved 14 stale/duplicate plan docs, and added archive exclusion rules for agent context (`AGENTS.md`, `CLAUDE.md`).
-- [ ] [owner:claude] Phase 6 Task 3 backend wiring: add page route/nav + `best-practices` API routes to match Codex template contract, then request Codex cross-review + targeted test run.
-- [ ] [owner:human] Reasoning Phase 1 validation: run `run_preprocessing_engines` tool on a real assessment and spot-check generated `code_reference` + `structural_relationship` rows in Data Browser.
+- [ ] [owner:human] Phase 3/P4D final gate: execute manual QA checklist from `phase3_planning_chat.md` (QA-1..QA-14) on real assessment data.
 - [ ] [owner:any] Rabbit hole priority config — modular/adjustable rules for which dependency types to follow.
 - [ ] [owner:any] Catch-all label table — mapping app file class → display label (sys_dictionary → "Form Fields", etc.).
 
@@ -43,6 +36,23 @@
 - [ ] [owner:codex] Remove `api_config_summary` + `instance_assessment_app_file_options_page` compatibility shims from `server.py` after test imports updated to router modules.
 - [ ] [owner:codex] Add unit tests for `JobRun`/`JobEvent` state transitions, startup recovery, and ETA calculation (gap noted in Claude review of Phase 1).
 - [ ] [owner:any] Jinja2 server-rendered dates (`.strftime()` in templates like `instances.html`, `assessments.html`) still show raw UTC — add a Jinja2 filter when prioritized.
+
+## Completed (session 2026-03-05 — Phases 6 + 7)
+- [x] [owner:claude] **Phase 6 complete**: MCP Skills/Prompts Library + Best Practice Knowledge Base. `BestPractice` model with 41 seed checks + `BestPracticeCategory` enum, admin CRUD API (`GET/POST/PUT /api/best-practices`), session-aware prompt infrastructure (`PromptSpec.handler`), 4 MCP prompts (`artifact_analyzer`, `relationship_tracer`, `technical_architect`, `report_writer`). 478 tests passing.
+- [x] [owner:claude] **Phase 7 complete**: Human-in-the-Loop Pipeline Buttons + Re-run. Extended `PipelineStage` enum from 7→10 stages (`ai_analysis`, `ai_refinement`, `report`). Contextual lookup service (`src/services/contextual_lookup.py` — local-first with SN fallback, Fact caching, reference detection). `AIAnalysisProperties` frozen dataclass (batch_size, context_enrichment). Real ai_analysis handler (enriches ScanResults with local context + usage data). Real ai_refinement handler (3 sub-steps: complex features, per-artifact review, assessment-wide roll-up). Report handler (aggregates statistics/features/recommendations into GeneralRecommendation). Re-run from complete (reset to scans, preserves human edits). 10-step flow bar UI with action buttons and re-run. 91 Phase 7 tests (39 unit + 18 integration + 34 contextual lookup). **496 total tests passing**.
+
+## Completed (session 2026-03-05 — Runtime Telemetry + Resume Hardening)
+- [x] [owner:codex] Added AI runtime configuration + budget controls in Integration Properties (`ai.runtime.*`, `ai.budget.*`) with typed loader support (`load_ai_runtime_properties`) and validation tests.
+- [x] [owner:codex] Added assessment runtime telemetry stack: `AssessmentRuntimeUsage` model/table, snapshot service (`assessment_runtime_usage.py`), admin DataTable page/API (`/integration-properties/assessment-runtime-usage`), and link from Integration Properties page.
+- [x] [owner:codex] Added resumable phase checkpoint stack: `AssessmentPhaseProgress` model/table + service (`assessment_phase_progress.py`), stage-level resume wiring in pipeline handlers, MCP runtime router checkpoint/failure tracking, and tool-level resume progress updates for `generate_observations`, `seed_feature_groups`, `run_preprocessing_engines`, and `run_feature_reasoning`.
+- [x] [owner:codex] Added/updated tests for runtime telemetry + resume behavior and reran targeted regression (`76 passed`): `test_assessment_phase_progress.py`, `test_assessment_runtime_usage.py`, `test_mcp_runtime.py`, `test_generate_observations.py`, `test_feature_grouping_pipeline_tools.py`, `test_phase7_pipeline_stages.py`, `test_integration_properties.py`.
+
+## Completed (session 2026-03-05 — Phase 9/10 Delivery)
+- [x] [owner:codex] Phase 9 prompt integration completed: added safe rollout helper + prompt extraction path for `artifact_analyzer` (`ai_analysis`), `relationship_tracer` + `technical_architect` (`ai_refinement`), and `report_writer` (`report`) behind `pipeline.use_registered_prompts`.
+- [x] [owner:codex] Phase 9 exports completed: added download routes for Excel/Word report exports (`/assessments/{id}/export/excel`, `/assessments/{id}/export/word`) from latest `assessment_report` payload.
+- [x] [owner:codex] Phase 9 process recommendations UI completed: added assessment-detail Process Recommendations tab with DataTable endpoints (`/api/assessments/{id}/process-recommendations/*`) and filtering/sorting support.
+- [x] [owner:codex] Phase 10 summary dashboard completed: added `/assessments/summary` page for cross-assessment pipeline stage distribution, state distribution, and runtime cost/token/MCP totals.
+- [x] [owner:codex] Added targeted regression coverage for Phase 9/10 (`13 passed`): `test_phase9_prompt_integration.py`, `test_phase9_exports_and_process_ui.py`, and prompt-property additions in `test_integration_properties.py`.
 
 ## Completed (session 2026-03-04)
 - [x] [owner:codex] Reasoning Phase 1 data model foundation: added `GroupingSignalType`, reasoning fields on `Feature`/`ScanResult`, and 4 new reasoning tables (`code_reference`, `update_set_overlap`, `temporal_cluster`, `structural_relationship`) with explicit `instance_id` + `assessment_id` references and result/update-set foreign keys.

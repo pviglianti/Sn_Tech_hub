@@ -107,7 +107,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h3>Pulling Initial Instance Data</h3>
-                <button type="button" class="modal-close" onclick="document.getElementById('dict-pull-modal').style.display='none'">&times;</button>
+                <button type="button" class="modal-close" onclick="if (window.stopDictPullMonitor) window.stopDictPullMonitor(); document.getElementById('dict-pull-modal').style.display='none'">&times;</button>
             </div>
             <div class="modal-body">
                 <p id="dict-pull-status-text">Initializing...</p>

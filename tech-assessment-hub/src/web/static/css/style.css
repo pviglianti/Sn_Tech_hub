@@ -3258,3 +3258,28 @@ h1, h2, h3, h4, h5, h6 {
     padding-top: 0.5rem;
     border-top: 1px solid var(--border-color);
 }
+
+/* ── Assessment Summary Page ─────────────────────────────────────── */
+
+.assessment-summary-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.assessment-summary-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--card-bg-secondary);
+}
+
+@media (max-width: 900px) {
+    .assessment-summary-item {
+        flex-direction: column;
+    }
+}

@@ -41,6 +41,7 @@ from ....models import (
     UpdateSetArtifactLink,
     UpdateSetOverlap,
 )
+from ....services.assessment_phase_progress import checkpoint_phase_progress, start_phase_progress
 
 
 INPUT_SCHEMA: Dict[str, Any] = {
@@ -815,17 +816,57 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
     reset_existing = bool(params.get("reset_existing", True))
     max_pairs_per_signal = int(params.get("max_pairs_per_signal", 5000))
     iteration_number = int(params.get("iteration_number", 0))
-
-    return seed_feature_groups(
+    start_phase_progress(
         session,
-        assessment_id=assessment_id,
-        min_group_size=max(1, min_group_size),
-        min_edge_weight=max(0.0, min_edge_weight),
-        reset_existing=reset_existing,
-        max_pairs_per_signal=max(100, max_pairs_per_signal),
-        iteration_number=max(0, iteration_number),
+        assessment_id,
+        "grouping",
+        total_items=0,
+        allow_resume=True,
+        checkpoint={"source": "seed_feature_groups_tool", "iteration_number": max(0, iteration_number)},
+        commit=False,
+    )
+
+    try:
+        result = seed_feature_groups(
+            session,
+            assessment_id=assessment_id,
+            min_group_size=max(1, min_group_size),
+            min_edge_weight=max(0.0, min_edge_weight),
+            reset_existing=reset_existing,
+            max_pairs_per_signal=max(100, max_pairs_per_signal),
+            iteration_number=max(0, iteration_number),
+            commit=True,
+        )
+    except Exception as exc:
+        checkpoint_phase_progress(
+            session,
+            assessment_id,
+            "grouping",
+            status="failed",
+            checkpoint={"error": str(exc)},
+            error=str(exc),
+            commit=True,
+        )
+        raise
+
+    grouped_count = int(result.get("grouped_count") or 0)
+    eligible_count = int(result.get("eligible_customized_count") or grouped_count)
+    checkpoint_phase_progress(
+        session,
+        assessment_id,
+        "grouping",
+        total_items=max(0, eligible_count),
+        completed_items=max(0, grouped_count),
+        status="completed",
+        checkpoint={
+            "features_created": int(result.get("features_created") or 0),
+            "grouped_count": grouped_count,
+            "eligible_customized_count": eligible_count,
+            "resume_from_index": max(0, grouped_count),
+        },
         commit=True,
     )
+    return result
 
 
 TOOL_SPEC = ToolSpec(
@@ -839,4 +880,3 @@ TOOL_SPEC = ToolSpec(
     handler=handle,
     permission="write",
 )
-

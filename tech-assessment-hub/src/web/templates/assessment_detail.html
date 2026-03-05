@@ -61,6 +61,8 @@
             </form>
             {% endif %}
             <a href="/assessments/{{ assessment.id }}/edit" class="btn btn-secondary">Edit</a>
+            <a href="/api/assessments/{{ assessment.id }}/export/xlsx" class="btn btn-secondary" title="Download assessment report as Excel spreadsheet">Export Excel</a>
+            <a href="/api/assessments/{{ assessment.id }}/export/docx" class="btn btn-secondary" title="Download assessment report as Word document">Export Word</a>
         </div>
     </div>
 
@@ -191,11 +193,23 @@
             <div class="pipeline-complete-links" data-complete-links style="display:none;">
                 <a href="#features" class="pipeline-link" onclick="document.querySelector('[data-tab-btn=features]').click()">Features</a>
                 <a href="#grouping-signals" class="pipeline-link" onclick="document.querySelector('[data-tab-btn=grouping-signals]').click()">Signals</a>
+                <a href="#process-recommendations" class="pipeline-link" onclick="document.querySelector('[data-tab-btn=process-recommendations]').click()">Process Recs</a>
             </div>
         </div>
     </div>
 </div>
 {% endif %}
+
+<div class="card mt-1">
+    <h3>Report Exports</h3>
+    <p class="text-muted-plain mb-05">
+        Export the latest <code>assessment_report</code> payload generated in Stage 9 (Report).
+    </p>
+    <div class="button-group">
+        <a href="/assessments/{{ assessment.id }}/export/excel" class="btn btn-secondary">Export Excel</a>
+        <a href="/assessments/{{ assessment.id }}/export/word" class="btn btn-secondary">Export Word</a>
+    </div>
+</div>
 
 <div class="card" id="syncCard">
     <h2 id="syncCardTitle">Preflight Sync Plan</h2>
@@ -399,22 +413,25 @@
 <div class="related-lists">
     <div class="tab-container">
         <div class="tab-nav">
-            <button class="tab-btn active" onclick="openTab(event, 'scans')">
+            <button class="tab-btn active" data-tab-btn="scans" onclick="openTab(event, 'scans')">
                 Scans <span class="badge">{{ assessment.scans | length }}</span>
             </button>
-            <button class="tab-btn" onclick="openTab(event, 'customizations')" id="customizationsTabBtn">
+            <button class="tab-btn" data-tab-btn="customizations" onclick="openTab(event, 'customizations')" id="customizationsTabBtn">
                 Customizations <span class="badge" id="customizationsTabBadge">{{ assessment.records_customized }}</span>
             </button>
-            <button class="tab-btn" onclick="openTab(event, 'features')">
+            <button class="tab-btn" data-tab-btn="features" onclick="openTab(event, 'features')">
                 Features <span class="badge" id="featuresTabBadge">{{ assessment.features | length }}</span>
             </button>
-            <button class="tab-btn" onclick="openTab(event, 'grouping-signals')" id="groupingSignalsTabBtn">
+            <button class="tab-btn" data-tab-btn="grouping-signals" onclick="openTab(event, 'grouping-signals')" id="groupingSignalsTabBtn">
                 Grouping Signals <span class="badge" id="groupingSignalsTabBadge">0</span>
             </button>
-            <button class="tab-btn" onclick="openTab(event, 'artifacts')" id="artifactsTabBtn">
+            <button class="tab-btn" data-tab-btn="process-recommendations" onclick="openTab(event, 'process-recommendations')" id="processRecommendationsTabBtn">
+                Process Recommendations <span class="badge" id="processRecommendationsTabBadge">0</span>
+            </button>
+            <button class="tab-btn" data-tab-btn="artifacts" onclick="openTab(event, 'artifacts')" id="artifactsTabBtn">
                 Artifacts <span class="badge" id="artifactsTabBadge">0</span>
             </button>
-            <button class="tab-btn" onclick="openTab(event, 'results')">
+            <button class="tab-btn" data-tab-btn="results" onclick="openTab(event, 'results')">
                 Results <span class="badge" id="assessmentResultsTabBadge">{{ assessment.total_findings }}</span>
             </button>
         </div>
@@ -654,6 +671,24 @@
             </div>
         </div>
 
+        <!-- Process Recommendations Tab -->
+        <div id="process-recommendations" class="tab-content">
+            <div class="card result-filter-card">
+                <div class="button-group">
+                    <button id="processRecommendationsRefresh" class="btn btn-sm btn-secondary" type="button">
+                        Refresh Recommendations
+                    </button>
+                </div>
+                <p class="filter-meta muted mt-05 mb-0">
+                    Shows assessment-level general recommendations excluding landscape summaries,
+                    technical rollups, and final report payload rows.
+                </p>
+            </div>
+            <div class="card">
+                <div id="processRecommendationsTableContainer"></div>
+            </div>
+        </div>
+
         <!-- Artifacts Tab -->
         <div id="artifacts" class="tab-content">
             <div class="card result-filter-card">
@@ -705,6 +740,9 @@
 
 {% block scripts %}
 {{ super() }}
+<script src="/static/js/ConditionBuilder.js?v={{ static_version }}"></script>
+<script src="/static/js/ColumnPicker.js?v={{ static_version }}"></script>
+<script src="/static/js/DataTable.js?v={{ static_version }}"></script>
 <script>
 const assessmentId = {{ assessment.id }};
 const assessmentInstanceId = {{ assessment.instance_id }};
@@ -1448,6 +1486,59 @@ var signalsPanel = new GroupingSignalsPanel({
 });
 let _signalsLoaded = false;
 
+// ── Process Recommendations DataTable ───────────────────────────────
+var processRecommendationsTable = null;
+let _processRecommendationsLoaded = false;
+
+function refreshProcessRecommendationsBadge() {
+    var badge = document.getElementById('processRecommendationsTabBadge');
+    if (!badge) return;
+    fetch('/api/assessments/' + assessmentId + '/process-recommendations/records?offset=0&limit=1', { cache: 'no-store' })
+        .then(function (r) { if (!r.ok) throw new Error('fail'); return r.json(); })
+        .then(function (payload) {
+            badge.textContent = String(payload.total || 0);
+        })
+        .catch(function () {
+            badge.textContent = '0';
+        });
+}
+
+function mountProcessRecommendationsTable() {
+    var container = document.getElementById('processRecommendationsTableContainer');
+    if (!container || !window.DataTable) return;
+
+    if (processRecommendationsTable && typeof processRecommendationsTable.destroy === 'function') {
+        processRecommendationsTable.destroy();
+    }
+
+    processRecommendationsTable = new window.DataTable(container, {
+        dataUrl: '/api/assessments/' + assessmentId + '/process-recommendations/records',
+        schemaUrl: '/api/assessments/' + assessmentId + '/process-recommendations/field-schema',
+        instanceId: assessmentInstanceId,
+        tableName: 'general_recommendation',
+        pageSize: 25,
+        storageKey: 'dt_process_recommendations_' + assessmentId,
+        includeTableAndInstanceParams: false,
+        onReferenceClick: function () {},
+        onRecordClick: function () {},
+    });
+
+    processRecommendationsTable.init().then(function () {
+        refreshProcessRecommendationsBadge();
+    }).catch(function (err) {
+        console.error('Process recommendations table init error:', err);
+        container.innerHTML = '<div class="empty-state"><h2>Error</h2><p>' + err.message + '</p></div>';
+    });
+}
+
+var processRecommendationsRefreshBtn = document.getElementById('processRecommendationsRefresh');
+if (processRecommendationsRefreshBtn) {
+    processRecommendationsRefreshBtn.addEventListener('click', function () {
+        mountProcessRecommendationsTable();
+    });
+}
+refreshProcessRecommendationsBadge();
+
 document.addEventListener('tab:activated', function(e) {
     if (e.detail.tabName === 'customizations' && !_customizationsLoaded) {
         _customizationsLoaded = true;
@@ -1464,6 +1555,10 @@ document.addEventListener('tab:activated', function(e) {
     if (e.detail.tabName === 'grouping-signals' && !_signalsLoaded) {
         _signalsLoaded = true;
         signalsPanel.refresh();
+    }
+    if (e.detail.tabName === 'process-recommendations' && !_processRecommendationsLoaded) {
+        _processRecommendationsLoaded = true;
+        mountProcessRecommendationsTable();
     }
 });
 

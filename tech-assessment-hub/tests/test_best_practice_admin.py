@@ -77,3 +77,9 @@ def test_api_create_best_practice(client: TestClient, db_session):
     })
     assert resp.status_code == 201
     assert resp.json()["code"] == "NEW_001"
+
+
+def test_admin_best_practices_page_route(client: TestClient):
+    resp = client.get("/admin/best-practices")
+    assert resp.status_code == 200
+    assert "Best Practices" in resp.text

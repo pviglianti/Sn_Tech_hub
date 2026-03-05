@@ -1,7 +1,7 @@
 # server.py - FastAPI Application
 
 from fastapi import FastAPI, Request, Depends, Form, HTTPException, Query, Body
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
@@ -12,10 +12,13 @@ import time
 import os
 import logging
 import uuid
+import io
+import zipfile
 from pathlib import Path
 from datetime import datetime, timedelta, date
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
+from xml.sax.saxutils import escape as _xml_escape
 
 from .database import get_session, create_db_and_tables, engine
 from .models import (
@@ -28,7 +31,7 @@ from .models import (
     InstanceDataPull, DataPullType, DataPullStatus,
     Scope, Package, Application, UpdateSet, CustomerUpdateXML, VersionHistory,
     MetadataCustomization, InstancePlugin, PluginView, TableDefinition, InstanceAppFileType,
-    AppConfig, JobRun, JobEvent, JobRunStatus,
+    AppConfig, JobRun, JobEvent, JobRunStatus, AssessmentRuntimeUsage,
     CodeReference, StructuralRelationship, UpdateSetOverlap,
     TemporalCluster, NamingCluster, TableColocationSummary, UpdateSetArtifactLink,
     BestPractice, BestPracticeCategory,
@@ -48,8 +51,22 @@ from .services.data_pull_executor import (
     get_data_pull_storage_tables,
 )
 from .services.integration_sync_runner import resolve_delta_decision
-from .services.integration_properties import load_preflight_concurrent_types, load_ai_analysis_properties
+from .services.integration_properties import (
+    load_preflight_concurrent_types,
+    load_ai_analysis_properties,
+    load_ai_runtime_properties,
+    load_pipeline_prompt_properties,
+)
+from .mcp.registry import PROMPT_REGISTRY
+from .services.assessment_runtime_usage import refresh_assessment_runtime_usage
+from .services.assessment_phase_progress import (
+    checkpoint_phase_progress,
+    complete_phase_progress,
+    fail_phase_progress,
+    start_phase_progress,
+)
 from .services.contextual_lookup import gather_artifact_context
+from .services.condition_query_builder import conditions_to_sql_where
 from .services.dictionary_pull_orchestrator import (
     start_dictionary_pull,
     get_dictionary_pull_status,
@@ -81,6 +98,7 @@ from .web.routes.instances import create_instances_router
 from .web.routes.job_log import job_log_router
 from .web.routes.mcp_admin import mcp_admin_router
 from .web.routes.preferences import create_preferences_router
+from .web.routes.assessment_runtime_usage import create_assessment_runtime_usage_router
 from .web.routes.customizations import customizations_router
 from .web.routes.pulls import create_pulls_router
 import json
@@ -127,6 +145,33 @@ def _json_dumps(payload: Any) -> Optional[str]:
         return json.dumps(payload, sort_keys=True)
     except Exception:
         return None
+
+
+def _bind_positional_sql(
+    sql_text: str,
+    values: List[Any],
+    params: Dict[str, Any],
+    prefix: str,
+) -> str:
+    """Replace '?' placeholders with named bind params for SQLAlchemy text()."""
+    bound = sql_text
+    for idx, value in enumerate(values):
+        key = f"{prefix}_{idx}"
+        bound = bound.replace("?", f":{key}", 1)
+        params[key] = value
+    return bound
+
+
+def _row_mapping_to_json(row: Any) -> Dict[str, Any]:
+    """Convert SQL row mappings to JSON-safe dicts."""
+    mapping = row if isinstance(row, dict) else dict(row._mapping)
+    payload: Dict[str, Any] = {}
+    for key, value in mapping.items():
+        if isinstance(value, datetime):
+            payload[key] = value.isoformat()
+        else:
+            payload[key] = value
+    return payload
 
 
 def _append_data_pull_event(
@@ -1377,6 +1422,112 @@ def _mark_remaining_customizations_reviewed(session: Session, assessment_id: int
     return len(rows)
 
 
+def _is_rate_limit_error(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    if not message:
+        return False
+    signals = ("rate limit", "too many requests", "http 429", "status code 429", "quota exceeded")
+    return any(token in message for token in signals)
+
+
+def _is_cost_limit_error(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    if not message:
+        return False
+    return "cost hard limit" in message or "budget limit" in message or "blocked_cost_limit" in message
+
+
+def _pipeline_error_status(exc: Exception) -> str:
+    if _is_cost_limit_error(exc):
+        return "blocked_cost_limit"
+    if _is_rate_limit_error(exc):
+        return "blocked_rate_limit"
+    return "failed"
+
+
+def _extract_prompt_text(prompt_result: Dict[str, Any]) -> str:
+    """Extract text content from an MCP prompt payload."""
+    messages = prompt_result.get("messages") or []
+    if not isinstance(messages, list):
+        return ""
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+        if isinstance(content, dict):
+            text = content.get("text")
+            if isinstance(text, str) and text.strip():
+                return text
+        if isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    return text
+    return ""
+
+
+def _try_registered_prompt_text(
+    session: Session,
+    *,
+    prompt_name: str,
+    arguments: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str]]:
+    """Fetch prompt text from registry without failing the stage on prompt errors."""
+    if not PROMPT_REGISTRY.has_prompt(prompt_name):
+        return None, f"Prompt not registered: {prompt_name}"
+    try:
+        prompt_result = PROMPT_REGISTRY.get_prompt(
+            prompt_name,
+            arguments,
+            session=session,
+        )
+        text = _extract_prompt_text(prompt_result)
+        if not text:
+            return None, f"Prompt returned no text: {prompt_name}"
+        return text, None
+    except Exception as exc:
+        logger.warning(
+            "Registered prompt fetch failed (prompt=%s args=%s): %s",
+            prompt_name,
+            arguments,
+            exc,
+        )
+        return None, str(exc)
+
+
+def _enforce_assessment_stage_budget(
+    session: Session,
+    *,
+    assessment: Assessment,
+    stage: str,
+) -> None:
+    """Stop stage early when assessment hard cost limit is reached."""
+    runtime_props = load_ai_runtime_properties(session, instance_id=assessment.instance_id)
+    if not runtime_props.stop_on_hard_limit:
+        return
+
+    hard_limit = float(runtime_props.assessment_hard_limit_usd or 0.0)
+    if hard_limit <= 0:
+        return
+
+    usage = refresh_assessment_runtime_usage(
+        session,
+        int(assessment.id),
+        last_event=f"pipeline:{stage}:budget_check",
+        commit=False,
+    )
+    current_cost = float((usage.estimated_cost_usd if usage else 0.0) or 0.0)
+    if current_cost >= hard_limit:
+        raise RuntimeError(
+            "blocked_cost_limit: assessment cost hard limit reached "
+            f"(${current_cost:.2f} >= ${hard_limit:.2f}); adjust AI budget properties or resume later."
+        )
+
+
 def _run_assessment_pipeline_stage(
     assessment_id: int,
     *,
@@ -1399,10 +1550,42 @@ def _run_assessment_pipeline_stage(
             raise ValueError(f"Assessment not found: {assessment_id}")
 
         success_message = f"{stage} stage completed."
+        telemetry_local_calls_delta = 0
+        telemetry_servicenow_calls_delta = 0
+        telemetry_local_db_calls_delta = 0
+        telemetry_details: Dict[str, Any] = {"stage": stage}
+        refresh_assessment_runtime_usage(
+            session,
+            assessment_id,
+            last_event=f"pipeline:{stage}:running",
+            details={"status": "running", "stage": stage},
+            commit=False,
+        )
+        phase_progress = start_phase_progress(
+            session,
+            assessment_id,
+            stage,
+            total_items=0,
+            allow_resume=True,
+            checkpoint={"stage": stage},
+            commit=False,
+        )
+
+        ai_stages = {
+            PipelineStage.ai_analysis.value,
+            PipelineStage.observations.value,
+            PipelineStage.grouping.value,
+            PipelineStage.ai_refinement.value,
+            PipelineStage.recommendations.value,
+            PipelineStage.report.value,
+        }
+        if stage in ai_stages:
+            _enforce_assessment_stage_budget(session, assessment=assessment, stage=stage)
 
         if stage == PipelineStage.ai_analysis.value:
             # --- AI Analysis: gather contextual enrichment for customized artifacts ---
             ai_props = load_ai_analysis_properties(session, instance_id=assessment.instance_id)
+            pipeline_prompt_props = load_pipeline_prompt_properties(session, instance_id=assessment.instance_id)
             instance_id = assessment.instance_id
 
             # Query customized ScanResults via Scan -> ScanResult join
@@ -1411,23 +1594,49 @@ def _run_assessment_pipeline_stage(
                 .join(Scan, ScanResult.scan_id == Scan.id)
                 .where(Scan.assessment_id == assessment_id)
                 .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
+                .order_by(ScanResult.id.asc())
             ).all()
 
             total = len(customized)
+            phase_progress = start_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                total_items=total,
+                allow_resume=True,
+                checkpoint={"total_items": total},
+                commit=False,
+            )
+            resume_from = min(max(0, int(phase_progress.resume_from_index or 0)), total)
+            analyzed_count = 0
             if total == 0:
                 success_message = "AI Analysis stage completed (0 customized artifacts found)."
+                complete_phase_progress(
+                    session,
+                    assessment_id,
+                    stage,
+                    checkpoint={"completed_items": 0, "resume_from_index": 0},
+                    commit=False,
+                )
+            elif resume_from >= total:
+                success_message = (
+                    f"AI Analysis stage already complete ({total}/{total} customized artifacts analyzed)."
+                )
+                complete_phase_progress(
+                    session,
+                    assessment_id,
+                    stage,
+                    checkpoint={"completed_items": total, "resume_from_index": total},
+                    commit=False,
+                )
             else:
-                # Determine batch processing
-                batch_size = ai_props.batch_size if ai_props.batch_size > 0 else total
-                analyzed_count = 0
-
-                for i, sr in enumerate(customized):
-                    # Gather context via the contextual lookup service
+                for i, sr in enumerate(customized[resume_from:], start=resume_from):
+                    # Gather context via the contextual lookup service.
+                    # Keep this baseline JSON shape stable for downstream stages/tests.
                     ctx = gather_artifact_context(
                         session, instance_id, sr.id, ai_props.context_enrichment
                     )
 
-                    # Build analysis result dict
                     references = ctx.get("references") or []
                     human_ctx = ctx.get("human_context") or {}
                     artifact_info = ctx.get("artifact") or {}
@@ -1448,13 +1657,40 @@ def _run_assessment_pipeline_stage(
                         "update_sets_count": len(ctx.get("update_sets") or []),
                     }
 
+                    if pipeline_prompt_props.use_registered_prompts:
+                        prompt_text, prompt_error = _try_registered_prompt_text(
+                            session,
+                            prompt_name="artifact_analyzer",
+                            arguments={
+                                "result_id": str(sr.id),
+                                "assessment_id": str(assessment_id),
+                            },
+                        )
+                        if prompt_text:
+                            analysis_result["registered_prompt"] = "artifact_analyzer"
+                            analysis_result["prompt_context"] = prompt_text
+                        if prompt_error:
+                            analysis_result["registered_prompt_error"] = prompt_error
+
                     sr.ai_observations = json.dumps(analysis_result, sort_keys=True)
                     session.add(sr)
                     analyzed_count += 1
 
-                    # Commit in batches
-                    if analyzed_count % batch_size == 0:
-                        session.commit()
+                    checkpoint_phase_progress(
+                        session,
+                        assessment_id,
+                        stage,
+                        completed_items=i + 1,
+                        last_item_id=int(sr.id) if sr.id is not None else None,
+                        status="running",
+                        checkpoint={
+                            "resume_from_index": i + 1,
+                            "last_item_name": sr.name,
+                            "context_enrichment": ai_props.context_enrichment,
+                        },
+                        commit=False,
+                    )
+                    session.commit()
 
                     # Update progress
                     progress = 15 + int((i + 1) / total * 80)
@@ -1466,28 +1702,137 @@ def _run_assessment_pipeline_stage(
                         progress_percent=progress,
                     )
 
-                session.commit()
-                success_message = (
-                    f"AI Analysis stage completed ({analyzed_count}/{total} customized artifacts analyzed)."
+                complete_phase_progress(
+                    session,
+                    assessment_id,
+                    stage,
+                    checkpoint={"completed_items": total, "resume_from_index": total},
+                    commit=False,
                 )
+                success_message = (
+                    f"AI Analysis stage completed ({resume_from + analyzed_count}/{total} customized artifacts analyzed)."
+                )
+            telemetry_details["ai_analysis"] = {
+                "customized_total": total,
+                "resume_from_index": resume_from,
+                "analyzed_count": analyzed_count,
+            }
 
         elif stage == PipelineStage.engines.value:
+            start_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                total_items=1,
+                allow_resume=True,
+                checkpoint={"stage_operation": "run_preprocessing_engines"},
+                commit=False,
+            )
             result = run_preprocessing_engines_handle({"assessment_id": assessment_id}, session)
             if not result.get("success"):
                 errors = result.get("errors") or []
                 raise RuntimeError("; ".join(errors) if errors else "Engine run failed.")
             engines_run = len(result.get("engines_run") or [])
+            complete_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                checkpoint={"engines_run": engines_run},
+                commit=False,
+            )
             success_message = f"Engines stage completed ({engines_run} engine(s) run)."
+            telemetry_local_calls_delta += 1
+            telemetry_details["engines"] = {"engines_run": engines_run}
 
         elif stage == PipelineStage.observations.value:
-            result = generate_observations_handle({"assessment_id": assessment_id}, session)
+            total_customized = int(
+                session.exec(
+                    select(func.count(ScanResult.id))
+                    .join(Scan, ScanResult.scan_id == Scan.id)
+                    .where(Scan.assessment_id == assessment_id)
+                    .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
+                ).one()
+                or 0
+            )
+            phase_progress = start_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                total_items=total_customized,
+                allow_resume=True,
+                checkpoint={"total_items": total_customized},
+                commit=False,
+            )
+            resume_from = min(max(0, int(phase_progress.resume_from_index or 0)), total_customized)
+
+            if total_customized > 0 and resume_from >= total_customized:
+                result = {
+                    "success": True,
+                    "processed_count": 0,
+                    "total_customized": total_customized,
+                    "usage_queries_executed": 0,
+                    "usage_cache_hits": 0,
+                    "next_resume_index": total_customized,
+                }
+            else:
+                result = generate_observations_handle(
+                    {
+                        "assessment_id": assessment_id,
+                        "resume_from_index": resume_from,
+                    },
+                    session,
+                )
             if not result.get("success"):
                 raise RuntimeError(result.get("error") or "Observation generation failed.")
             processed = int(result.get("processed_count") or 0)
             total = int(result.get("total_customized") or 0)
+            next_resume_index = int(result.get("next_resume_index") or (resume_from + processed))
+            checkpoint_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                completed_items=next_resume_index,
+                total_items=total,
+                status="running" if next_resume_index < total else "completed",
+                checkpoint={
+                    "resume_from_index": next_resume_index,
+                    "processed_count_last_run": processed,
+                    "usage_queries_executed": int(result.get("usage_queries_executed") or 0),
+                    "usage_cache_hits": int(result.get("usage_cache_hits") or 0),
+                },
+                commit=False,
+            )
+            if next_resume_index >= total:
+                complete_phase_progress(
+                    session,
+                    assessment_id,
+                    stage,
+                    checkpoint={"completed_items": total, "resume_from_index": total},
+                    commit=False,
+                )
             success_message = f"Observations generated for {processed}/{total} customized artifacts."
+            telemetry_local_calls_delta += 1
+            telemetry_servicenow_calls_delta += int(result.get("usage_queries_executed") or 0)
+            telemetry_local_db_calls_delta += int(result.get("usage_cache_hits") or 0)
+            telemetry_details["observations"] = {
+                "resume_from_index": resume_from,
+                "next_resume_index": next_resume_index,
+                "processed_count": processed,
+                "total_customized": total,
+                "usage_queries_executed": int(result.get("usage_queries_executed") or 0),
+                "usage_cache_hits": int(result.get("usage_cache_hits") or 0),
+            }
 
         elif stage == PipelineStage.grouping.value:
+            phase_progress = start_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                total_items=0,
+                allow_resume=True,
+                checkpoint={"stage_operation": "seed_feature_groups"},
+                commit=False,
+            )
             if skip_review:
                 _mark_remaining_customizations_reviewed(session, assessment_id)
             result = seed_feature_groups_handle({"assessment_id": assessment_id}, session)
@@ -1495,12 +1840,44 @@ def _run_assessment_pipeline_stage(
                 raise RuntimeError(result.get("error") or "Feature grouping failed.")
             features_created = int(result.get("features_created") or 0)
             grouped_count = int(result.get("grouped_count") or 0)
+            checkpoint_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                total_items=max(0, grouped_count),
+                completed_items=max(0, grouped_count),
+                status="completed",
+                checkpoint={
+                    "features_created": features_created,
+                    "grouped_count": grouped_count,
+                    "run_attempt": int(phase_progress.run_attempt or 0),
+                },
+                commit=False,
+            )
             success_message = (
                 f"Grouping stage completed ({grouped_count} customized results grouped; "
                 f"{features_created} feature(s) created)."
             )
+            telemetry_local_calls_delta += 1
+            telemetry_details["grouping"] = {
+                "grouped_count": grouped_count,
+                "features_created": features_created,
+            }
 
         elif stage == PipelineStage.ai_refinement.value:
+            pipeline_prompt_props_refinement = load_pipeline_prompt_properties(
+                session,
+                instance_id=assessment.instance_id,
+            )
+            start_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                total_items=3,
+                allow_resume=True,
+                checkpoint={"substeps": ["complex_features", "artifact_review", "rollup"]},
+                commit=False,
+            )
             # --- AI Refinement: relationship tracing, artifact review, debt roll-up ---
 
             # ---- Sub-step 1: Identify complex features (5+ members) ----
@@ -1548,6 +1925,39 @@ def _run_assessment_pipeline_stage(
                         "human_disposition": feat.disposition.value if feat.disposition else None,
                         "human_recommendation": feat.recommendation,
                     }
+                    if pipeline_prompt_props_refinement.use_registered_prompts:
+                        representative_result_id = None
+                        prioritized_links = sorted(
+                            member_links,
+                            key=lambda link: (
+                                0 if bool(link.is_primary) else 1,
+                                int(link.id or 0),
+                            ),
+                        )
+                        for link in prioritized_links:
+                            if link.scan_result_id is not None:
+                                representative_result_id = int(link.scan_result_id)
+                                break
+                        if representative_result_id is not None:
+                            prompt_text, prompt_error = _try_registered_prompt_text(
+                                session,
+                                prompt_name="relationship_tracer",
+                                arguments={
+                                    "result_id": str(representative_result_id),
+                                    "assessment_id": str(assessment_id),
+                                    "direction": "both",
+                                    "max_depth": "3",
+                                },
+                            )
+                            if prompt_text:
+                                summary["registered_prompt"] = "relationship_tracer"
+                                summary["prompt_context"] = prompt_text
+                            if prompt_error:
+                                summary["registered_prompt_error"] = prompt_error
+                        else:
+                            summary["registered_prompt_error"] = (
+                                "No feature member available for relationship_tracer prompt."
+                            )
                     feat.ai_summary = json.dumps(summary, sort_keys=True)
                     session.add(feat)
                     complex_features.append((feat, member_count))
@@ -1595,6 +2005,20 @@ def _run_assessment_pipeline_stage(
                     "has_prior_analysis": bool(existing_obs),
                     "prior_analysis_keys": sorted(existing_obs.keys()) if existing_obs else [],
                 }
+                if pipeline_prompt_props_refinement.use_registered_prompts:
+                    prompt_text, prompt_error = _try_registered_prompt_text(
+                        session,
+                        prompt_name="technical_architect",
+                        arguments={
+                            "result_id": str(sr.id),
+                            "assessment_id": str(assessment_id),
+                        },
+                    )
+                    if prompt_text:
+                        technical_review["registered_prompt"] = "technical_architect"
+                        technical_review["prompt_context"] = prompt_text
+                    if prompt_error:
+                        technical_review["registered_prompt_error"] = prompt_error
 
                 existing_obs["technical_review"] = technical_review
                 sr.ai_observations = json.dumps(existing_obs, sort_keys=True)
@@ -1645,6 +2069,19 @@ def _run_assessment_pipeline_stage(
                 "complex_features_analyzed": len(complex_features),
                 "artifacts_reviewed_mode_a": mode_a_count,
             }
+            if pipeline_prompt_props_refinement.use_registered_prompts:
+                prompt_text, prompt_error = _try_registered_prompt_text(
+                    session,
+                    prompt_name="technical_architect",
+                    arguments={
+                        "assessment_id": str(assessment_id),
+                    },
+                )
+                if prompt_text:
+                    rollup_data["registered_prompt"] = "technical_architect"
+                    rollup_data["prompt_context"] = prompt_text
+                if prompt_error:
+                    rollup_data["registered_prompt_error"] = prompt_error
 
             gen_rec = GeneralRecommendation(
                 assessment_id=assessment_id,
@@ -1668,16 +2105,67 @@ def _run_assessment_pipeline_stage(
                 f"AI Refinement completed: {len(complex_features)} complex feature(s) analyzed, "
                 f"{mode_a_count} artifact(s) reviewed, assessment-wide roll-up generated."
             )
+            complete_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                checkpoint={
+                    "completed_items": 3,
+                    "complex_features_analyzed": len(complex_features),
+                    "artifacts_reviewed_mode_a": mode_a_count,
+                },
+                commit=False,
+            )
+            telemetry_details["ai_refinement"] = {
+                "complex_features_analyzed": len(complex_features),
+                "artifacts_reviewed_mode_a": mode_a_count,
+            }
 
         elif stage == PipelineStage.recommendations.value:
-            pass_count = 0
-            response = run_feature_reasoning_handle(
-                {"assessment_id": assessment_id, "pass_type": "auto"},
+            phase_progress = start_phase_progress(
                 session,
+                assessment_id,
+                stage,
+                total_items=0,
+                allow_resume=True,
+                checkpoint={"stage_operation": "run_feature_reasoning"},
+                commit=False,
             )
+            progress_checkpoint: Dict[str, Any] = {}
+            if phase_progress.checkpoint_json:
+                try:
+                    parsed_checkpoint = json.loads(phase_progress.checkpoint_json)
+                    if isinstance(parsed_checkpoint, dict):
+                        progress_checkpoint = parsed_checkpoint
+                except Exception:
+                    progress_checkpoint = {}
+
+            pass_count = max(0, int(phase_progress.completed_items or 0))
+            resume_run_id = progress_checkpoint.get("run_id")
+            initial_payload = {"assessment_id": assessment_id, "pass_type": "auto"}
+            if resume_run_id:
+                initial_payload["run_id"] = resume_run_id
+
+            response = run_feature_reasoning_handle(initial_payload, session)
             pass_count += 1
+            max_iterations = int(response.get("max_iterations") or 3)
+            checkpoint_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                total_items=max(max_iterations, pass_count),
+                completed_items=pass_count,
+                status="running",
+                checkpoint={
+                    "run_id": response.get("run_id"),
+                    "max_iterations": max_iterations,
+                    "converged": bool(response.get("converged")),
+                    "resume_from_index": pass_count,
+                },
+                commit=False,
+            )
+
             while response.get("should_continue"):
-                max_iterations = int(response.get("max_iterations") or 3)
                 if pass_count >= max_iterations:
                     break
                 response = run_feature_reasoning_handle(
@@ -1689,14 +2177,60 @@ def _run_assessment_pipeline_stage(
                     session,
                 )
                 pass_count += 1
+                max_iterations = int(response.get("max_iterations") or max_iterations)
+                checkpoint_phase_progress(
+                    session,
+                    assessment_id,
+                    stage,
+                    total_items=max(max_iterations, pass_count),
+                    completed_items=pass_count,
+                    status="running",
+                    checkpoint={
+                        "run_id": response.get("run_id"),
+                        "max_iterations": max_iterations,
+                        "converged": bool(response.get("converged")),
+                        "resume_from_index": pass_count,
+                    },
+                    commit=False,
+                )
             if not response.get("success", True):
                 raise RuntimeError(response.get("error") or "Feature reasoning failed.")
+            checkpoint_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                total_items=pass_count,
+                completed_items=pass_count,
+                status="completed",
+                checkpoint={
+                    "run_id": response.get("run_id"),
+                    "pass_count": pass_count,
+                    "max_iterations": max_iterations,
+                    "converged": bool(response.get("converged")),
+                    "resume_from_index": pass_count,
+                },
+                commit=False,
+            )
             success_message = (
                 f"Recommendation stage verification completed in {pass_count} pass(es); "
                 f"converged={bool(response.get('converged'))}."
             )
+            telemetry_local_calls_delta += int(pass_count)
+            telemetry_details["recommendations"] = {
+                "pass_count": pass_count,
+                "converged": bool(response.get("converged")),
+            }
 
         elif stage == PipelineStage.review.value:
+            start_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                total_items=1,
+                allow_resume=True,
+                checkpoint={"stage_operation": "review_gate"},
+                commit=False,
+            )
             gate = _assessment_review_gate_summary(session, assessment_id)
             if not gate.get("all_reviewed") and not skip_review:
                 raise RuntimeError(
@@ -1707,8 +2241,28 @@ def _run_assessment_pipeline_stage(
                 success_message = f"Review gate bypassed; marked {reviewed_count} result(s) as reviewed."
             else:
                 success_message = "Review gate satisfied."
+            complete_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                checkpoint={"review_gate": gate, "skip_review": bool(skip_review)},
+                commit=False,
+            )
+            telemetry_details["review"] = {"skip_review": bool(skip_review)}
 
         elif stage == PipelineStage.report.value:
+            pipeline_prompt_props_report = load_pipeline_prompt_properties(
+                session, instance_id=assessment.instance_id
+            )
+            start_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                total_items=6,
+                allow_resume=True,
+                checkpoint={"stage_operation": "build_report_data"},
+                commit=False,
+            )
             # --- Report: aggregate assessment data for final report ---
 
             # 1. Gather assessment statistics
@@ -1847,12 +2401,29 @@ def _run_assessment_pipeline_stage(
             for old_report in existing_reports:
                 session.delete(old_report)
 
+            if pipeline_prompt_props_report.use_registered_prompts:
+                prompt_text, prompt_error = _try_registered_prompt_text(
+                    session,
+                    prompt_name="report_writer",
+                    arguments={
+                        "assessment_id": str(assessment_id),
+                        "format": "full",
+                    },
+                )
+                if prompt_text:
+                    report_data["registered_prompt"] = "report_writer"
+                    report_data["prompt_context"] = prompt_text
+                if prompt_error:
+                    report_data["registered_prompt_error"] = prompt_error
+
+            report_description = json.dumps(report_data, sort_keys=True, indent=2)
+
             report_rec = GeneralRecommendation(
                 assessment_id=assessment_id,
                 title="Assessment Report Data",
                 category="assessment_report",
                 created_by="ai_pipeline",
-                description=json.dumps(report_data, sort_keys=True, indent=2),
+                description=report_description,
             )
             session.add(report_rec)
             session.commit()
@@ -1861,10 +2432,38 @@ def _run_assessment_pipeline_stage(
                 f"Report stage completed: {customized_count} customized artifacts, "
                 f"{feature_count} feature(s), {gr_total} recommendation(s) summarized."
             )
+            complete_phase_progress(
+                session,
+                assessment_id,
+                stage,
+                checkpoint={
+                    "customized_count": customized_count,
+                    "feature_count": feature_count,
+                    "general_recommendations": gr_total,
+                },
+                commit=False,
+            )
+            telemetry_details["report"] = {
+                "customized_count": customized_count,
+                "feature_count": feature_count,
+                "general_recommendations": gr_total,
+            }
 
         next_stage = _PIPELINE_STAGE_AUTONEXT.get(stage)
         if next_stage:
             _set_assessment_pipeline_stage(assessment_id, next_stage, session=session)
+
+        refresh_assessment_runtime_usage(
+            session,
+            assessment_id,
+            mcp_calls_local_delta=telemetry_local_calls_delta,
+            mcp_calls_servicenow_delta=telemetry_servicenow_calls_delta,
+            mcp_calls_local_db_delta=telemetry_local_db_calls_delta,
+            last_event=f"pipeline:{stage}:completed",
+            details=telemetry_details,
+            commit=False,
+        )
+        session.commit()
 
     _set_assessment_pipeline_job_state(
         assessment_id,
@@ -1925,11 +2524,37 @@ def _start_assessment_pipeline_job(
                     assessment_id,
                     normalized_target,
                 )
+                failure_status = _pipeline_error_status(exc)
+                with Session(engine) as failure_session:
+                    fail_phase_progress(
+                        failure_session,
+                        assessment_id,
+                        normalized_target,
+                        status=failure_status,
+                        error=str(exc),
+                        checkpoint={"stage": normalized_target, "failure_status": failure_status},
+                        commit=True,
+                    )
+                    refresh_assessment_runtime_usage(
+                        failure_session,
+                        assessment_id,
+                        last_event=f"pipeline:{normalized_target}:{failure_status}",
+                        details={
+                            "stage": normalized_target,
+                            "status": failure_status,
+                            "error": str(exc),
+                        },
+                        commit=True,
+                    )
                 _set_assessment_pipeline_job_state(
                     assessment_id,
                     stage=normalized_target,
                     status="failed",
-                    message=f"Pipeline stage failed: {exc}",
+                    message=(
+                        f"Pipeline stage {failure_status.replace('_', ' ')}: {exc}"
+                        if failure_status != "failed"
+                        else f"Pipeline stage failed: {exc}"
+                    ),
                     progress_percent=100,
                 )
             finally:
@@ -3318,6 +3943,318 @@ def _build_feature_recommendation_payload(recommendation: FeatureRecommendation)
     }
 
 
+_PROCESS_RECOMMENDATION_EXCLUDED_CATEGORIES = {
+    "landscape_summary",
+    "technical_findings",
+    "assessment_report",
+}
+
+_PROCESS_RECOMMENDATION_FIELDS = [
+    {
+        "local_column": "id",
+        "column_label": "ID",
+        "kind": "number",
+        "is_reference": False,
+        "sn_reference_table": None,
+    },
+    {
+        "local_column": "title",
+        "column_label": "Title",
+        "kind": "string",
+        "is_reference": False,
+        "sn_reference_table": None,
+    },
+    {
+        "local_column": "category",
+        "column_label": "Category",
+        "kind": "string",
+        "is_reference": False,
+        "sn_reference_table": None,
+    },
+    {
+        "local_column": "severity",
+        "column_label": "Severity",
+        "kind": "string",
+        "is_reference": False,
+        "sn_reference_table": None,
+    },
+    {
+        "local_column": "created_by",
+        "column_label": "Created By",
+        "kind": "string",
+        "is_reference": False,
+        "sn_reference_table": None,
+    },
+    {
+        "local_column": "description",
+        "column_label": "Description",
+        "kind": "string",
+        "is_reference": False,
+        "sn_reference_table": None,
+    },
+    {
+        "local_column": "created_at",
+        "column_label": "Created",
+        "kind": "date",
+        "is_reference": False,
+        "sn_reference_table": None,
+    },
+    {
+        "local_column": "updated_at",
+        "column_label": "Updated",
+        "kind": "date",
+        "is_reference": False,
+        "sn_reference_table": None,
+    },
+]
+
+_PROCESS_RECOMMENDATION_ALLOWED_SORT_FIELDS = {
+    field["local_column"] for field in _PROCESS_RECOMMENDATION_FIELDS
+}
+
+
+def _xlsx_col_name(index: int) -> str:
+    """Convert 1-based column index to Excel column letters."""
+    result = ""
+    value = max(1, int(index))
+    while value:
+        value, rem = divmod(value - 1, 26)
+        result = chr(65 + rem) + result
+    return result
+
+
+def _sanitize_xml_text(value: Any) -> str:
+    text = str(value if value is not None else "")
+    text = "".join(ch for ch in text if ch == "\t" or ch == "\n" or ch == "\r" or ord(ch) >= 32)
+    return _xml_escape(text)
+
+
+def _build_xlsx_bytes(sheets: List[Tuple[str, List[List[Any]]]]) -> bytes:
+    """Build a minimal XLSX workbook from in-memory rows without external deps.
+
+    NOTE: Retained for potential reuse in data-browser export.  The primary
+    assessment export routes now use ``src/services/report_export.py``.
+    """
+    safe_sheets: List[Tuple[str, List[List[Any]]]] = []
+    used_sheet_names = set()
+    for index, (name, rows) in enumerate(sheets, start=1):
+        candidate = (name or f"Sheet{index}").strip()[:31] or f"Sheet{index}"
+        if candidate in used_sheet_names:
+            suffix = 2
+            while f"{candidate[:28]}_{suffix}" in used_sheet_names:
+                suffix += 1
+            candidate = f"{candidate[:28]}_{suffix}"
+        used_sheet_names.add(candidate)
+        safe_sheets.append((candidate, rows or [["No data"]]))
+
+    workbook_sheets_xml: List[str] = []
+    workbook_rels_xml: List[str] = []
+    content_types_xml: List[str] = [
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+        '<Default Extension="xml" ContentType="application/xml"/>',
+        '<Override PartName="/xl/workbook.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>',
+    ]
+    worksheet_xml_parts: List[str] = []
+
+    for idx, (sheet_name, sheet_rows) in enumerate(safe_sheets, start=1):
+        rel_id = f"rId{idx}"
+        workbook_sheets_xml.append(
+            f'<sheet name="{_sanitize_xml_text(sheet_name)}" sheetId="{idx}" r:id="{rel_id}"/>'
+        )
+        workbook_rels_xml.append(
+            f'<Relationship Id="{rel_id}" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+            f'Target="worksheets/sheet{idx}.xml"/>'
+        )
+        content_types_xml.append(
+            f'<Override PartName="/xl/worksheets/sheet{idx}.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        )
+
+        row_xml_parts: List[str] = []
+        for row_idx, row in enumerate(sheet_rows, start=1):
+            cell_xml_parts: List[str] = []
+            for col_idx, cell in enumerate(row, start=1):
+                cell_ref = f"{_xlsx_col_name(col_idx)}{row_idx}"
+                if isinstance(cell, (int, float)) and not isinstance(cell, bool):
+                    cell_xml_parts.append(f"<c r=\"{cell_ref}\"><v>{cell}</v></c>")
+                else:
+                    cell_xml_parts.append(
+                        "<c r=\"{ref}\" t=\"inlineStr\"><is><t xml:space=\"preserve\">{val}</t></is></c>".format(
+                            ref=cell_ref,
+                            val=_sanitize_xml_text(cell),
+                        )
+                    )
+            row_xml_parts.append(f"<row r=\"{row_idx}\">{''.join(cell_xml_parts)}</row>")
+
+        worksheet_xml_parts.append(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+            "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+            "<sheetData>"
+            + "".join(row_xml_parts)
+            + "</sheetData>"
+            "</worksheet>"
+        )
+
+    workbook_xml = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" "
+        "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
+        "<sheets>"
+        + "".join(workbook_sheets_xml)
+        + "</sheets></workbook>"
+    )
+
+    workbook_rels = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+        + "".join(workbook_rels_xml)
+        + "</Relationships>"
+    )
+
+    root_rels = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+        "<Relationship Id=\"rId1\" "
+        "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" "
+        "Target=\"xl/workbook.xml\"/>"
+        "</Relationships>"
+    )
+
+    content_types = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+        + "".join(content_types_xml)
+        + "</Types>"
+    )
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", root_rels)
+        archive.writestr("xl/workbook.xml", workbook_xml)
+        archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        for idx, sheet_xml in enumerate(worksheet_xml_parts, start=1):
+            archive.writestr(f"xl/worksheets/sheet{idx}.xml", sheet_xml)
+    return buffer.getvalue()
+
+
+def _build_docx_bytes(title: str, lines: List[str]) -> bytes:
+    """Build a minimal DOCX document from plain text lines without external deps."""
+    title_text = _sanitize_xml_text(title)
+    paragraph_nodes = [
+        "<w:p><w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>".format(
+            _sanitize_xml_text(line)
+        )
+        for line in lines
+    ]
+    if not paragraph_nodes:
+        paragraph_nodes.append("<w:p><w:r><w:t>No content.</w:t></w:r></w:p>")
+
+    document_xml = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
+        "<w:body>"
+        f"<w:p><w:r><w:t xml:space=\"preserve\">{title_text}</w:t></w:r></w:p>"
+        + "".join(paragraph_nodes)
+        + "<w:sectPr><w:pgSz w:w=\"12240\" w:h=\"15840\"/><w:pgMar "
+        "w:top=\"1440\" w:right=\"1440\" w:bottom=\"1440\" w:left=\"1440\" "
+        "w:header=\"708\" w:footer=\"708\" w:gutter=\"0\"/></w:sectPr>"
+        "</w:body></w:document>"
+    )
+
+    content_types = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+        "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+        "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+        "<Override PartName=\"/word/document.xml\" "
+        "ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>"
+        "</Types>"
+    )
+    root_rels = (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+        "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+        "<Relationship Id=\"rId1\" "
+        "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" "
+        "Target=\"word/document.xml\"/>"
+        "</Relationships>"
+    )
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", root_rels)
+        archive.writestr("word/document.xml", document_xml)
+    return buffer.getvalue()
+
+
+def _load_latest_report_payload(
+    session: Session,
+    assessment_id: int,
+) -> Tuple[GeneralRecommendation, Dict[str, Any]]:
+    report_row = session.exec(
+        select(GeneralRecommendation)
+        .where(GeneralRecommendation.assessment_id == assessment_id)
+        .where(GeneralRecommendation.category == "assessment_report")
+        .order_by(GeneralRecommendation.updated_at.desc())
+    ).first()
+    if not report_row:
+        raise ValueError("No assessment_report found. Run the Report stage first.")
+
+    parsed: Dict[str, Any] = {}
+    try:
+        loaded = json.loads(report_row.description or "{}")
+        if isinstance(loaded, dict):
+            parsed = loaded
+        else:
+            parsed = {"report_text": str(loaded)}
+    except Exception:
+        parsed = {"report_text": report_row.description or ""}
+    return report_row, parsed
+
+
+def _build_export_payload(
+    session: Session,
+    assessment_id: int,
+) -> Dict[str, Any]:
+    assessment = session.get(Assessment, assessment_id)
+    if not assessment:
+        raise ValueError("Assessment not found")
+    instance = session.get(Instance, assessment.instance_id)
+    report_row, report_data = _load_latest_report_payload(session, assessment_id)
+
+    recommendations = session.exec(
+        select(GeneralRecommendation)
+        .where(GeneralRecommendation.assessment_id == assessment_id)
+        .order_by(GeneralRecommendation.updated_at.desc())
+    ).all()
+    process_recommendations = [
+        rec for rec in recommendations
+        if (rec.category or "").strip().lower() not in _PROCESS_RECOMMENDATION_EXCLUDED_CATEGORIES
+    ]
+    technical_findings = [
+        rec for rec in recommendations
+        if (rec.category or "").strip().lower() == "technical_findings"
+    ]
+    features = session.exec(
+        select(Feature)
+        .where(Feature.assessment_id == assessment_id)
+        .order_by(Feature.id.asc())
+    ).all()
+
+    return {
+        "assessment": assessment,
+        "instance": instance,
+        "report_row": report_row,
+        "report_data": report_data,
+        "process_recommendations": process_recommendations,
+        "technical_findings": technical_findings,
+        "features": features,
+    }
+
+
 def _build_result_grouping_evidence_payload(session: Session, *, result_id: int) -> Dict[str, Any]:
     result = session.get(ScanResult, result_id)
     if not result:
@@ -4631,6 +5568,7 @@ app.include_router(analytics_router)
 app.include_router(mcp_admin_router)
 app.include_router(job_log_router)
 app.include_router(create_preferences_router(require_mcp_admin))
+app.include_router(create_assessment_runtime_usage_router(require_mcp_admin))
 app.include_router(
     create_instances_router(
         templates=templates,
@@ -4837,12 +5775,97 @@ def _build_dashboard_payload(session: Session) -> Dict[str, Any]:
     }
 
 
+def _build_assessment_summary_payload(session: Session) -> Dict[str, Any]:
+    """Aggregate cross-assessment pipeline and runtime telemetry for summary view."""
+    assessments = session.exec(
+        select(Assessment).order_by(Assessment.updated_at.desc(), Assessment.id.desc())
+    ).all()
+    instances = session.exec(select(Instance)).all()
+    instance_name_by_id = {
+        int(inst.id): inst.name
+        for inst in instances
+        if inst.id is not None
+    }
+    runtime_rows = session.exec(select(AssessmentRuntimeUsage)).all()
+    runtime_by_assessment_id = {
+        int(row.assessment_id): row for row in runtime_rows if row.assessment_id is not None
+    }
+
+    stage_counts = {stage: 0 for stage in _PIPELINE_STAGE_ORDER}
+    state_counts = collections.Counter()
+
+    total_estimated_cost = 0.0
+    total_tokens = 0
+    total_mcp_calls_local = 0
+    total_mcp_calls_servicenow = 0
+    total_mcp_calls_local_db = 0
+
+    summary_rows: List[Dict[str, Any]] = []
+    for assessment in assessments:
+        if assessment.id is None:
+            continue
+        stage = _pipeline_stage_value(assessment.pipeline_stage or PipelineStage.scans.value)
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+        state_value = assessment.state.value if assessment.state else "unknown"
+        state_counts[state_value] += 1
+
+        usage = runtime_by_assessment_id.get(int(assessment.id))
+        if usage:
+            total_estimated_cost += float(usage.estimated_cost_usd or 0.0)
+            total_tokens += int(usage.llm_total_tokens or 0)
+            total_mcp_calls_local += int(usage.mcp_calls_local or 0)
+            total_mcp_calls_servicenow += int(usage.mcp_calls_servicenow or 0)
+            total_mcp_calls_local_db += int(usage.mcp_calls_local_db or 0)
+
+        summary_rows.append(
+            {
+                "id": int(assessment.id),
+                "number": assessment.number,
+                "name": assessment.name,
+                "instance_name": instance_name_by_id.get(int(assessment.instance_id), "N/A"),
+                "state": state_value,
+                "pipeline_stage": stage,
+                "total_results": int((usage.total_results if usage else assessment.total_findings) or 0),
+                "customized_results": int((usage.customized_results if usage else assessment.records_customized) or 0),
+                "total_features": int((usage.total_features if usage else 0) or 0),
+                "estimated_cost_usd": float((usage.estimated_cost_usd if usage else 0.0) or 0.0),
+                "llm_total_tokens": int((usage.llm_total_tokens if usage else 0) or 0),
+                "updated_at": assessment.updated_at,
+            }
+        )
+
+    return {
+        "assessment_count": len(summary_rows),
+        "stage_counts": stage_counts,
+        "state_counts": dict(state_counts),
+        "total_estimated_cost_usd": round(total_estimated_cost, 4),
+        "total_llm_tokens": total_tokens,
+        "total_mcp_calls_local": total_mcp_calls_local,
+        "total_mcp_calls_servicenow": total_mcp_calls_servicenow,
+        "total_mcp_calls_local_db": total_mcp_calls_local_db,
+        "rows": summary_rows[:50],
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, session: Session = Depends(get_session)):
     """Main dashboard page"""
     # Keep this endpoint fast: don't load whole tables (ScanResult can be very large).
     payload = _build_dashboard_payload(session)
     return templates.TemplateResponse("index.html", {"request": request, **payload})
+
+
+@app.get("/assessments/summary", response_class=HTMLResponse)
+async def assessments_summary(
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Cross-assessment summary dashboard (Phase 10)."""
+    payload = _build_assessment_summary_payload(session)
+    return templates.TemplateResponse(
+        "assessment_summary.html",
+        {"request": request, **payload},
+    )
 
 
 def _coerce_bool_payload_field(payload: Dict[str, Any], field_name: str) -> Tuple[bool, Optional[bool]]:
@@ -5604,6 +6627,13 @@ async def update_assessment(
     assessment.updated_at = datetime.utcnow()
     session.add(assessment)
     session.commit()
+    refresh_assessment_runtime_usage(
+        session,
+        assessment_id,
+        last_event="assessment:started",
+        details={"state": AssessmentState.in_progress.value},
+        commit=True,
+    )
 
     return RedirectResponse(url=f"/assessments/{assessment_id}", status_code=303)
 
@@ -5628,6 +6658,13 @@ async def start_assessment(
     assessment.updated_at = datetime.utcnow()
     session.add(assessment)
     session.commit()
+    refresh_assessment_runtime_usage(
+        session,
+        assessment_id,
+        last_event="assessment:completed",
+        details={"state": AssessmentState.completed.value},
+        commit=True,
+    )
 
     return RedirectResponse(url=f"/assessments/{assessment_id}", status_code=303)
 
@@ -5821,6 +6858,13 @@ async def cancel_assessment(
     assessment.updated_at = datetime.utcnow()
     session.add(assessment)
     session.commit()
+    refresh_assessment_runtime_usage(
+        session,
+        assessment_id,
+        last_event="assessment:cancelled",
+        details={"state": AssessmentState.cancelled.value},
+        commit=True,
+    )
 
     return RedirectResponse(url=f"/assessments/{assessment_id}", status_code=303)
 
@@ -5839,6 +6883,13 @@ async def reopen_assessment(assessment_id: int, session: Session = Depends(get_s
     assessment.updated_at = datetime.utcnow()
     session.add(assessment)
     session.commit()
+    refresh_assessment_runtime_usage(
+        session,
+        assessment_id,
+        last_event="assessment:reopened",
+        details={"state": assessment.state.value if hasattr(assessment.state, "value") else str(assessment.state)},
+        commit=True,
+    )
 
     return RedirectResponse(url=f"/assessments/{assessment_id}", status_code=303)
 
@@ -6647,6 +7698,51 @@ async def api_results_query(
     return payload
 
 
+# ---------------------------------------------------------------------------
+# Assessment Report Export Endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/assessments/{assessment_id}/export/{export_format}")
+async def api_assessment_export(
+    assessment_id: int,
+    export_format: str,
+    session: Session = Depends(get_session),
+):
+    """Export assessment report as Excel (.xlsx) or Word (.docx).
+
+    Supported formats: "xlsx", "docx"
+    """
+    from .services.report_export import generate_excel_report, generate_word_report
+
+    assessment = session.get(Assessment, assessment_id)
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    safe_number = (assessment.number or "ASMT").replace("/", "-")
+    date_str = datetime.utcnow().strftime("%Y%m%d")
+
+    if export_format == "xlsx":
+        content = generate_excel_report(session, assessment_id)
+        filename = f"{safe_number}-Report-{date_str}.xlsx"
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif export_format == "docx":
+        content = generate_word_report(session, assessment_id)
+        filename = f"{safe_number}-Report-{date_str}.docx"
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported export format: {export_format}. Use 'xlsx' or 'docx'.",
+        )
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/api/assessments/{assessment_id}/results")
 async def api_assessment_results(
     assessment_id: int,
@@ -6881,6 +7977,112 @@ async def api_upsert_feature_recommendation(
         "success": True,
         "recommendation": _build_feature_recommendation_payload(recommendation),
     }
+
+
+@app.get("/api/assessments/{assessment_id}/process-recommendations/field-schema")
+async def api_assessment_process_recommendations_field_schema(
+    assessment_id: int,
+    session: Session = Depends(get_session),
+):
+    """Schema for process/general recommendation DataTable on assessment detail."""
+    assessment = session.get(Assessment, assessment_id)
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    return {
+        "table": "assessment_process_recommendations",
+        "instance_id": assessment.instance_id,
+        "fields": _PROCESS_RECOMMENDATION_FIELDS,
+        "available_tables": [],
+    }
+
+
+@app.get("/api/assessments/{assessment_id}/process-recommendations/records")
+async def api_assessment_process_recommendations_records(
+    assessment_id: int,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=500),
+    sort_field: str = Query("updated_at"),
+    sort_dir: str = Query("desc"),
+    conditions: Optional[str] = Query(None),
+    session: Session = Depends(get_session),
+):
+    """Rows for process/general recommendations DataTable."""
+    assessment = session.get(Assessment, assessment_id)
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    normalized_sort_field = sort_field if sort_field in _PROCESS_RECOMMENDATION_ALLOWED_SORT_FIELDS else "updated_at"
+    normalized_sort_dir = "asc" if str(sort_dir).lower() == "asc" else "desc"
+
+    params: Dict[str, Any] = {
+        "assessment_id": assessment_id,
+        "limit": int(limit),
+        "offset": int(offset),
+    }
+    excluded_placeholders: List[str] = []
+    for idx, category in enumerate(sorted(_PROCESS_RECOMMENDATION_EXCLUDED_CATEGORIES)):
+        key = f"excluded_{idx}"
+        excluded_placeholders.append(f":{key}")
+        params[key] = category
+
+    excluded_sql = (
+        "(category IS NULL OR lower(category) NOT IN ({placeholders}))".format(
+            placeholders=", ".join(excluded_placeholders)
+        )
+        if excluded_placeholders
+        else "1=1"
+    )
+    base_from_sql = (
+        "FROM general_recommendation "
+        "WHERE assessment_id = :assessment_id "
+        f"AND {excluded_sql}"
+    )
+
+    condition_clause = ""
+    if conditions:
+        try:
+            parsed_conditions = json.loads(conditions)
+            where_sql, where_values = conditions_to_sql_where(parsed_conditions)
+            where_sql = _bind_positional_sql(where_sql, where_values, params, "cond")
+            condition_clause = f" AND ({where_sql})"
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid conditions payload: {exc}")
+
+    total_query = text("SELECT COUNT(*) " + base_from_sql + condition_clause)
+    connection = session.connection()
+    total = int(connection.execute(total_query, params).scalar() or 0)
+
+    rows_query = text(
+        "SELECT "
+        "id, "
+        "title, "
+        "COALESCE(category, 'uncategorized') AS category, "
+        "COALESCE(severity, 'unrated') AS severity, "
+        "COALESCE(created_by, 'unknown') AS created_by, "
+        "COALESCE(description, '') AS description, "
+        "created_at, "
+        "updated_at "
+        + base_from_sql
+        + condition_clause
+        + f" ORDER BY {normalized_sort_field} {normalized_sort_dir.upper()}, id DESC "
+        + "LIMIT :limit OFFSET :offset"
+    )
+    rows = connection.execute(rows_query, params).all()
+    records = [_row_mapping_to_json(row) for row in rows]
+
+    return {
+        "offset": int(offset),
+        "limit": int(limit),
+        "total": total,
+        "count": len(records),
+        "rows": records,
+    }
+
+
+
+# NOTE: Export routes /assessments/{id}/export/excel and /assessments/{id}/export/word
+# removed — superseded by /api/assessments/{id}/export/{format} which uses
+# src/services/report_export.py (openpyxl + python-docx) for richer output.
 
 
 @app.get("/api/instances/{instance_id}/inventory")
