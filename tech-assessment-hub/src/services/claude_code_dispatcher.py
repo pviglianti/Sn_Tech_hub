@@ -87,3 +87,88 @@ class ClaudeCodeDispatcher:
         if allowed_tools:
             cmd.extend(["--allowedTools", ",".join(allowed_tools)])
         return cmd
+
+    def dispatch_batch(
+        self,
+        prompt: str,
+        *,
+        stage: str,
+        assessment_id: int,
+        batch_index: int,
+        total_batches: int,
+        allowed_tools: Optional[List[str]] = None,
+    ) -> DispatchResult:
+        """Run one batch through Claude Code CLI.
+
+        Pipes the prompt via stdin, captures JSON output from stdout.
+        """
+        cmd = self._build_command(allowed_tools=allowed_tools)
+        start = time.monotonic()
+        try:
+            completed = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=self.stage_timeout_seconds,
+            )
+            duration = time.monotonic() - start
+            if completed.returncode != 0:
+                return DispatchResult(
+                    success=False,
+                    batch_index=batch_index,
+                    total_batches=total_batches,
+                    artifacts_processed=0,
+                    error=f"CLI exited {completed.returncode}: {completed.stderr[:500]}",
+                    duration_seconds=duration,
+                )
+            # Parse JSON output
+            claude_output = self._parse_output(completed.stdout)
+            return DispatchResult(
+                success=True,
+                batch_index=batch_index,
+                total_batches=total_batches,
+                artifacts_processed=claude_output.get("processed", 0) if claude_output else 0,
+                claude_output=claude_output,
+                duration_seconds=duration,
+                budget_used_usd=claude_output.get("cost_usd") if claude_output else None,
+            )
+        except subprocess.TimeoutExpired:
+            return DispatchResult(
+                success=False,
+                batch_index=batch_index,
+                total_batches=total_batches,
+                artifacts_processed=0,
+                error=f"Timeout after {self.stage_timeout_seconds}s",
+                duration_seconds=time.monotonic() - start,
+            )
+        except Exception as exc:
+            return DispatchResult(
+                success=False,
+                batch_index=batch_index,
+                total_batches=total_batches,
+                artifacts_processed=0,
+                error=str(exc),
+                duration_seconds=time.monotonic() - start,
+            )
+
+    @staticmethod
+    def _parse_output(stdout: str) -> Optional[dict]:
+        """Parse Claude CLI JSON output. Tolerates non-JSON preamble."""
+        stdout = stdout.strip()
+        if not stdout:
+            return None
+        try:
+            return json.loads(stdout)
+        except json.JSONDecodeError:
+            # Claude --output-format json wraps in {"type":"result","result":"..."}
+            # Try to find the last JSON object in stdout
+            for line in reversed(stdout.splitlines()):
+                line = line.strip()
+                if line.startswith("{"):
+                    try:
+                        return json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+            logger.warning("Could not parse Claude output as JSON (len=%d)", len(stdout))
+            return {"raw_output": stdout[:2000]}
