@@ -152,6 +152,60 @@ class ClaudeCodeDispatcher:
                 duration_seconds=time.monotonic() - start,
             )
 
+    def dispatch_stage(
+        self,
+        prompt_builder: Callable[[List[int]], str],
+        artifact_ids: List[int],
+        *,
+        stage: str,
+        assessment_id: int,
+        batch_size: int,
+        strategy: str = "single",
+        max_concurrent: int = 1,
+        allowed_tools: Optional[List[str]] = None,
+        on_batch_complete: Optional[Callable[["DispatchResult"], None]] = None,
+    ) -> List[DispatchResult]:
+        """Run a full stage in batches.
+
+        V1: strategy="single" — one batch at a time.
+        V2+: strategy="concurrent" — up to max_concurrent via ThreadPoolExecutor.
+        V3+: strategy="swarm" — coordinated multi-role sessions.
+        """
+        if strategy not in ("single",):
+            raise NotImplementedError(f"Strategy '{strategy}' not yet implemented (V2+)")
+
+        if batch_size <= 0:
+            batch_size = len(artifact_ids) or 1
+
+        batches = [
+            artifact_ids[i:i + batch_size]
+            for i in range(0, max(len(artifact_ids), 1), batch_size)
+        ]
+        total_batches = len(batches)
+        results: List[DispatchResult] = []
+
+        for batch_index, batch_ids in enumerate(batches):
+            prompt = prompt_builder(batch_ids)
+            result = self.dispatch_batch(
+                prompt,
+                stage=stage,
+                assessment_id=assessment_id,
+                batch_index=batch_index,
+                total_batches=total_batches,
+                allowed_tools=allowed_tools,
+            )
+            results.append(result)
+            if on_batch_complete:
+                on_batch_complete(result)
+
+            if not result.success:
+                logger.warning(
+                    "Batch %d/%d failed for stage=%s assessment=%d: %s",
+                    batch_index + 1, total_batches, stage, assessment_id, result.error,
+                )
+
+        return results
+
     @staticmethod
     def _parse_output(stdout: str) -> Optional[dict]:
         """Parse Claude CLI JSON output. Tolerates non-JSON preamble."""

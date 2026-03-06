@@ -129,3 +129,67 @@ def test_dispatch_batch_nonzero_exit():
     assert result.success is False
     assert "budget exceeded" in result.error
     assert result.batch_index == 2
+
+
+def test_dispatch_stage_single_session_batches():
+    """dispatch_stage splits artifact_ids into batches and calls dispatch_batch per batch."""
+    calls = []
+
+    with patch("src.services.claude_code_dispatcher._find_claude_binary", return_value="/usr/bin/claude"):
+        d = ClaudeCodeDispatcher(mcp_config_path="/tmp/.mcp.json")
+
+    def fake_dispatch_batch(prompt, *, stage, assessment_id, batch_index, total_batches, allowed_tools=None):
+        calls.append(batch_index)
+        return DispatchResult(
+            success=True, batch_index=batch_index, total_batches=total_batches,
+            artifacts_processed=3, duration_seconds=1.0,
+        )
+
+    with patch.object(d, "dispatch_batch", side_effect=fake_dispatch_batch):
+        results = d.dispatch_stage(
+            prompt_builder=lambda ids: f"Analyze {ids}",
+            artifact_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9],
+            stage="ai_analysis",
+            assessment_id=42,
+            batch_size=3,
+        )
+    assert len(results) == 3  # 9 artifacts / 3 per batch
+    assert calls == [0, 1, 2]
+    assert all(r.success for r in results)
+
+
+def test_dispatch_stage_callback():
+    """on_batch_complete is called after each batch."""
+    callback_results = []
+
+    with patch("src.services.claude_code_dispatcher._find_claude_binary", return_value="/usr/bin/claude"):
+        d = ClaudeCodeDispatcher(mcp_config_path="/tmp/.mcp.json")
+
+    with patch.object(d, "dispatch_batch", return_value=DispatchResult(
+        success=True, batch_index=0, total_batches=1,
+        artifacts_processed=5, duration_seconds=1.0,
+    )):
+        d.dispatch_stage(
+            prompt_builder=lambda ids: "test",
+            artifact_ids=[1, 2, 3, 4, 5],
+            stage="ai_analysis", assessment_id=1, batch_size=5,
+            on_batch_complete=lambda r: callback_results.append(r),
+        )
+    assert len(callback_results) == 1
+
+
+def test_dispatch_stage_batch_size_zero_means_all():
+    """batch_size=0 processes all artifacts in one batch."""
+    with patch("src.services.claude_code_dispatcher._find_claude_binary", return_value="/usr/bin/claude"):
+        d = ClaudeCodeDispatcher(mcp_config_path="/tmp/.mcp.json")
+
+    with patch.object(d, "dispatch_batch", return_value=DispatchResult(
+        success=True, batch_index=0, total_batches=1,
+        artifacts_processed=10, duration_seconds=1.0,
+    )):
+        results = d.dispatch_stage(
+            prompt_builder=lambda ids: f"all {len(ids)}",
+            artifact_ids=list(range(10)),
+            stage="grouping", assessment_id=1, batch_size=0,
+        )
+    assert len(results) == 1
