@@ -36,3 +36,18 @@ def test_build_batch_prompt_basic():
     assert "Batch: 1 of 4" in prompt
     assert "101" in prompt
     assert "Analyze each artifact for complexity." in prompt
+
+
+def test_build_batch_prompt_with_artifact_names():
+    """build_batch_prompt includes artifact names when provided."""
+    prompt = build_batch_prompt(
+        stage_instructions="Test instructions",
+        assessment_id=1,
+        stage="ai_analysis",
+        batch_index=0,
+        total_batches=1,
+        artifact_ids=[101, 102],
+        artifact_names=["My Script Include", "My Business Rule"],
+    )
+    assert "ID 101: My Script Include" in prompt
+    assert "ID 102: My Business Rule" in prompt

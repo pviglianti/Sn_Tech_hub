@@ -14,7 +14,7 @@ import logging
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 
@@ -171,6 +171,9 @@ class ClaudeCodeDispatcher:
         V2+: strategy="concurrent" — up to max_concurrent via ThreadPoolExecutor.
         V3+: strategy="swarm" — coordinated multi-role sessions.
         """
+        if not artifact_ids:
+            return []
+
         if strategy not in ("single",):
             raise NotImplementedError(f"Strategy '{strategy}' not yet implemented (V2+)")
 

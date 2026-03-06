@@ -52,6 +52,9 @@ def test_build_command_basic():
     assert cmd[cmd.index("--max-budget-usd") + 1] == "2.5"
     assert "--mcp-config" in cmd
     assert cmd[cmd.index("--mcp-config") + 1] == "/tmp/.mcp.json"
+    assert "--permission-mode" in cmd
+    assert cmd[cmd.index("--permission-mode") + 1] == "bypassPermissions"
+    assert "--no-session-persistence" in cmd
     assert "--allowedTools" not in cmd
 
 
@@ -176,6 +179,31 @@ def test_dispatch_stage_callback():
             on_batch_complete=lambda r: callback_results.append(r),
         )
     assert len(callback_results) == 1
+
+
+def test_dispatch_stage_empty_artifact_ids():
+    """dispatch_stage returns empty list when no artifacts provided."""
+    with patch("src.services.claude_code_dispatcher._find_claude_binary", return_value="/usr/bin/claude"):
+        d = ClaudeCodeDispatcher(mcp_config_path="/tmp/.mcp.json")
+    results = d.dispatch_stage(
+        prompt_builder=lambda ids: "test",
+        artifact_ids=[],
+        stage="ai_analysis", assessment_id=1, batch_size=5,
+    )
+    assert results == []
+
+
+def test_dispatch_batch_generic_exception():
+    """dispatch_batch handles unexpected exceptions."""
+    with patch("src.services.claude_code_dispatcher._find_claude_binary", return_value="/usr/bin/claude"), \
+         patch("subprocess.run", side_effect=OSError("Permission denied")):
+        d = ClaudeCodeDispatcher(mcp_config_path="/tmp/.mcp.json")
+        result = d.dispatch_batch(
+            prompt="test", stage="ai_analysis",
+            assessment_id=1, batch_index=0, total_batches=1,
+        )
+    assert result.success is False
+    assert "Permission denied" in result.error
 
 
 def test_dispatch_stage_batch_size_zero_means_all():
