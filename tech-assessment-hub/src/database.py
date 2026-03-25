@@ -3,8 +3,11 @@
 from sqlmodel import SQLModel, Session, create_engine
 from sqlalchemy import text, event
 from pathlib import Path
+import logging
 import os
-from typing import Iterable
+from typing import Any, Dict, Iterable, Optional
+
+logger = logging.getLogger(__name__)
 
 from .app_file_class_catalog import (
     default_assessment_availability_for_instance_file_type,
@@ -30,7 +33,9 @@ def _set_sqlite_pragmas(dbapi_connection, connection_record):
     try:
         cursor.execute("PRAGMA journal_mode=WAL;")
         cursor.execute("PRAGMA synchronous=NORMAL;")
-        cursor.execute("PRAGMA busy_timeout=5000;")
+        cursor.execute("PRAGMA busy_timeout=30000;")
+        # Auto-checkpoint WAL after 1000 pages (~4 MB) to prevent unbounded growth.
+        cursor.execute("PRAGMA wal_autocheckpoint=1000;")
     finally:
         cursor.close()
 
@@ -93,6 +98,7 @@ def create_db_and_tables():
     # Create / update per-class artifact detail tables from ARTIFACT_DETAIL_DEFS.
     from .services.artifact_ddl import ensure_artifact_tables
     ensure_artifact_tables(engine)
+    _startup_vacuum_check()
 
 
 def _ensure_instance_columns():
@@ -368,6 +374,117 @@ def _ensure_instance_app_file_type_defaults() -> None:
                     params,
                 )
         conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Database health: freelist monitoring + incremental vacuum
+# ---------------------------------------------------------------------------
+
+# Reclaim free pages when the freelist exceeds this fraction of total pages.
+_VACUUM_FREELIST_THRESHOLD = 0.10  # 10%
+# Max pages to reclaim per incremental vacuum call (keeps startup fast).
+_INCREMENTAL_VACUUM_PAGES = 50_000  # ~200 MB at 4 KB page size
+
+
+def get_db_health() -> Dict[str, Any]:
+    """Return database size, page stats, freelist metrics, and WAL info."""
+    db_path = DATA_DIR / "tech_assessment.db"
+    wal_path = DATA_DIR / "tech_assessment.db-wal"
+    file_size = db_path.stat().st_size if db_path.exists() else 0
+    wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+    with engine.connect() as conn:
+        page_size = conn.execute(text("PRAGMA page_size")).scalar() or 4096
+        page_count = conn.execute(text("PRAGMA page_count")).scalar() or 0
+        freelist_count = conn.execute(text("PRAGMA freelist_count")).scalar() or 0
+        auto_vacuum = conn.execute(text("PRAGMA auto_vacuum")).scalar() or 0
+        wal_autocheckpoint = conn.execute(text("PRAGMA wal_autocheckpoint")).scalar() or 0
+    freelist_pct = (freelist_count / page_count * 100) if page_count else 0.0
+    return {
+        "file_size_bytes": file_size,
+        "file_size_mb": round(file_size / (1024 * 1024), 1),
+        "wal_size_bytes": wal_size,
+        "wal_size_mb": round(wal_size / (1024 * 1024), 1),
+        "page_size": page_size,
+        "page_count": page_count,
+        "freelist_count": freelist_count,
+        "freelist_pct": round(freelist_pct, 1),
+        "auto_vacuum_mode": {0: "none", 1: "full", 2: "incremental"}.get(auto_vacuum, str(auto_vacuum)),
+        "wal_autocheckpoint": wal_autocheckpoint,
+    }
+
+
+def run_incremental_vacuum(max_pages: Optional[int] = None) -> Dict[str, Any]:
+    """Reclaim freelist pages via incremental vacuum.  Returns before/after stats."""
+    pages = max_pages or _INCREMENTAL_VACUUM_PAGES
+    with engine.connect() as conn:
+        before = conn.execute(text("PRAGMA freelist_count")).scalar() or 0
+        conn.execute(text(f"PRAGMA incremental_vacuum({pages})"))
+        conn.commit()
+        after = conn.execute(text("PRAGMA freelist_count")).scalar() or 0
+    reclaimed = before - after
+    page_size = 4096
+    logger.info("Incremental vacuum reclaimed %d pages (~%.1f MB), freelist: %d -> %d",
+                reclaimed, reclaimed * page_size / (1024 * 1024), before, after)
+    return {"before": before, "after": after, "reclaimed": reclaimed}
+
+
+_WAL_CHECKPOINT_THRESHOLD_MB = 50  # Attempt WAL checkpoint if WAL exceeds this size
+
+
+def _startup_vacuum_check() -> None:
+    """Run at startup: log DB health, checkpoint WAL if large, reclaim freelist."""
+    try:
+        health = get_db_health()
+        logger.info(
+            "DB health: %.1f MB on disk, WAL %.1f MB, freelist %.1f%% (%d pages), auto_vacuum=%s",
+            health["file_size_mb"], health["wal_size_mb"], health["freelist_pct"],
+            health["freelist_count"], health["auto_vacuum_mode"],
+        )
+
+        # Checkpoint WAL if it's grown too large.
+        if health["wal_size_mb"] > _WAL_CHECKPOINT_THRESHOLD_MB:
+            logger.warning(
+                "WAL is %.1f MB (threshold %d MB) — attempting TRUNCATE checkpoint...",
+                health["wal_size_mb"], _WAL_CHECKPOINT_THRESHOLD_MB,
+            )
+            wal_result = run_wal_checkpoint()
+            logger.info("WAL checkpoint result: %s", wal_result)
+
+        if health["freelist_pct"] > _VACUUM_FREELIST_THRESHOLD * 100:
+            logger.warning(
+                "Freelist at %.1f%% — running incremental vacuum (up to %d pages)...",
+                health["freelist_pct"], _INCREMENTAL_VACUUM_PAGES,
+            )
+            result = run_incremental_vacuum()
+            logger.info("Startup vacuum done: reclaimed %d pages", result["reclaimed"])
+    except Exception:
+        logger.exception("Startup vacuum check failed (non-fatal)")
+
+
+def run_wal_checkpoint() -> Dict[str, Any]:
+    """Attempt a TRUNCATE WAL checkpoint to merge WAL back into the main DB.
+
+    Returns checkpoint result and before/after WAL sizes.
+    A busy result (mode=1) is non-fatal — the next startup will retry.
+    """
+    wal_path = DATA_DIR / "tech_assessment.db-wal"
+    before_size = wal_path.stat().st_size if wal_path.exists() else 0
+    with engine.connect() as conn:
+        row = conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)")).fetchone()
+        mode, pages_written, pages_checkpointed = row if row else (-1, -1, -1)
+    after_size = wal_path.stat().st_size if wal_path.exists() else 0
+    status = "ok" if mode == 0 else "busy" if mode == 1 else "error"
+    result = {
+        "status": status,
+        "mode": mode,
+        "pages_written": pages_written,
+        "pages_checkpointed": pages_checkpointed,
+        "before_wal_mb": round(before_size / (1024 * 1024), 1),
+        "after_wal_mb": round(after_size / (1024 * 1024), 1),
+    }
+    if mode != 0:
+        logger.warning("WAL checkpoint returned %s (mode=%d) — will retry next startup", status, mode)
+    return result
 
 
 def get_session():

@@ -37,6 +37,8 @@ def _build_customization_from_result(result: ScanResult) -> Customization:
         recommendation=result.recommendation,
         observations=result.observations,
         sys_updated_on=result.sys_updated_on,
+        is_adjacent=result.is_adjacent,
+        is_out_of_scope=result.is_out_of_scope,
     )
 
 
@@ -61,6 +63,8 @@ def _copy_result_to_customization(row: Customization, result: ScanResult) -> boo
         "recommendation": result.recommendation,
         "observations": result.observations,
         "sys_updated_on": result.sys_updated_on,
+        "is_adjacent": result.is_adjacent,
+        "is_out_of_scope": result.is_out_of_scope,
     }
 
     for field_name, new_value in updates.items():

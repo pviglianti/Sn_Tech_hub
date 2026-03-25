@@ -501,8 +501,9 @@ class ScanResult(SQLModel, table=True):
     recommendation: Optional[str] = None
     observations: Optional[str] = None
 
-    # Is this an adjacent finding? (impacts but not part of assessed app)
-    is_adjacent: bool = False
+    # Scope flags (set by AI triage and/or human override)
+    is_adjacent: bool = False  # impacts but not part of assessed app
+    is_out_of_scope: bool = False  # no relation to assessed app or trivial change
 
     # Assigned reviewer
     assigned_to: Optional[str] = None
@@ -588,6 +589,10 @@ class Customization(SQLModel, table=True):
     observations: Optional[str] = None
     sys_updated_on: Optional[datetime] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Scope flags (synced from parent ScanResult)
+    is_adjacent: bool = False
+    is_out_of_scope: bool = False
 
     # Relationships
     scan_result: ScanResult = Relationship(back_populates="customization")

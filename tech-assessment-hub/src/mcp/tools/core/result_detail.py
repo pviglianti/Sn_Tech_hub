@@ -60,6 +60,7 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
         "recommendation": result.recommendation,
         "observations": result.observations,
         "is_adjacent": result.is_adjacent,
+        "is_out_of_scope": result.is_out_of_scope,
         "sys_created_by": result.sys_created_by,
         "sys_created_on": result.sys_created_on.isoformat() if result.sys_created_on else None,
         "sys_updated_by": result.sys_updated_by,

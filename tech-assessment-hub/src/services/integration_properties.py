@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 
 from ..models import AppConfig
 
-PropertyType = Literal["int", "float", "select", "multiselect"]
+PropertyType = Literal["int", "float", "select", "multiselect", "string"]
 PROPERTY_SCOPE_APPLICATION = "application_instance"
 
 # ---------------------------------------------------------------------------
@@ -77,6 +77,7 @@ OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT = "observations.max_usage_queries_per_
 
 # AI Analysis pipeline keys
 AI_ANALYSIS_BATCH_SIZE = "ai_analysis.batch_size"
+AI_ANALYSIS_ENABLE_DEPTH_FIRST = "ai_analysis.enable_depth_first_traversal"
 AI_ANALYSIS_CONTEXT_ENRICHMENT = "ai_analysis.context_enrichment"
 AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH = "ai_analysis.max_rabbit_hole_depth"
 AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP = "ai_analysis.max_neighbors_per_hop"
@@ -89,6 +90,9 @@ PIPELINE_USE_REGISTERED_PROMPTS = "pipeline.use_registered_prompts"
 AI_RUNTIME_MODE = "ai.runtime.mode"
 AI_RUNTIME_PROVIDER = "ai.runtime.provider"
 AI_RUNTIME_MODEL = "ai.runtime.model"
+AI_RUNTIME_MODEL_CATALOG_TIMEOUT_SECONDS = "ai.runtime.model_catalog_timeout_seconds"
+AI_RUNTIME_EXECUTION_STRATEGY = "ai.runtime.execution_strategy"
+AI_RUNTIME_MAX_CONCURRENT_SESSIONS = "ai.runtime.max_concurrent_sessions"
 AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD = "ai.budget.assessment_soft_limit_usd"
 AI_BUDGET_ASSESSMENT_HARD_LIMIT_USD = "ai.budget.assessment_hard_limit_usd"
 AI_BUDGET_MONTHLY_HARD_LIMIT_USD = "ai.budget.monthly_hard_limit_usd"
@@ -149,6 +153,7 @@ class ObservationProperties:
 class AIAnalysisProperties:
     """Typed AI analysis stage properties loaded from app_config."""
     batch_size: int = 0  # 0 = all at once, 50+ for batching
+    enable_depth_first: bool = True
     context_enrichment: str = "auto"  # "auto", "always", "never"
     max_rabbit_hole_depth: int = 10
     max_neighbors_per_hop: int = 20
@@ -161,6 +166,8 @@ class AIRuntimeProperties:
     mode: str = "local_subscription"
     provider: str = "openai"
     model: str = "gpt-5-mini"
+    execution_strategy: str = "single"
+    max_concurrent_sessions: int = 1
     assessment_soft_limit_usd: float = 10.0
     assessment_hard_limit_usd: float = 25.0
     monthly_hard_limit_usd: float = 200.0
@@ -222,14 +229,10 @@ AI_RUNTIME_PROVIDER_OPTIONS: List[Tuple[str, str]] = [
     ("openai_compatible_custom", "OpenAI-Compatible Custom"),
 ]
 
-AI_RUNTIME_MODEL_OPTIONS: List[Tuple[str, str]] = [
-    ("gpt-5-mini", "GPT-5 mini"),
-    ("gpt-5.2", "GPT-5.2"),
-    ("claude-sonnet-4-5", "Claude Sonnet 4.5"),
-    ("claude-haiku-4-5", "Claude Haiku 4.5"),
-    ("gemini-2.5-pro", "Gemini 2.5 Pro"),
-    ("deepseek-chat", "DeepSeek Chat"),
-    ("custom", "Custom / Provider Default"),
+AI_RUNTIME_EXECUTION_STRATEGY_OPTIONS: List[Tuple[str, str]] = [
+    ("single", "Single Session (one batch at a time)"),
+    ("concurrent", "Concurrent (parallel batches)"),
+    ("swarm", "Swarm (multi-role coordinated sessions)"),
 ]
 
 PROPERTY_DEFAULTS: Dict[str, str] = {
@@ -262,6 +265,7 @@ PROPERTY_DEFAULTS: Dict[str, str] = {
     OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT: "2",
     # AI Analysis pipeline defaults
     AI_ANALYSIS_BATCH_SIZE: "0",
+    AI_ANALYSIS_ENABLE_DEPTH_FIRST: "true",
     AI_ANALYSIS_CONTEXT_ENRICHMENT: "auto",
     AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH: "10",
     AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP: "20",
@@ -272,6 +276,9 @@ PROPERTY_DEFAULTS: Dict[str, str] = {
     AI_RUNTIME_MODE: "local_subscription",
     AI_RUNTIME_PROVIDER: "openai",
     AI_RUNTIME_MODEL: "gpt-5-mini",
+    AI_RUNTIME_MODEL_CATALOG_TIMEOUT_SECONDS: "8",
+    AI_RUNTIME_EXECUTION_STRATEGY: "single",
+    AI_RUNTIME_MAX_CONCURRENT_SESSIONS: "1",
     AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD: "10",
     AI_BUDGET_ASSESSMENT_HARD_LIMIT_USD: "25",
     AI_BUDGET_MONTHLY_HARD_LIMIT_USD: "200",
@@ -657,6 +664,21 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         min_value=0,
         max_value=1000,
     ),
+    AI_ANALYSIS_ENABLE_DEPTH_FIRST: IntegrationPropertyDefinition(
+        key=AI_ANALYSIS_ENABLE_DEPTH_FIRST,
+        label="Enable Depth-First Traversal",
+        description=(
+            "When enabled, AI Analysis follows relationship-graph chains between "
+            "customized artifacts. Turn this off to force the simpler sequential "
+            "per-artifact analysis path."
+        ),
+        value_type="select",
+        default=PROPERTY_DEFAULTS[AI_ANALYSIS_ENABLE_DEPTH_FIRST],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_analysis",
+        section=SECTION_AI_ANALYSIS,
+        options=BOOL_OPTIONS,
+    ),
     AI_ANALYSIS_CONTEXT_ENRICHMENT: IntegrationPropertyDefinition(
         key=AI_ANALYSIS_CONTEXT_ENRICHMENT,
         label="Context Enrichment Mode",
@@ -680,9 +702,8 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         key=AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH,
         label="Max Traversal Depth",
         description=(
-            "Maximum depth to follow relationship chains in depth-first mode. "
-            "Prevents runaway traversal. Items beyond this depth are analyzed "
-            "when reached from the main queue."
+            "Maximum number of relationship hops to follow away from the current "
+            "seed artifact when depth-first traversal is enabled."
         ),
         value_type="int",
         default=PROPERTY_DEFAULTS[AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH],
@@ -696,8 +717,9 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         key=AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP,
         label="Max Neighbors Per Hop",
         description=(
-            "Maximum number of related customizations to follow from each artifact "
-            "in depth-first mode. Prevents explosion on highly-connected artifacts."
+            "Maximum number of related customized artifacts to follow from one "
+            "artifact at each traversal step when depth-first traversal is enabled. "
+            "This limits breadth per hop, not total depth."
         ),
         value_type="int",
         default=PROPERTY_DEFAULTS[AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP],
@@ -711,9 +733,8 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         key=AI_ANALYSIS_MIN_EDGE_WEIGHT,
         label="Min Edge Weight for Traversal",
         description=(
-            "Minimum relationship weight to follow in depth-first mode. "
-            "Higher values mean only strong relationships (code refs, update set overlaps) "
-            "trigger depth-first traversal."
+            "Minimum relationship strength required before a related customization "
+            "is followed when depth-first traversal is enabled."
         ),
         value_type="float",
         default=PROPERTY_DEFAULTS[AI_ANALYSIS_MIN_EDGE_WEIGHT],
@@ -772,17 +793,64 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
     ),
     AI_RUNTIME_MODEL: IntegrationPropertyDefinition(
         key=AI_RUNTIME_MODEL,
-        label="AI Model",
+        label="AI Model ID",
         description=(
-            "Model identifier used for AI runs. Pick a preset model name or use "
-            "'Custom / Provider Default' to let the provider adapter choose."
+            "Exact model identifier used for AI runs. The AI Setup Wizard can fetch "
+            "provider-specific suggestions. Saving the literal value 'custom' tells "
+            "provider adapters to use their own default model."
         ),
-        value_type="select",
+        value_type="string",
         default=PROPERTY_DEFAULTS[AI_RUNTIME_MODEL],
         scope=PROPERTY_SCOPE_APPLICATION,
         applies_to="ai_runtime",
         section=SECTION_AI_RUNTIME,
-        options=AI_RUNTIME_MODEL_OPTIONS,
+    ),
+    AI_RUNTIME_MODEL_CATALOG_TIMEOUT_SECONDS: IntegrationPropertyDefinition(
+        key=AI_RUNTIME_MODEL_CATALOG_TIMEOUT_SECONDS,
+        label="AI Model Catalog Timeout (Seconds)",
+        description=(
+            "HTTP timeout used when the AI Setup Wizard fetches live provider model "
+            "catalogs."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[AI_RUNTIME_MODEL_CATALOG_TIMEOUT_SECONDS],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_runtime",
+        section=SECTION_AI_RUNTIME,
+        min_value=2,
+        max_value=60,
+    ),
+    AI_RUNTIME_EXECUTION_STRATEGY: IntegrationPropertyDefinition(
+        key=AI_RUNTIME_EXECUTION_STRATEGY,
+        label="AI Execution Strategy",
+        description=(
+            "How AI batches are dispatched. 'single' runs one batch at a time "
+            "(V1 default). 'concurrent' runs multiple batches in parallel. "
+            "'swarm' uses coordinated multi-role sessions. Only 'single' is "
+            "implemented in V1 — other options are reserved for future use."
+        ),
+        value_type="select",
+        default=PROPERTY_DEFAULTS[AI_RUNTIME_EXECUTION_STRATEGY],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_runtime",
+        section=SECTION_AI_RUNTIME,
+        options=AI_RUNTIME_EXECUTION_STRATEGY_OPTIONS,
+    ),
+    AI_RUNTIME_MAX_CONCURRENT_SESSIONS: IntegrationPropertyDefinition(
+        key=AI_RUNTIME_MAX_CONCURRENT_SESSIONS,
+        label="Max Concurrent AI Sessions",
+        description=(
+            "Maximum number of parallel AI sessions when using concurrent or "
+            "swarm execution strategy. Ignored when strategy is 'single'. "
+            "Higher values increase speed but consume more API budget."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[AI_RUNTIME_MAX_CONCURRENT_SESSIONS],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_runtime",
+        section=SECTION_AI_RUNTIME,
+        min_value=1,
+        max_value=10,
     ),
     AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD: IntegrationPropertyDefinition(
         key=AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD,
@@ -906,6 +974,9 @@ def _read_property(session: Session, key: str, instance_id: Optional[int] = None
 
 
 def _parse_typed(raw_value: str, definition: IntegrationPropertyDefinition) -> Any:
+    if definition.value_type == "string":
+        return raw_value
+
     if definition.value_type == "select":
         valid_keys = [opt[0] for opt in definition.options]
         if raw_value not in valid_keys:
@@ -948,6 +1019,8 @@ def _normalize_for_storage(value: Any, definition: IntegrationPropertyDefinition
         raise ValueError(f"{definition.key} requires a value")
 
     parsed = _parse_typed(raw, definition)
+    if definition.value_type == "string":
+        return str(parsed)
     if definition.value_type == "select":
         return str(parsed)
     if definition.value_type == "multiselect":
@@ -955,6 +1028,18 @@ def _normalize_for_storage(value: Any, definition: IntegrationPropertyDefinition
     if definition.value_type == "int":
         return str(int(parsed))
     return f"{float(parsed):g}"
+
+
+def _inherited_value_for_instance_scope(
+    session: Session,
+    key: str,
+    definition: IntegrationPropertyDefinition,
+) -> str:
+    """Return the value an instance would inherit without a local override."""
+    global_row = _read_row_exact(session, key, None)
+    if global_row and global_row.value not in (None, ""):
+        return str(global_row.value).strip()
+    return definition.default
 
 
 def list_integration_property_snapshots(
@@ -968,6 +1053,10 @@ def list_integration_property_snapshots(
 
         current_row = scoped_row if instance_id is not None else global_row
         current_value = str(current_row.value).strip() if current_row and current_row.value is not None else None
+        instance_override_value = (
+            str(scoped_row.value).strip() if scoped_row and scoped_row.value is not None else None
+        )
+        global_value = str(global_row.value).strip() if global_row and global_row.value is not None else None
 
         if scoped_row and scoped_row.value not in (None, ""):
             effective_value = str(scoped_row.value).strip()
@@ -989,6 +1078,8 @@ def list_integration_property_snapshots(
             "section": definition.section,
             "default": definition.default,
             "current_value": current_value,
+            "instance_override_value": instance_override_value,
+            "global_value": global_value,
             "effective_value": effective_value,
             "is_default": current_value in (None, ""),
             "effective_source": effective_source,
@@ -1023,6 +1114,12 @@ def update_integration_properties(
             continue
 
         normalized_value = _normalize_for_storage(value, definition)
+        if instance_id is not None:
+            inherited_value = _inherited_value_for_instance_scope(session, key, definition)
+            if normalized_value == inherited_value:
+                if row:
+                    session.delete(row)
+                continue
         if row:
             row.value = normalized_value
             row.description = definition.description
@@ -1234,10 +1331,16 @@ def load_ai_analysis_properties(
 ) -> AIAnalysisProperties:
     """Load typed AI analysis properties from app_config."""
     defaults = AIAnalysisProperties()
+    enable_depth_first = (
+        _read_property(session, AI_ANALYSIS_ENABLE_DEPTH_FIRST, instance_id=instance_id)
+        or PROPERTY_DEFAULTS[AI_ANALYSIS_ENABLE_DEPTH_FIRST]
+    ).strip().lower()
     context_enrichment = (
         _read_property(session, AI_ANALYSIS_CONTEXT_ENRICHMENT, instance_id=instance_id)
         or PROPERTY_DEFAULTS[AI_ANALYSIS_CONTEXT_ENRICHMENT]
     ).strip().lower()
+    if enable_depth_first not in {"1", "true", "yes", "y", "on", "0", "false", "no", "n", "off"}:
+        enable_depth_first = PROPERTY_DEFAULTS[AI_ANALYSIS_ENABLE_DEPTH_FIRST]
     if context_enrichment not in {"auto", "always", "never"}:
         context_enrichment = defaults.context_enrichment
 
@@ -1248,6 +1351,7 @@ def load_ai_analysis_properties(
             defaults.batch_size,
             instance_id=instance_id,
         ),
+        enable_depth_first=enable_depth_first in {"1", "true", "yes", "y", "on"},
         context_enrichment=context_enrichment,
         max_rabbit_hole_depth=_get_int(
             session,
@@ -1267,6 +1371,19 @@ def load_ai_analysis_properties(
             defaults.min_edge_weight_for_traversal,
             instance_id=instance_id,
         ),
+    )
+
+
+def load_ai_runtime_model_catalog_timeout_seconds(
+    session: Session,
+    instance_id: Optional[int] = None,
+) -> int:
+    """Return timeout used for live provider model-catalog fetches."""
+    return _get_int(
+        session,
+        AI_RUNTIME_MODEL_CATALOG_TIMEOUT_SECONDS,
+        int(PROPERTY_DEFAULTS[AI_RUNTIME_MODEL_CATALOG_TIMEOUT_SECONDS]),
+        instance_id=instance_id,
     )
 
 
@@ -1318,10 +1435,29 @@ def load_ai_runtime_properties(
     ).strip().lower()
     stop_on_hard_limit = stop_on_hard_limit_raw in {"1", "true", "yes", "y", "on"}
 
+    execution_strategy = (
+        _read_property(session, AI_RUNTIME_EXECUTION_STRATEGY, instance_id=instance_id)
+        or PROPERTY_DEFAULTS[AI_RUNTIME_EXECUTION_STRATEGY]
+    ).strip().lower()
+    if execution_strategy not in {opt[0] for opt in AI_RUNTIME_EXECUTION_STRATEGY_OPTIONS}:
+        execution_strategy = defaults.execution_strategy
+
+    max_concurrent_sessions = max(
+        1,
+        _get_int(
+            session,
+            AI_RUNTIME_MAX_CONCURRENT_SESSIONS,
+            defaults.max_concurrent_sessions,
+            instance_id=instance_id,
+        ),
+    )
+
     return AIRuntimeProperties(
         mode=mode,
         provider=provider,
         model=model,
+        execution_strategy=execution_strategy,
+        max_concurrent_sessions=max_concurrent_sessions,
         assessment_soft_limit_usd=max(
             0.0,
             _get_float(

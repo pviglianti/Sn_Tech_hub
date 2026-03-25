@@ -49,6 +49,71 @@ def test_api_list_best_practices_filter_category(client: TestClient, seeded_bps)
     assert data["best_practices"][0]["code"] == "TEST_SRV_001"
 
 
+def test_api_best_practice_field_schema_includes_all_model_columns(client: TestClient):
+    resp = client.get("/api/best-practices/field-schema")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    field_names = {field["local_column"] for field in data["fields"]}
+    model_columns = {column.name for column in BestPractice.__table__.columns}
+
+    assert field_names == model_columns
+    assert "source_url" in field_names
+    assert "created_at" in field_names
+    assert "updated_at" in field_names
+
+
+def test_api_best_practice_records_returns_full_row_shape(
+    client: TestClient,
+    seeded_bps,
+    db_session: Session,
+):
+    seeded_bps[0].source_url = "https://example.com/best-practice"
+    db_session.add(seeded_bps[0])
+    db_session.commit()
+
+    resp = client.get("/api/best-practices/records?offset=0&limit=50")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["total"] == 3
+    assert data["count"] == 3
+    row = data["rows"][0]
+    assert "id" in row
+    assert "source_url" in row
+    assert "created_at" in row
+    assert "updated_at" in row
+
+
+def test_api_best_practice_records_supports_standard_filters(
+    client: TestClient,
+    seeded_bps,
+    db_session: Session,
+):
+    seeded_bps[1].is_active = False
+    db_session.add(seeded_bps[1])
+    db_session.commit()
+
+    resp = client.get("/api/best-practices/records?category=technical_server&is_active=true")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["total"] == 1
+    assert data["rows"][0]["code"] == "TEST_SRV_001"
+
+
+def test_api_best_practice_record_returns_field_rows(client: TestClient, seeded_bps):
+    bp_id = seeded_bps[0].id
+    resp = client.get(f"/api/best-practices/{bp_id}/record")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    fields = {row["field"] for row in data["field_rows"]}
+    assert "source_url" in fields
+    assert "created_at" in fields
+    assert "updated_at" in fields
+
+
 def test_api_update_best_practice(client: TestClient, seeded_bps):
     bp_id = seeded_bps[0].id
     resp = client.put(f"/api/best-practices/{bp_id}", json={
@@ -83,3 +148,10 @@ def test_admin_best_practices_page_route(client: TestClient):
     resp = client.get("/admin/best-practices")
     assert resp.status_code == 200
     assert "Best Practices" in resp.text
+
+
+def test_admin_best_practice_record_page_route(client: TestClient, seeded_bps):
+    resp = client.get(f"/admin/best-practices/{seeded_bps[0].id}")
+    assert resp.status_code == 200
+    assert seeded_bps[0].code in resp.text
+    assert seeded_bps[0].title in resp.text

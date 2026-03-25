@@ -93,7 +93,7 @@ app_file_class_queries:
     pattern: "ref_sys_report.tableLIKE{table}"
   sys_dictionary:
     target_table_field: ref_sys_dictionary.name
-    pattern: "ref_sys_dictionary.nameSTARTSWITH{table}."
+    keyword_pattern: "ref_sys_dictionary.nameLIKE{keyword}"
   sys_choice:
     target_table_field: ref_sys_choice.name
     pattern: "ref_sys_choice.nameSTARTSWITH{table}."

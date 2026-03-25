@@ -46,7 +46,7 @@
     <div class="card">
         <h2>Checks</h2>
         <p class="text-muted-plain mb-1">
-            Select one row to edit. Use column picker to show additional fields.
+            Check one row to edit. Click a record row or link to open the full record view. Use column picker to show any stored field.
         </p>
         <div id="bestPracticeTableContainer"></div>
     </div>
@@ -153,6 +153,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/js/ConditionBuilder.js?v={{ static_version }}"></script>
 <script src="/static/js/ColumnPicker.js?v={{ static_version }}"></script>
 <script src="/static/js/DataTable.js?v={{ static_version }}"></script>
 <script>
@@ -221,6 +222,11 @@
         }
     }
 
+    function updateFilterSummary(dt) {
+        if (!dt) return;
+        setFilterSummary('Showing ' + dt.rows.length + ' of ' + dt.total + ' checks.');
+    }
+
     function resetForm() {
         document.getElementById('bpId').value = '';
         document.getElementById('bpCode').value = '';
@@ -276,39 +282,12 @@
         };
     }
 
-    function sortRows(rows, field, dir) {
-        if (!field) return rows;
-        var direction = dir === 'desc' ? -1 : 1;
-        rows.sort(function (a, b) {
-            var av = a[field];
-            var bv = b[field];
-
-            if (typeof av === 'boolean') av = av ? 1 : 0;
-            if (typeof bv === 'boolean') bv = bv ? 1 : 0;
-
-            if (av == null && bv == null) return 0;
-            if (av == null) return -1 * direction;
-            if (bv == null) return 1 * direction;
-
-            if (typeof av === 'number' && typeof bv === 'number') {
-                return (av - bv) * direction;
-            }
-
-            var as = String(av).toLowerCase();
-            var bs = String(bv).toLowerCase();
-            if (as < bs) return -1 * direction;
-            if (as > bs) return 1 * direction;
-            return 0;
-        });
-        return rows;
-    }
-
     populateCategorySelects();
     resetForm();
 
     var dt = new window.DataTable(container, {
-        dataUrl: '/api/best-practices',
-        schemaUrl: '/api/best-practices',
+        dataUrl: '/api/best-practices/records',
+        schemaUrl: '/api/best-practices/field-schema',
         instanceId: 0,
         tableName: 'best_practice',
         pageSize: 50,
@@ -316,7 +295,24 @@
         includeTableAndInstanceParams: false,
         selectable: true,
         rowIdField: 'id',
-        onRecordClick: function () {},
+        extraQueryParams: function () {
+            return {
+                category: filterCategory.value || null,
+                is_active: (filterActive.value === 'true' || filterActive.value === 'false')
+                    ? filterActive.value
+                    : null,
+            };
+        },
+        getRecordUrl: function (id) {
+            return '/admin/best-practices/' + encodeURIComponent(id);
+        },
+        onRecordClick: function (id) {
+            if (!id) return;
+            window.location.href = '/admin/best-practices/' + encodeURIComponent(id);
+        },
+        onDataLoaded: function (_data, table) {
+            updateFilterSummary(table);
+        },
         onSelectionChange: function (selectedRows) {
             if (selectedRows.length === 1) {
                 loadRowIntoForm(selectedRows[0]);
@@ -349,70 +345,34 @@
                 span.className = 'status-badge ' + (value ? 'status-connected' : 'status-draft');
                 span.textContent = value ? 'active' : 'inactive';
                 td.appendChild(span);
+            },
+            source_url: function (value, row, td) {
+                if (!value) {
+                    td.textContent = '';
+                    return;
+                }
+                var link = document.createElement('a');
+                link.href = String(value);
+                link.className = 'ref-link';
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                link.textContent = 'Open Source';
+                link.title = String(value);
+                link.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                });
+                td.appendChild(link);
             }
         }
     });
 
-    dt._fetchSchema = async function () {
-        this.schema = {
-            fields: [
-                { local_column: 'code', column_label: 'Code', kind: 'string', is_reference: false, sn_reference_table: null },
-                { local_column: 'title', column_label: 'Title', kind: 'string', is_reference: false, sn_reference_table: null },
-                { local_column: 'category', column_label: 'Category', kind: 'string', is_reference: false, sn_reference_table: null },
-                { local_column: 'severity', column_label: 'Severity', kind: 'string', is_reference: false, sn_reference_table: null },
-                { local_column: 'is_active', column_label: 'Active', kind: 'boolean', is_reference: false, sn_reference_table: null },
-                { local_column: 'applies_to', column_label: 'Applies To', kind: 'string', is_reference: false, sn_reference_table: null },
-                { local_column: 'updated_at', column_label: 'Updated', kind: 'date', is_reference: false, sn_reference_table: null }
-            ],
-            available_tables: []
-        };
-        this.fields = this.schema.fields;
-        this._availableTables = {};
-    };
-
-    dt.refresh = async function () {
-        if (this._loading) return;
-        this._loading = true;
-        this._loadingOverlay.style.display = 'flex';
-        try {
-            var query = [];
-            if (filterCategory.value) {
-                query.push('category=' + encodeURIComponent(filterCategory.value));
-            }
-            if (filterActive.value === 'true' || filterActive.value === 'false') {
-                query.push('is_active=' + filterActive.value);
-            }
-            var url = '/api/best-practices' + (query.length ? ('?' + query.join('&')) : '');
-            var res = await fetch(url);
-            if (!res.ok) {
-                throw new Error('Best practice fetch failed: ' + res.status);
-            }
-            var data = await res.json();
-            var allRows = Array.isArray(data.best_practices) ? data.best_practices.slice() : [];
-            sortRows(allRows, this.sortField, this.sortDir);
-            this.total = allRows.length;
-            var start = this.offset;
-            var end = start + this.pageSize;
-            this.rows = allRows.slice(start, end);
-            this._renderTable();
-            this._renderPager();
-            setFilterSummary('Showing ' + this.rows.length + ' of ' + this.total + ' checks.');
-        } catch (err) {
-            this._tbody.innerHTML =
-                '<tr><td colspan="99" style="text-align:center;color:var(--danger-color);padding:2rem;">' +
-                'Error loading best practices: ' + err.message + '</td></tr>';
-            setFilterSummary('Failed to load checks.');
-            setStatus(err.message, true);
-        } finally {
-            this._loading = false;
-            this._loadingOverlay.style.display = 'none';
-        }
-    };
-
     document.getElementById('bpApplyFiltersBtn').addEventListener('click', function () {
         dt.offset = 0;
         dt.clearSelection();
-        dt.refresh();
+        dt.refresh().catch(function (err) {
+            setFilterSummary('Failed to load checks.');
+            setStatus(err.message, true);
+        });
     });
 
     document.getElementById('bpResetFiltersBtn').addEventListener('click', function () {
@@ -420,11 +380,17 @@
         filterActive.value = 'any';
         dt.offset = 0;
         dt.clearSelection();
-        dt.refresh();
+        dt.refresh().catch(function (err) {
+            setFilterSummary('Failed to load checks.');
+            setStatus(err.message, true);
+        });
     });
 
     document.getElementById('bpReloadBtn').addEventListener('click', function () {
-        dt.refresh();
+        dt.refresh().catch(function (err) {
+            setFilterSummary('Failed to load checks.');
+            setStatus(err.message, true);
+        });
     });
 
     document.getElementById('bpNewBtn').addEventListener('click', function () {
@@ -508,10 +474,15 @@
         }
     });
 
-    dt.init().catch(function (err) {
-        container.innerHTML = '<div class="empty-state"><h2>Error</h2><p>' + err.message + '</p></div>';
-        setStatus('Failed to initialize table: ' + err.message, true);
-    });
+    dt.init()
+        .then(function () {
+            updateFilterSummary(dt);
+        })
+        .catch(function (err) {
+            container.innerHTML = '<div class="empty-state"><h2>Error</h2><p>' + err.message + '</p></div>';
+            setStatus('Failed to initialize table: ' + err.message, true);
+            setFilterSummary('Failed to load checks.');
+        });
 })();
 </script>
 {% endblock %}

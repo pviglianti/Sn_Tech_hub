@@ -124,9 +124,10 @@ def _make_mock_context(sr_name="TestArtifact", sr_table="sys_script_include"):
     }
 
 
-def _make_ai_props():
+def _make_ai_props(enable_depth_first=True):
     """Return AIAnalysisProperties with DFS-relevant settings."""
     return AIAnalysisProperties(
+        enable_depth_first=enable_depth_first,
         max_rabbit_hole_depth=10,
         max_neighbors_per_hop=20,
         min_edge_weight_for_traversal=2.0,
@@ -246,6 +247,35 @@ class TestAIAnalysisSequentialMode:
             assert sr.ai_observations is not None
             obs = json.loads(sr.ai_observations)
             assert "artifact_name" in obs
+
+    @patch("src.server._set_assessment_pipeline_job_state")
+    @patch("src.server._set_assessment_pipeline_stage")
+    @patch("src.server.gather_artifact_context")
+    @patch("src.server.run_depth_first_analysis")
+    @patch("src.server.build_relationship_graph")
+    @patch("src.server.load_ai_analysis_properties")
+    def test_ai_analysis_sequential_mode_when_depth_first_disabled(
+        self, mock_load_ai, mock_build_graph, mock_dfs, mock_gather, mock_set_stage, mock_set_job,
+        db_session, db_engine,
+    ):
+        """A populated graph should still use sequential mode when DFS is disabled by property."""
+        inst, asmt = _seed_instance_and_assessment(db_session)
+        scan, srs = _add_customized_scan_results(db_session, asmt, count=2)
+
+        mock_load_ai.return_value = _make_ai_props(enable_depth_first=False)
+        mock_build_graph.return_value = _make_graph_with_nodes()
+        mock_gather.return_value = _make_mock_context()
+
+        with patch("src.server.engine", db_engine):
+            _run_assessment_pipeline_stage(asmt.id, target_stage="ai_analysis")
+
+        mock_build_graph.assert_called_once()
+        mock_dfs.assert_not_called()
+        assert mock_gather.call_count == 2
+
+        for sr in srs:
+            db_session.refresh(sr)
+            assert sr.ai_observations is not None
 
 
 # ===========================================================================

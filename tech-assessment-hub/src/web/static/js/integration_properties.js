@@ -12,6 +12,7 @@
     var sectionOrder = Array.isArray(window.INTEGRATION_SECTION_ORDER) ? window.INTEGRATION_SECTION_ORDER : [];
     var instanceOptions = Array.isArray(window.INTEGRATION_INSTANCE_OPTIONS) ? window.INTEGRATION_INSTANCE_OPTIONS : [];
     var selectedInstanceId = window.INTEGRATION_SELECTED_INSTANCE_ID;
+    var baselineValues = {};
     var isDirty = false;
     var isSaving = false;
     var suppressBeforeUnload = false;
@@ -227,13 +228,47 @@
         sectionsContainer.innerHTML = html;
     }
 
-    function collectUpdates() {
-        var updates = {};
+    function readCurrentInputValues() {
+        var values = {};
         var inputs = document.querySelectorAll(".integration-prop-input");
         inputs.forEach(function (input) {
             var key = input.getAttribute("data-key");
             if (!key) return;
-            updates[key] = input.value;
+            values[key] = String(input.value == null ? "" : input.value);
+        });
+        return values;
+    }
+
+    function captureBaselineValues() {
+        baselineValues = readCurrentInputValues();
+    }
+
+    function recomputeDirtyState() {
+        var currentValues = readCurrentInputValues();
+        var keys = {};
+        Object.keys(baselineValues).forEach(function (key) {
+            keys[key] = true;
+        });
+        Object.keys(currentValues).forEach(function (key) {
+            keys[key] = true;
+        });
+        var dirty = Object.keys(keys).some(function (key) {
+            var baseline = baselineValues[key] == null ? "" : String(baselineValues[key]);
+            var current = currentValues[key] == null ? "" : String(currentValues[key]);
+            return baseline !== current;
+        });
+        setDirtyState(dirty);
+    }
+
+    function collectUpdates() {
+        var updates = {};
+        var currentValues = readCurrentInputValues();
+        Object.keys(currentValues).forEach(function (key) {
+            var baseline = baselineValues[key] == null ? "" : String(baselineValues[key]);
+            var current = currentValues[key] == null ? "" : String(currentValues[key]);
+            if (baseline !== current) {
+                updates[key] = current;
+            }
         });
         return updates;
     }
@@ -270,6 +305,7 @@
                 instanceScopeSelect.value = selectedInstanceId == null ? "" : String(selectedInstanceId);
             }
             renderProperties();
+            captureBaselineValues();
             setDirtyState(false);
         }
         setStatus(result.body);
@@ -282,6 +318,11 @@
             return;
         }
         var updates = collectUpdates();
+        if (!Object.keys(updates).length) {
+            setDirtyState(false);
+            setStatus({ success: true, message: "No changes to save." });
+            return;
+        }
         setStatus({ success: true, message: "Saving properties..." });
         setSavingState(true);
         var result;
@@ -305,6 +346,7 @@
                 instanceScopeSelect.value = selectedInstanceId == null ? "" : String(selectedInstanceId);
             }
             renderProperties();
+            captureBaselineValues();
             setDirtyState(false);
         }
         setStatus(result ? result.body : { success: false, error: "Save failed." });
@@ -315,7 +357,7 @@
             return Object.assign({}, prop, { effective_value: prop.default });
         });
         renderProperties();
-        setDirtyState(true);
+        recomputeDirtyState();
         setStatus({ success: true, message: "Form values reset to defaults. Click Save Changes to persist." });
     }
 
@@ -405,21 +447,22 @@
             // Sync hidden input value
             var vals = Array.from(selectedEl.options).map(function (o) { return o.value; });
             if (hiddenInput) hiddenInput.value = vals.join(",");
-            setDirtyState(true);
+            recomputeDirtyState();
         });
         sectionsContainer.addEventListener("input", function (e) {
             if (e.target && e.target.classList && e.target.classList.contains("integration-prop-input")) {
-                setDirtyState(true);
+                recomputeDirtyState();
             }
         });
         sectionsContainer.addEventListener("change", function (e) {
             if (e.target && e.target.classList && e.target.classList.contains("integration-prop-input")) {
-                setDirtyState(true);
+                recomputeDirtyState();
             }
         });
     }
 
     initScopeOptions();
     renderProperties();
+    captureBaselineValues();
     setDirtyState(false);
 })();

@@ -53,6 +53,26 @@ Recommended Grouping Narrative:
    and where the boundaries of the feature/solution lie]
 ```
 
+## Scope Re-evaluation
+
+As you trace relationships, scope decisions from earlier stages may need
+revision.  If relationship tracing reveals new context:
+
+- An artifact initially marked ``out_of_scope`` may need reclassification to
+  ``adjacent`` if it references assessed tables or data.
+- An ``adjacent`` artifact may become ``in_scope`` if feature grouping shows
+  it is part of a cohesive custom feature.
+- Use ``update_scan_result`` to update ``is_out_of_scope`` and ``is_adjacent``
+  flags when scope changes.
+- Out-of-scope artifacts are excluded from feature grouping and final
+  deliverables — reclassify carefully.
+
+## Review Status & Disposition Rules
+
+- Keep ``review_status`` as ``review_in_progress`` — do NOT set ``reviewed``.
+- Do NOT set a final ``disposition`` — suggest one in observations text only.
+  Disposition is confirmed by a human after all analysis is complete.
+
 ## Rules
 
 - Ground every statement in the injected context below — do NOT fabricate.

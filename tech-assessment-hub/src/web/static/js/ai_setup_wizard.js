@@ -4,7 +4,9 @@
 
     var runtimeModeSelect = document.getElementById("aiRuntimeMode");
     var runtimeProviderSelect = document.getElementById("aiRuntimeProvider");
-    var runtimeModelSelect = document.getElementById("aiRuntimeModel");
+    var runtimeModelChoiceSelect = document.getElementById("aiRuntimeModelChoice");
+    var runtimeCustomModelInput = document.getElementById("aiRuntimeCustomModel");
+    var runtimeModelCatalogMeta = document.getElementById("aiRuntimeModelCatalogMeta");
 
     var bridgeEnabledInput = document.getElementById("aiBridgeEnabled");
     var bridgeCommandInput = document.getElementById("aiBridgeCommand");
@@ -18,6 +20,7 @@
 
     var runtimeLoadBtn = document.getElementById("aiSetupLoadRuntime");
     var runtimeSaveBtn = document.getElementById("aiSetupSaveRuntime");
+    var runtimeRefreshCatalogBtn = document.getElementById("aiSetupRefreshCatalog");
     var bridgeLoadBtn = document.getElementById("aiSetupLoadBridge");
     var bridgeSaveBtn = document.getElementById("aiSetupSaveBridge");
     var bridgeSaveAndStartBtn = document.getElementById("aiSetupSaveAndStartBridge");
@@ -37,9 +40,12 @@
     var runtimeKeys = window.AI_RUNTIME_KEYS || {};
     var runtimeModeOptions = Array.isArray(window.AI_RUNTIME_MODE_OPTIONS) ? window.AI_RUNTIME_MODE_OPTIONS : [];
     var runtimeProviderOptions = Array.isArray(window.AI_RUNTIME_PROVIDER_OPTIONS) ? window.AI_RUNTIME_PROVIDER_OPTIONS : [];
-    var runtimeModelOptions = Array.isArray(window.AI_RUNTIME_MODEL_OPTIONS) ? window.AI_RUNTIME_MODEL_OPTIONS : [];
     var instanceOptions = Array.isArray(window.AI_SETUP_INSTANCE_OPTIONS) ? window.AI_SETUP_INSTANCE_OPTIONS : [];
     var selectedInstanceId = window.AI_SETUP_SELECTED_INSTANCE_ID;
+
+    var PROVIDER_DEFAULT_CHOICE = "__provider_default__";
+    var CUSTOM_MODEL_CHOICE = "__custom_model__";
+    var providerCatalogModels = [];
 
     function setStatus(payload) {
         if (!statusBox) return;
@@ -54,6 +60,11 @@
     function setPipelineResponse(payload) {
         if (!pipelineResponseBox) return;
         pipelineResponseBox.textContent = JSON.stringify(payload, null, 2);
+    }
+
+    function setRuntimeModelCatalogMeta(message) {
+        if (!runtimeModelCatalogMeta) return;
+        runtimeModelCatalogMeta.textContent = String(message || "");
     }
 
     function escapeHtml(value) {
@@ -145,6 +156,130 @@
         return null;
     }
 
+    function setRuntimeModelOptions(models) {
+        var options = [
+            { value: PROVIDER_DEFAULT_CHOICE, label: "Provider default" },
+        ];
+        var seen = {};
+        (Array.isArray(models) ? models : []).forEach(function (model) {
+            if (!model || model.value == null) return;
+            var value = String(model.value).trim();
+            if (!value || value === "custom" || seen[value]) return;
+            seen[value] = true;
+            options.push({
+                value: value,
+                label: String(model.label || value),
+            });
+        });
+        options.push({ value: CUSTOM_MODEL_CHOICE, label: "Custom model ID..." });
+        populateSelect(runtimeModelChoiceSelect, options);
+    }
+
+    function syncRuntimeModelInputState() {
+        if (!runtimeCustomModelInput || !runtimeModelChoiceSelect) return;
+        var isCustomChoice = runtimeModelChoiceSelect.value === CUSTOM_MODEL_CHOICE;
+        runtimeCustomModelInput.disabled = !isCustomChoice;
+        if (isCustomChoice) {
+            runtimeCustomModelInput.removeAttribute("aria-disabled");
+        } else {
+            runtimeCustomModelInput.setAttribute("aria-disabled", "true");
+        }
+    }
+
+    function applyRuntimeModelSelection(modelValue) {
+        var normalized = String(modelValue || "").trim();
+        setRuntimeModelOptions(providerCatalogModels);
+        if (!runtimeModelChoiceSelect) return;
+
+        if (!normalized || normalized === "custom") {
+            runtimeModelChoiceSelect.value = PROVIDER_DEFAULT_CHOICE;
+            if (runtimeCustomModelInput) runtimeCustomModelInput.value = "";
+            syncRuntimeModelInputState();
+            return;
+        }
+
+        var optionValues = Array.from(runtimeModelChoiceSelect.options).map(function (opt) {
+            return opt.value;
+        });
+        if (optionValues.indexOf(normalized) >= 0) {
+            runtimeModelChoiceSelect.value = normalized;
+            if (runtimeCustomModelInput) runtimeCustomModelInput.value = "";
+        } else {
+            runtimeModelChoiceSelect.value = CUSTOM_MODEL_CHOICE;
+            if (runtimeCustomModelInput) runtimeCustomModelInput.value = normalized;
+        }
+        syncRuntimeModelInputState();
+    }
+
+    function resolveRuntimeModelValue() {
+        if (!runtimeModelChoiceSelect) return "";
+        if (runtimeModelChoiceSelect.value === PROVIDER_DEFAULT_CHOICE) {
+            return "custom";
+        }
+        if (runtimeModelChoiceSelect.value === CUSTOM_MODEL_CHOICE) {
+            return String(runtimeCustomModelInput && runtimeCustomModelInput.value || "").trim();
+        }
+        return String(runtimeModelChoiceSelect.value || "").trim();
+    }
+
+    async function refreshModelCatalog(selectedModel, suppressStatus) {
+        var provider = String(runtimeProviderSelect && runtimeProviderSelect.value || "").trim();
+        var modelToKeep = selectedModel == null ? resolveRuntimeModelValue() : String(selectedModel || "").trim();
+
+        if (!provider) {
+            providerCatalogModels = [];
+            applyRuntimeModelSelection(modelToKeep);
+            setRuntimeModelCatalogMeta("Select a provider to load provider-specific model suggestions.");
+            if (!suppressStatus) {
+                setStatus({ success: false, error: "Provider is required before loading model suggestions." });
+            }
+            return;
+        }
+
+        if (!suppressStatus) {
+            setStatus({ success: true, message: "Loading model catalog...", provider: provider });
+        }
+        setRuntimeModelCatalogMeta("Loading provider model suggestions...");
+
+        var url = withScope(
+            "/api/integration-properties/ai-model-catalog?provider=" + encodeURIComponent(provider)
+        );
+        var result = await fetchJson(url, { method: "GET" }, true);
+
+        if (result.ok && result.body) {
+            providerCatalogModels = Array.isArray(result.body.models) ? result.body.models : [];
+            applyRuntimeModelSelection(modelToKeep);
+
+            var meta = "Provider-specific suggestions unavailable.";
+            if (result.body.error) {
+                meta = "Model suggestions unavailable: " + result.body.error;
+            } else if (result.body.dynamic) {
+                meta = "Loaded " + providerCatalogModels.length + " provider model suggestion";
+                if (providerCatalogModels.length !== 1) {
+                    meta += "s";
+                }
+                meta += ".";
+            }
+            if (result.body.timeout_seconds) {
+                meta += " Timeout: " + result.body.timeout_seconds + "s.";
+            }
+            setRuntimeModelCatalogMeta(meta);
+
+            if (!suppressStatus) {
+                setStatus(result.body);
+            }
+            return;
+        }
+
+        providerCatalogModels = [];
+        applyRuntimeModelSelection(modelToKeep);
+        var errorMessage = (result.body && (result.body.error || result.body.detail)) || "Model catalog request failed.";
+        setRuntimeModelCatalogMeta("Model suggestions unavailable: " + errorMessage);
+        if (!suppressStatus) {
+            setStatus(result.body);
+        }
+    }
+
     async function loadRuntime() {
         setStatus({ success: true, message: "Loading runtime properties..." });
         var result = await fetchJson(withScope("/api/integration-properties"), { method: "GET" }, true);
@@ -159,12 +294,17 @@
 
         if (modeProp && runtimeModeSelect) runtimeModeSelect.value = String(modeProp.effective_value || modeProp.default || "");
         if (providerProp && runtimeProviderSelect) runtimeProviderSelect.value = String(providerProp.effective_value || providerProp.default || "");
-        if (modelProp && runtimeModelSelect) runtimeModelSelect.value = String(modelProp.effective_value || modelProp.default || "");
 
         selectedInstanceId = result.body.instance_id;
         if (scopeSelect) {
             scopeSelect.value = selectedInstanceId == null ? "" : String(selectedInstanceId);
         }
+
+        await refreshModelCatalog(
+            modelProp ? String(modelProp.effective_value || modelProp.default || "") : "",
+            true
+        );
+
         setStatus({
             success: true,
             message: "Runtime properties loaded.",
@@ -172,19 +312,25 @@
             runtime: {
                 mode: runtimeModeSelect ? runtimeModeSelect.value : null,
                 provider: runtimeProviderSelect ? runtimeProviderSelect.value : null,
-                model: runtimeModelSelect ? runtimeModelSelect.value : null,
+                model: resolveRuntimeModelValue() || null,
             },
         });
     }
 
     async function saveRuntime() {
-        if (!runtimeModeSelect || !runtimeProviderSelect || !runtimeModelSelect) return;
+        if (!runtimeModeSelect || !runtimeProviderSelect || !runtimeModelChoiceSelect) return;
+        var modelValue = resolveRuntimeModelValue();
+        if (!modelValue) {
+            setStatus({ success: false, error: "Custom model ID is required when custom model is selected." });
+            return;
+        }
+
         var payload = {
             properties: {},
         };
         payload.properties[runtimeKeys.mode] = runtimeModeSelect.value;
         payload.properties[runtimeKeys.provider] = runtimeProviderSelect.value;
-        payload.properties[runtimeKeys.model] = runtimeModelSelect.value;
+        payload.properties[runtimeKeys.model] = modelValue;
 
         setStatus({ success: true, message: "Saving runtime properties..." });
         var result = await fetchJson(
@@ -196,7 +342,11 @@
             },
             true
         );
-        setStatus(result.body);
+        if (!result.ok) {
+            setStatus(result.body);
+            return;
+        }
+        await loadRuntime();
     }
 
     function _splitArgs(text) {
@@ -336,14 +486,29 @@
 
     populateSelect(runtimeModeSelect, runtimeModeOptions);
     populateSelect(runtimeProviderSelect, runtimeProviderOptions);
-    populateSelect(runtimeModelSelect, runtimeModelOptions);
+    setRuntimeModelOptions([]);
+    syncRuntimeModelInputState();
     initScopeOptions();
+    setRuntimeModelCatalogMeta("Provider-specific suggestions load from the selected provider when available.");
 
     if (scopeSelect) {
         scopeSelect.addEventListener("change", loadRuntime);
     }
+    if (runtimeProviderSelect) {
+        runtimeProviderSelect.addEventListener("change", function () {
+            refreshModelCatalog(resolveRuntimeModelValue(), true);
+        });
+    }
+    if (runtimeModelChoiceSelect) {
+        runtimeModelChoiceSelect.addEventListener("change", syncRuntimeModelInputState);
+    }
     if (runtimeLoadBtn) runtimeLoadBtn.addEventListener("click", loadRuntime);
     if (runtimeSaveBtn) runtimeSaveBtn.addEventListener("click", saveRuntime);
+    if (runtimeRefreshCatalogBtn) {
+        runtimeRefreshCatalogBtn.addEventListener("click", function () {
+            refreshModelCatalog(resolveRuntimeModelValue(), false);
+        });
+    }
     if (bridgeLoadBtn) bridgeLoadBtn.addEventListener("click", loadBridgeConfig);
     if (bridgeSaveBtn) bridgeSaveBtn.addEventListener("click", function () { saveBridgeConfig(false); });
     if (bridgeSaveAndStartBtn) bridgeSaveAndStartBtn.addEventListener("click", function () { saveBridgeConfig(true); });

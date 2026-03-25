@@ -1,7 +1,9 @@
 import pytest
+from sqlmodel import select
 
 from src.models import AppConfig
 from src.services.integration_properties import (
+    AI_ANALYSIS_ENABLE_DEPTH_FIRST,
     AI_BUDGET_ASSESSMENT_HARD_LIMIT_USD,
     AI_BUDGET_ASSESSMENT_SOFT_LIMIT_USD,
     AI_BUDGET_MAX_INPUT_TOKENS_PER_CALL,
@@ -29,6 +31,7 @@ from src.services.integration_properties import (
     REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE,
     PipelinePromptProperties,
     list_integration_property_snapshots,
+    load_ai_analysis_properties,
     load_fetch_properties,
     load_ai_runtime_properties,
     load_observation_properties,
@@ -184,6 +187,67 @@ def test_update_and_snapshot_instance_scope(db_session, sample_instance):
     assert by_key[FETCH_REQUEST_TIMEOUT]["instance_id"] == sample_instance.id
 
 
+def test_update_instance_scope_skips_materializing_inherited_values(db_session, sample_instance):
+    update_integration_properties(
+        db_session,
+        {
+            FETCH_DEFAULT_BATCH_SIZE: "300",
+            FETCH_REQUEST_TIMEOUT: "60",
+        },
+    )
+
+    rows = update_integration_properties(
+        db_session,
+        {
+            FETCH_DEFAULT_BATCH_SIZE: "300",
+            FETCH_REQUEST_TIMEOUT: "95",
+        },
+        instance_id=sample_instance.id,
+    )
+
+    by_key = {row["key"]: row for row in rows}
+    assert by_key[FETCH_DEFAULT_BATCH_SIZE]["current_value"] is None
+    assert by_key[FETCH_DEFAULT_BATCH_SIZE]["effective_value"] == "300"
+    assert by_key[FETCH_DEFAULT_BATCH_SIZE]["effective_source"] == "global"
+    assert by_key[FETCH_REQUEST_TIMEOUT]["current_value"] == "95"
+    assert by_key[FETCH_REQUEST_TIMEOUT]["effective_source"] == "instance"
+
+    stored_rows = db_session.exec(
+        select(AppConfig).where(AppConfig.instance_id == sample_instance.id)
+    ).all()
+    stored_keys = {row.key for row in stored_rows}
+    assert FETCH_DEFAULT_BATCH_SIZE not in stored_keys
+    assert FETCH_REQUEST_TIMEOUT in stored_keys
+
+
+def test_update_instance_scope_deletes_override_when_matching_global_value(db_session, sample_instance):
+    update_integration_properties(
+        db_session,
+        {FETCH_DEFAULT_BATCH_SIZE: "300"},
+    )
+    update_integration_properties(
+        db_session,
+        {FETCH_DEFAULT_BATCH_SIZE: "700"},
+        instance_id=sample_instance.id,
+    )
+
+    rows = update_integration_properties(
+        db_session,
+        {FETCH_DEFAULT_BATCH_SIZE: "300"},
+        instance_id=sample_instance.id,
+    )
+
+    by_key = {row["key"]: row for row in rows}
+    assert by_key[FETCH_DEFAULT_BATCH_SIZE]["current_value"] is None
+    assert by_key[FETCH_DEFAULT_BATCH_SIZE]["effective_value"] == "300"
+    assert by_key[FETCH_DEFAULT_BATCH_SIZE]["effective_source"] == "global"
+    assert db_session.exec(
+        select(AppConfig)
+        .where(AppConfig.instance_id == sample_instance.id)
+        .where(AppConfig.key == FETCH_DEFAULT_BATCH_SIZE)
+    ).first() is None
+
+
 # ── Multiselect / concurrent types tests ──
 
 
@@ -295,6 +359,19 @@ def test_load_observation_properties_overrides(db_session, sample_instance):
     assert props.batch_size == 25
     assert props.include_usage_queries == "always"
     assert props.max_usage_queries_per_result == 4
+
+
+def test_load_ai_analysis_properties_enable_depth_first_override(db_session, sample_instance):
+    update_integration_properties(
+        db_session,
+        {
+            AI_ANALYSIS_ENABLE_DEPTH_FIRST: "false",
+        },
+        instance_id=sample_instance.id,
+    )
+
+    props = load_ai_analysis_properties(db_session, instance_id=sample_instance.id)
+    assert props.enable_depth_first is False
 
 
 def test_pipeline_prompt_property_present_in_snapshot(db_session):

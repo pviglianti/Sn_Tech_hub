@@ -54,6 +54,39 @@ were requested):
 - Each recommendation should include rationale and expected impact.
 - Group related recommendations where appropriate.
 
+## Scope Filtering
+
+- **Exclude** artifacts marked ``is_out_of_scope`` from all report sections,
+  feature counts, and recommendation lists. They are not part of the
+  deliverable.
+- **Include** artifacts marked ``is_adjacent`` but note their adjacency —
+  they are relevant context but not direct customizations of the assessed app.
+
+## Review Status & Disposition
+
+- The report stage is the FINAL stage. After generating the report, set
+  ``review_status`` to ``reviewed`` on all in-scope and adjacent artifacts.
+- Disposition values in the report are SUGGESTED — the report should present
+  them as recommendations for client confirmation, not final decisions.
+- Group artifacts by suggested disposition in the feature analysis section.
+
+## Output Formats and Tools
+
+When running through Claude Code, you have access to output plugins for \
+producing polished deliverables:
+
+- **Word (docx)** — Primary format for assessment reports. Use the Word \
+skill/plugin to create structured documents with headings, tables, and \
+professional formatting.
+- **Excel (xlsx)** — Artifact inventories, feature-to-disposition matrices, \
+comparison tables. Use the Excel skill/plugin for tabular data deliverables.
+- **PowerPoint (pptx)** — Executive briefings, stakeholder presentations with \
+key findings and recommendations. Use the PowerPoint skill/plugin.
+- **PDF** — Formatted final deliverables when PDF output is preferred.
+
+Use the **writing-plans** skill to plan multi-section report production, and \
+**executing-plans** to work through the plan with review checkpoints.
+
 ## Writing Rules
 
 - Ground every statement in the injected context below — do NOT fabricate.

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}{{ best_practice.code }} - Best Practice - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<a href="/admin/best-practices" class="browse-back-link">&larr; Back to Best Practices</a>
+
+<div class="page-header">
+    <div>
+        <h1>{{ best_practice.title }}</h1>
+        <p class="text-muted-plain mb-0">
+            <code>{{ best_practice.code }}</code>
+            &middot; {{ (best_practice.category.value if best_practice.category else '') | replace('_', ' ') | title }}
+            &middot; {{ best_practice.severity | title }}
+        </p>
+    </div>
+    <div class="button-group">
+        {% if best_practice.source_url %}
+        <a href="{{ best_practice.source_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">Open Source URL</a>
+        {% endif %}
+        <a href="/admin/best-practices" class="btn btn-secondary">Back to List</a>
+    </div>
+</div>
+
+<div class="card">
+    <p class="text-muted-plain mb-0">
+        Full record view for the local <code>best_practice</code> row.
+    </p>
+</div>
+
+<div class="card mt-1">
+    <div class="table-scroll">
+        <table class="record-detail-table">
+            <thead>
+                <tr>
+                    <th>Field</th>
+                    <th>Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in field_rows %}
+                <tr>
+                    <th>{{ row.label }}</th>
+                    <td>
+                        {% if row.field == "source_url" and row.value %}
+                        <a href="{{ row.value }}" target="_blank" rel="noopener noreferrer">{{ row.value }}</a>
+                        {% elif row.value is sameas true or row.value is sameas false %}
+                        {{ "true" if row.value else "false" }}
+                        {% elif row.value is none %}
+                        <span class="text-muted-plain">-</span>
+                        {% else %}
+                        {{ row.value }}
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<details class="card mt-1">
+    <summary>Raw JSON</summary>
+    <pre class="code-block mt-1">{{ raw_json }}</pre>
+</details>
+{% endblock %}

@@ -13,11 +13,11 @@ from sqlmodel import Session, select
 
 from ...database import get_session
 from ...models import Instance
+from ...services.ai_model_catalog import fetch_provider_model_catalog
 from ...services.integration_properties import (
     AI_RUNTIME_MODE,
     AI_RUNTIME_MODE_OPTIONS,
     AI_RUNTIME_MODEL,
-    AI_RUNTIME_MODEL_OPTIONS,
     AI_RUNTIME_PROVIDER,
     AI_RUNTIME_PROVIDER_OPTIONS,
     PROPERTY_SCOPE_APPLICATION,
@@ -91,9 +91,6 @@ def create_preferences_router(require_mcp_admin: Callable[..., Dict[str, Any]]) 
                 "runtime_provider_options_json": json.dumps(
                     [{"value": value, "label": label} for value, label in AI_RUNTIME_PROVIDER_OPTIONS]
                 ),
-                "runtime_model_options_json": json.dumps(
-                    [{"value": value, "label": label} for value, label in AI_RUNTIME_MODEL_OPTIONS]
-                ),
             },
         )
 
@@ -146,5 +143,23 @@ def create_preferences_router(require_mcp_admin: Callable[..., Dict[str, Any]]) 
             "instance_id": resolved_instance_id,
             "properties": properties,
         }
+
+    @preferences_router.get("/api/integration-properties/ai-model-catalog")
+    async def api_ai_model_catalog(
+        provider: str = Query(...),
+        instance_id: Optional[int] = Query(default=None),
+        session: Session = Depends(get_session),
+        _: Dict[str, Any] = Depends(require_mcp_admin),
+    ):
+        """Admin-only live provider model catalog for the AI setup wizard."""
+        resolved_instance_id = _resolve_instance_scope(instance_id, session)
+        payload = fetch_provider_model_catalog(
+            session,
+            provider,
+            instance_id=resolved_instance_id,
+        )
+        payload["success"] = True
+        payload["instance_id"] = resolved_instance_id
+        return payload
 
     return preferences_router

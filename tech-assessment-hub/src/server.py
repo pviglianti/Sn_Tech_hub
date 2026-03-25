@@ -19,9 +19,10 @@ from pathlib import Path
 from datetime import datetime, timedelta, date
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
+from enum import Enum as PyEnum
 from xml.sax.saxutils import escape as _xml_escape
 
-from .database import get_session, create_db_and_tables, engine
+from .database import get_session, create_db_and_tables, engine, get_db_health, run_incremental_vacuum, run_wal_checkpoint
 from .models import (
     Instance, Assessment, Scan, ScanResult, Customization, Feature, FeatureScanResult, FeatureContextArtifact, FeatureRecommendation,
     GeneralRecommendation,
@@ -79,6 +80,8 @@ from .mcp.tools.pipeline.run_engines import handle as run_preprocessing_engines_
 from .mcp.tools.pipeline.seed_feature_groups import handle as seed_feature_groups_handle
 from .services.relationship_graph import build_relationship_graph
 from .services.depth_first_analyzer import run_depth_first_analysis
+from .services.claude_code_dispatcher import ClaudeCodeDispatcher
+from .services.ai_stage_tool_sets import STAGE_TOOL_SETS, build_batch_prompt
 from .mcp.tools.pipeline.run_feature_reasoning import handle as run_feature_reasoning_handle
 from .mcp.tools.pipeline.generate_observations import handle as generate_observations_handle
 from .mcp.bridge import (
@@ -178,11 +181,19 @@ def _row_mapping_to_json(row: Any) -> Dict[str, Any]:
     mapping = row if isinstance(row, dict) else dict(row._mapping)
     payload: Dict[str, Any] = {}
     for key, value in mapping.items():
-        if isinstance(value, datetime):
-            payload[key] = value.isoformat()
-        else:
-            payload[key] = value
+        payload[key] = _json_safe_value(value)
     return payload
+
+
+def _json_safe_value(value: Any) -> Any:
+    """Normalize ORM/SQL values for JSON responses and templates."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, PyEnum):
+        return value.value
+    return value
 
 
 def _append_data_pull_event(
@@ -462,13 +473,8 @@ _PIPELINE_STAGE_LABELS: Dict[str, str] = {
     PipelineStage.complete.value: "Complete",
 }
 _PIPELINE_STAGE_AUTONEXT: Dict[str, str] = {
-    PipelineStage.engines.value: PipelineStage.ai_analysis.value,
-    PipelineStage.ai_analysis.value: PipelineStage.observations.value,
-    PipelineStage.observations.value: PipelineStage.review.value,
-    PipelineStage.grouping.value: PipelineStage.ai_refinement.value,
-    PipelineStage.ai_refinement.value: PipelineStage.recommendations.value,
-    PipelineStage.recommendations.value: PipelineStage.report.value,
-    PipelineStage.report.value: PipelineStage.complete.value,
+    # Empty: every stage requires a manual button press to advance.
+    # The advance-pipeline endpoint sets the next stage when the user clicks.
 }
 
 
@@ -1510,6 +1516,17 @@ def _try_registered_prompt_text(
         return None, str(exc)
 
 
+def _resolve_mcp_config_path() -> str:
+    """Resolve path to .mcp.json for Claude Code dispatch."""
+    here = Path(__file__).resolve().parent  # src/
+    for candidate in [here.parent / ".mcp.json", here.parent.parent / ".mcp.json"]:
+        if candidate.exists():
+            return str(candidate)
+    raise FileNotFoundError(
+        "No .mcp.json found. Create one from .mcp.json.template for Claude Code dispatch."
+    )
+
+
 def _enforce_assessment_stage_budget(
     session: Session,
     *,
@@ -1599,10 +1616,10 @@ def _run_assessment_pipeline_stage(
             pipeline_prompt_props = load_pipeline_prompt_properties(session, instance_id=assessment.instance_id)
             instance_id = assessment.instance_id
 
-            # Always attempt depth-first when the relationship graph has data
+            # Only use DFS when both the property flag and relationship graph allow it.
             graph = build_relationship_graph(session, assessment_id)
 
-            if graph and len(graph.adjacency) > 0:
+            if ai_props.enable_depth_first and graph and len(graph.adjacency) > 0:
                 # --- Depth-first relationship-driven analysis ---
 
                 def dfs_checkpoint_cb(sr_id, visited_count, total):
@@ -5979,6 +5996,94 @@ _PROCESS_RECOMMENDATION_ALLOWED_SORT_FIELDS = {
 }
 
 
+_BEST_PRACTICE_FIELD_LABELS = {
+    "id": "ID",
+    "is_active": "Active",
+    "source_url": "Source URL",
+    "applies_to": "Applies To",
+    "detection_hint": "Detection Hint",
+    "created_at": "Created",
+    "updated_at": "Updated",
+}
+
+_BEST_PRACTICE_FIELD_ORDER = [
+    "code",
+    "title",
+    "category",
+    "severity",
+    "is_active",
+    "source_url",
+    "applies_to",
+    "description",
+    "detection_hint",
+    "recommendation",
+    "created_at",
+    "updated_at",
+    "id",
+]
+
+
+def _static_table_column_label(column_name: str, overrides: Optional[Dict[str, str]] = None) -> str:
+    labels = overrides or {}
+    if column_name in labels:
+        return labels[column_name]
+    return column_name.replace("_", " ").title()
+
+
+def _static_table_column_kind(column: Any) -> str:
+    try:
+        python_type = column.type.python_type
+    except Exception:
+        python_type = None
+
+    if python_type is bool:
+        return "boolean"
+    if python_type in (datetime, date):
+        return "date"
+    if python_type in (int, float):
+        return "number"
+    return "string"
+
+
+def _static_model_fields(
+    model: Any,
+    *,
+    label_overrides: Optional[Dict[str, str]] = None,
+    ordered_columns: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    column_map = {column.name: column for column in model.__table__.columns}  # type: ignore[attr-defined]
+    ordered_names: List[str] = []
+    if ordered_columns:
+        ordered_names.extend([name for name in ordered_columns if name in column_map])
+    ordered_names.extend([name for name in column_map.keys() if name not in ordered_names])
+
+    fields: List[Dict[str, Any]] = []
+    for name in ordered_names:
+        column = column_map[name]
+        fields.append(
+            {
+                "name": name,
+                "local_column": name,
+                "column_label": _static_table_column_label(name, label_overrides),
+                "kind": _static_table_column_kind(column),
+                "is_reference": False,
+                "sn_reference_table": None,
+            }
+        )
+    return fields
+
+
+_BEST_PRACTICE_FIELDS = _static_model_fields(
+    BestPractice,
+    label_overrides=_BEST_PRACTICE_FIELD_LABELS,
+    ordered_columns=_BEST_PRACTICE_FIELD_ORDER,
+)
+
+_BEST_PRACTICE_ALLOWED_SORT_FIELDS = {
+    field["local_column"] for field in _BEST_PRACTICE_FIELDS
+}
+
+
 def _xlsx_col_name(index: int) -> str:
     """Convert 1-based column index to Excel column letters."""
     result = ""
@@ -9177,6 +9282,7 @@ async def update_result(
     category: Optional[str] = Form(default=None),
     assigned_to: Optional[str] = Form(default=None),
     is_adjacent: Optional[str] = Form(default=None),
+    is_out_of_scope: Optional[str] = Form(default=None),
     finding_title: Optional[str] = Form(default=None),
     finding_description: Optional[str] = Form(default=None),
     recommendation: Optional[str] = Form(default=None),
@@ -9212,6 +9318,7 @@ async def update_result(
     result.recommendation = _clean(recommendation)
     result.observations = _clean(observations)
     result.is_adjacent = bool(is_adjacent)
+    result.is_out_of_scope = bool(is_out_of_scope)
 
     scan = session.get(Scan, result.scan_id)
     assessment_id = scan.assessment_id if scan else None
@@ -10234,18 +10341,99 @@ async def api_instance_inventory(
 
 def _best_practice_to_dict(bp: BestPractice) -> Dict[str, Any]:
     """Serialize a BestPractice row to a JSON-safe dict."""
+    payload: Dict[str, Any] = {}
+    for column in BestPractice.__table__.columns:  # type: ignore[attr-defined]
+        payload[column.name] = _json_safe_value(getattr(bp, column.name, None))
+    return payload
+
+
+def _best_practice_field_rows(bp: BestPractice) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    payload = _best_practice_to_dict(bp)
+    field_rows = [
+        {
+            "field": field["local_column"],
+            "label": field["column_label"],
+            "value": payload.get(field["local_column"]),
+            "kind": field["kind"],
+        }
+        for field in _BEST_PRACTICE_FIELDS
+    ]
+    return field_rows, payload
+
+
+@app.get("/api/best-practices/field-schema")
+async def api_best_practices_field_schema():
+    """Schema for Best Practice admin DataTable."""
     return {
-        "id": bp.id,
-        "code": bp.code,
-        "title": bp.title,
-        "category": bp.category.value if hasattr(bp.category, "value") else bp.category,
-        "severity": bp.severity,
-        "description": bp.description,
-        "detection_hint": bp.detection_hint,
-        "recommendation": bp.recommendation,
-        "applies_to": bp.applies_to,
-        "is_active": bp.is_active,
-        "source_url": bp.source_url,
+        "local_table_name": "best_practice",
+        "field_count": len(_BEST_PRACTICE_FIELDS),
+        "fields": _BEST_PRACTICE_FIELDS,
+        "available_tables": [],
+    }
+
+
+@app.get("/api/best-practices/records")
+async def api_best_practices_records(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=500),
+    sort_field: str = Query("updated_at"),
+    sort_dir: str = Query("desc"),
+    category: Optional[str] = Query(None),
+    is_active: Optional[bool] = Query(None),
+    conditions: Optional[str] = Query(None, description="JSON condition tree"),
+    session: Session = Depends(get_session),
+):
+    """Rows for Best Practice admin DataTable."""
+    normalized_sort_field = sort_field if sort_field in _BEST_PRACTICE_ALLOWED_SORT_FIELDS else "updated_at"
+    normalized_sort_dir = "asc" if str(sort_dir).lower() == "asc" else "desc"
+
+    where_parts: List[str] = ["1=1"]
+    params: Dict[str, Any] = {}
+
+    if category:
+        where_parts.append("category = :category")
+        params["category"] = category
+    if is_active is not None:
+        where_parts.append("is_active = :is_active")
+        params["is_active"] = bool(is_active)
+    if conditions:
+        try:
+            parsed_conditions = json.loads(conditions)
+            where_sql, where_values = conditions_to_sql_where(parsed_conditions)
+            where_sql = _bind_positional_sql(where_sql, where_values, params, "bp_cond")
+            if where_sql and where_sql != "1=1":
+                where_parts.append(where_sql)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid conditions payload: {exc}")
+
+    where_clause = " AND ".join(f"({part})" for part in where_parts)
+    selected_columns = [field["local_column"] for field in _BEST_PRACTICE_FIELDS]
+    select_cols = ", ".join(f'"{column}"' for column in selected_columns)
+
+    count_sql = text(f'SELECT COUNT(*) FROM "best_practice" WHERE {where_clause}')
+    data_sql = text(
+        f'SELECT {select_cols} FROM "best_practice" '
+        f"WHERE {where_clause} "
+        f'ORDER BY "{normalized_sort_field}" {normalized_sort_dir.upper()}, "id" DESC '
+        "LIMIT :limit OFFSET :offset"
+    )
+    query_params = dict(params)
+    query_params["limit"] = int(limit)
+    query_params["offset"] = int(offset)
+
+    connection = session.connection()
+    total = int(connection.execute(count_sql, params).scalar() or 0)
+    rows = connection.execute(data_sql, query_params).all()
+    records = [_row_mapping_to_json(row) for row in rows]
+
+    return {
+        "local_table_name": "best_practice",
+        "fields": _BEST_PRACTICE_FIELDS,
+        "rows": records,
+        "total": total,
+        "offset": int(offset),
+        "limit": int(limit),
+        "count": len(records),
     }
 
 
@@ -10263,6 +10451,26 @@ async def api_list_best_practices(
         stmt = stmt.where(BestPractice.is_active == is_active)
     rows = session.exec(stmt).all()
     return {"best_practices": [_best_practice_to_dict(bp) for bp in rows]}
+
+
+@app.get("/api/best-practices/{bp_id}/record")
+async def api_best_practice_record(
+    bp_id: int,
+    session: Session = Depends(get_session),
+):
+    """Return a single Best Practice record for detail views/previews."""
+    bp = session.get(BestPractice, bp_id)
+    if not bp:
+        raise HTTPException(status_code=404, detail="Best practice not found")
+
+    field_rows, payload = _best_practice_field_rows(bp)
+    return {
+        "id": bp.id,
+        "code": bp.code,
+        "title": bp.title,
+        "field_rows": field_rows,
+        "raw_json": payload,
+    }
 
 
 @app.post("/api/best-practices", status_code=201)
@@ -10323,3 +10531,52 @@ async def admin_best_practices_page(
         "request": request,
         "categories": categories,
     })
+
+
+@app.get("/admin/best-practices/{bp_id}", response_class=HTMLResponse)
+async def admin_best_practice_record_page(
+    request: Request,
+    bp_id: int,
+    session: Session = Depends(get_session),
+):
+    """Record detail page for a single Best Practice row."""
+    bp = session.get(BestPractice, bp_id)
+    if not bp:
+        raise HTTPException(status_code=404, detail="Best practice not found")
+
+    field_rows, payload = _best_practice_field_rows(bp)
+    return templates.TemplateResponse(
+        "best_practice_record.html",
+        {
+            "request": request,
+            "best_practice": bp,
+            "field_rows": field_rows,
+            "raw_json": json.dumps(payload, indent=2, sort_keys=True),
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Admin: database health & maintenance
+# ---------------------------------------------------------------------------
+
+@app.get("/api/admin/db-health")
+async def api_admin_db_health():
+    """Return database file size, freelist stats, and auto-vacuum mode."""
+    return get_db_health()
+
+
+@app.post("/api/admin/db-vacuum")
+async def api_admin_db_vacuum():
+    """Run an incremental vacuum to reclaim freelist pages."""
+    result = run_incremental_vacuum()
+    health = get_db_health()
+    return {"vacuum": result, "health": health}
+
+
+@app.post("/api/admin/db-wal-checkpoint")
+async def api_admin_db_wal_checkpoint():
+    """Attempt a TRUNCATE WAL checkpoint to merge WAL back into the main DB."""
+    result = run_wal_checkpoint()
+    health = get_db_health()
+    return {"checkpoint": result, "health": health}

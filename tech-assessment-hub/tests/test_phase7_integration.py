@@ -238,17 +238,17 @@ class TestPipelineConsistency:
 # ===========================================================================
 
 class TestEndpointToHandler:
-    """Verify that POST advance-pipeline correctly triggers handlers and auto-advance."""
+    """Verify that POST advance-pipeline correctly triggers handlers (no auto-advance)."""
 
     @patch("src.server._set_assessment_pipeline_job_state")
     @patch("src.server._set_assessment_pipeline_stage")
     @patch("src.server.gather_artifact_context")
-    def test_ai_analysis_advances_stage_to_observations(
+    def test_ai_analysis_does_not_auto_advance_stage(
         self, mock_gather, mock_set_stage, mock_set_job, db_session, db_engine
     ):
-        """Running ai_analysis handler should auto-advance pipeline_stage to observations.
+        """Running ai_analysis handler should NOT auto-advance pipeline_stage.
 
-        Note: engines now runs BEFORE ai_analysis in the pipeline (Phase 11A reorder).
+        Each stage requires a manual button press to advance.
         """
         inst, asmt = _seed_instance_and_assessment(db_session, PipelineStage.ai_analysis.value)
         # Add one customized scan result so handler has work
@@ -266,21 +266,22 @@ class TestEndpointToHandler:
         with patch("src.server.engine", db_engine):
             _run_assessment_pipeline_stage(asmt.id, target_stage="ai_analysis")
 
-        # Verify auto-advance: _set_assessment_pipeline_stage called with "observations"
+        # Verify NO auto-advance: _set_assessment_pipeline_stage should NOT be
+        # called with "observations" — stage stays on ai_analysis until user clicks.
         advance_calls = [
             c for c in mock_set_stage.call_args_list
             if c.args and c.args[1] == PipelineStage.observations.value
         ]
-        assert len(advance_calls) >= 1, (
-            "Expected auto-advance call to 'observations' after ai_analysis completes"
+        assert len(advance_calls) == 0, (
+            "Stage should NOT auto-advance to 'observations'; requires manual button press"
         )
 
     @patch("src.server._set_assessment_pipeline_job_state")
     @patch("src.server._set_assessment_pipeline_stage")
-    def test_ai_refinement_advances_stage_to_recommendations(
+    def test_ai_refinement_does_not_auto_advance_stage(
         self, mock_set_stage, mock_set_job, db_session, db_engine
     ):
-        """Running ai_refinement handler should auto-advance pipeline_stage to recommendations."""
+        """Running ai_refinement handler should NOT auto-advance pipeline_stage."""
         asmt, _, _, _, _ = _seed_full_pipeline_data(
             db_session, pipeline_stage=PipelineStage.ai_refinement.value
         )
@@ -292,16 +293,16 @@ class TestEndpointToHandler:
             c for c in mock_set_stage.call_args_list
             if c.args and c.args[1] == PipelineStage.recommendations.value
         ]
-        assert len(advance_calls) >= 1, (
-            "Expected auto-advance call to 'recommendations' after ai_refinement completes"
+        assert len(advance_calls) == 0, (
+            "Stage should NOT auto-advance to 'recommendations'; requires manual button press"
         )
 
     @patch("src.server._set_assessment_pipeline_job_state")
     @patch("src.server._set_assessment_pipeline_stage")
-    def test_report_advances_stage_to_complete(
+    def test_report_does_not_auto_advance_stage(
         self, mock_set_stage, mock_set_job, db_session, db_engine
     ):
-        """Running report handler should auto-advance pipeline_stage to complete."""
+        """Running report handler should NOT auto-advance pipeline_stage to complete."""
         asmt, _, _, _, _ = _seed_full_pipeline_data(
             db_session, pipeline_stage=PipelineStage.report.value
         )
@@ -313,8 +314,8 @@ class TestEndpointToHandler:
             c for c in mock_set_stage.call_args_list
             if c.args and c.args[1] == PipelineStage.complete.value
         ]
-        assert len(advance_calls) >= 1, (
-            "Expected auto-advance call to 'complete' after report completes"
+        assert len(advance_calls) == 0, (
+            "Stage should NOT auto-advance to 'complete'; requires manual button press"
         )
 
     @patch("src.server._get_assessment_pipeline_job_snapshot", return_value=None)

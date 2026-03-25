@@ -91,6 +91,8 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
             "sys_scope": r.sys_scope,
             "review_status": r.review_status.value if r.review_status else None,
             "disposition": r.disposition.value if r.disposition else None,
+            "is_adjacent": r.is_adjacent,
+            "is_out_of_scope": r.is_out_of_scope,
             "sys_updated_on": r.sys_updated_on.isoformat() if r.sys_updated_on else None,
         })
 

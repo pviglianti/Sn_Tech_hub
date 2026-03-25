@@ -9,6 +9,8 @@
  *     tableName:  'cmdb_ci_service',
  *     onReferenceClick: (refTable, sysIdValue) => { ... },
  *     onRecordClick:    (sysId) => { ... },
+ *     getRecordUrl:     (recordId, row) => '/records/' + recordId,
+ *     extraQueryParams: () => ({ category: 'security' }),
  *     pageSize:   50,
  *     storageKey: 'dt_cmdb_ci_service_2',
  *     initialFilter: { field: 'sys_id', value: 'abc123' },
@@ -32,6 +34,9 @@ window.DataTable = (function () {
         this.tableName = opts.tableName;
         this.onReferenceClick = opts.onReferenceClick || function () {};
         this.onRecordClick = opts.onRecordClick || function () {};
+        this.getRecordUrl = opts.getRecordUrl || null;
+        this.extraQueryParams = opts.extraQueryParams || null;
+        this.onDataLoaded = opts.onDataLoaded || function () {};
         this.pageSize = opts.pageSize || 50;
         this.storageKey = opts.storageKey || ('dt_' + opts.tableName + '_' + opts.instanceId);
         this.initialFilter = opts.initialFilter || null;
@@ -290,6 +295,19 @@ window.DataTable = (function () {
             );
         }
 
+        var extraParams = typeof this.extraQueryParams === 'function'
+            ? this.extraQueryParams()
+            : this.extraQueryParams;
+        if (extraParams) {
+            Object.keys(extraParams).forEach(function (key) {
+                var value = extraParams[key];
+                if (value === null || value === undefined || value === '') return;
+                queryParts.push(
+                    encodeURIComponent(key) + '=' + encodeURIComponent(String(value))
+                );
+            });
+        }
+
         var url = this.dataUrl +
             (this.dataUrl.indexOf('?') === -1 ? '?' : '&') +
             queryParts.join('&');
@@ -314,6 +332,7 @@ window.DataTable = (function () {
             this.rows = data.rows || [];
             this._renderTable();
             this._renderPager();
+            this.onDataLoaded(data, this);
         } catch (err) {
             console.error('[DataTable] fetch error:', err);
             this._tbody.innerHTML =
@@ -417,7 +436,18 @@ window.DataTable = (function () {
             var tr = document.createElement('tr');
             tr.className = 'dt-row';
             var rowSysId = row['sys_id'] || row['sn_sys_id'];
+            var rowRecordId = rowSysId || row[self._rowIdField];
             var rowId = row[self._rowIdField];
+            var recordHref = null;
+            if (rowRecordId) {
+                if (self.getRecordUrl) {
+                    recordHref = self.getRecordUrl(rowRecordId, row);
+                } else if (rowSysId) {
+                    recordHref = '/browse/' + encodeURIComponent(self.tableName) +
+                        '/record/' + encodeURIComponent(rowSysId) +
+                        '?instance_id=' + self.instanceId;
+                }
+            }
 
             // Selection checkbox cell
             if (self.selectable) {
@@ -476,12 +506,10 @@ window.DataTable = (function () {
                         span.title = fm.sn_reference_table + ' (not available locally)';
                         td.appendChild(span);
                     }
-                } else if (col === recordLinkCol && displayVal && rowSysId) {
+                } else if (col === recordLinkCol && displayVal && rowRecordId) {
                     // First content column — blue link that opens this record's detail
                     var recLink = document.createElement('a');
-                    recLink.href = '/browse/' + encodeURIComponent(self.tableName) +
-                        '/record/' + encodeURIComponent(rowSysId) +
-                        '?instance_id=' + self.instanceId;
+                    recLink.href = recordHref || '#';
                     recLink.className = 'ref-link dt-record-link';
                     recLink.textContent = displayVal.length > 120
                         ? displayVal.substring(0, 120) + '…' : displayVal;
@@ -489,21 +517,23 @@ window.DataTable = (function () {
                     recLink.addEventListener('click', function (e) {
                         e.preventDefault();
                         e.stopPropagation();
-                        self.onRecordClick(rowSysId, row);
+                        self.onRecordClick(rowRecordId, row);
                     });
                     td.appendChild(recLink);
                 } else if (col === 'sys_id' && displayVal) {
                     var sysLink = document.createElement('a');
-                    sysLink.href = '/browse/' + encodeURIComponent(self.tableName) +
+                    sysLink.href = recordHref || (
+                        '/browse/' + encodeURIComponent(self.tableName) +
                         '/record/' + encodeURIComponent(displayVal) +
-                        '?instance_id=' + self.instanceId;
+                        '?instance_id=' + self.instanceId
+                    );
                     sysLink.className = 'ref-link dt-sysid-link';
                     sysLink.textContent = displayVal.substring(0, 8) + '…';
                     sysLink.title = displayVal;
                     sysLink.addEventListener('click', function (e) {
                         e.preventDefault();
                         e.stopPropagation();
-                        self.onRecordClick(displayVal, row);
+                        self.onRecordClick(rowRecordId || displayVal, row);
                     });
                     td.appendChild(sysLink);
                 } else if (fm && fm.kind === 'date' && displayVal) {
@@ -526,7 +556,7 @@ window.DataTable = (function () {
 
             // Row click also opens record detail (unless a link was clicked)
             tr.addEventListener('click', function () {
-                if (rowSysId) self.onRecordClick(rowSysId, row);
+                if (rowRecordId) self.onRecordClick(rowRecordId, row);
             });
 
             self._tbody.appendChild(tr);

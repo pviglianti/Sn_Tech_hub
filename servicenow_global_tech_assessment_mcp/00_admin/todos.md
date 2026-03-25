@@ -27,6 +27,15 @@
 - [ ] [owner:any] Rabbit hole priority config — modular/adjustable rules for which dependency types to follow.
 - [ ] [owner:any] Catch-all label table — mapping app file class → display label (sys_dictionary → "Form Fields", etc.).
 
+## Completed (session 2026-03-06 — Integration Properties + AI Setup Wizard Hardening)
+- [x] [owner:codex] Wired `ai_analysis.enable_depth_first_traversal` into the `ai_analysis` stage branch so a populated relationship graph no longer forces DFS when the property is disabled; added regression coverage for graph-present sequential fallback.
+- [x] [owner:codex] Hardened instance-scoped Integration Properties save semantics so unchanged inherited values are not materialized as instance overrides (client submits changed keys only, backend deletes/avoids rows that match inherited global/default values).
+- [x] [owner:codex] Finished AI Setup Wizard model selection flow: restored working model controls, added provider catalog refresh/custom-model handling, scoped the catalog API by `instance_id`, and added route/render coverage tests.
+
+## Completed (session 2026-03-06 — Best Practice DataTable Standardization)
+- [x] [owner:codex] Standardized Best Practices admin page onto explicit DataTable contracts: added `/api/best-practices/field-schema` + `/api/best-practices/records`, generated schema from `BestPractice.__table__.columns`, and exposed all DB-backed fields (including `source_url`, `created_at`, `updated_at`) through the table/column picker.
+- [x] [owner:codex] Added full Best Practice record view at `/admin/best-practices/{id}` and extended shared `DataTable.js` to support extra query params plus record links for non-`sys_id` rows via `rowIdField` + `getRecordUrl`; validated with `21` Best Practice tests passing.
+
 ## Completed (session 2026-03-05 — AI Setup Wizard Flow)
 - [x] [owner:codex] Added guided AI setup page at `/integration-properties/ai-setup` for non-technical runtime setup (scope selection, runtime mode/provider/model save, bridge config save/start/restart/stop, and direct pipeline stage kickoff action).
 - [x] [owner:codex] Added Integration Properties entry points to the wizard: Assessment Tools card button and inline `AI Setup Wizard` link directly in the `AI / LLM Runtime` section next to AI provider/model controls.

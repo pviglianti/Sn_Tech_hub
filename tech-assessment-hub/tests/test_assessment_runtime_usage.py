@@ -1,6 +1,7 @@
 """Tests for assessment runtime usage telemetry service + routes."""
 
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from sqlmodel import Session
@@ -152,6 +153,47 @@ def test_ai_setup_wizard_page_renders(client: TestClient):
     assert "AI Setup Wizard" in response.text
     assert "Step 3: Local Bridge Launcher" in response.text
     assert "Step 4: Start AI Pipeline Stage" in response.text
+    assert 'id="aiRuntimeModelChoice"' in response.text
+    assert 'id="aiRuntimeCustomModel"' in response.text
+    assert "Refresh Model Catalog" in response.text
+
+
+def test_ai_model_catalog_route_forwards_instance_scope(
+    client: TestClient,
+    sample_instance,
+    monkeypatch,
+):
+    monkeypatch.setenv("TECH_ASSESSMENT_MCP_ADMIN_TOKEN", "runtime-secret")
+
+    with patch(
+        "src.web.routes.preferences.fetch_provider_model_catalog",
+        return_value={
+            "provider": "openai",
+            "provider_label": "OpenAI",
+            "instance_id": sample_instance.id,
+            "models": [{"value": "gpt-5-mini", "label": "GPT-5 mini"}],
+            "source": "provider_api",
+            "dynamic": True,
+            "custom_model_supported": True,
+            "provider_default_supported": True,
+            "timeout_seconds": 14,
+        },
+    ) as mock_fetch:
+        response = client.get(
+            "/api/integration-properties/ai-model-catalog"
+            "?provider=openai"
+            "&instance_id="
+            + str(sample_instance.id)
+            + "&admin_token=runtime-secret"
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["instance_id"] == sample_instance.id
+    assert payload["models"][0]["value"] == "gpt-5-mini"
+    mock_fetch.assert_called_once()
+    assert mock_fetch.call_args.kwargs["instance_id"] == sample_instance.id
 
 
 def test_runtime_usage_page_and_api_require_admin_token_when_configured(

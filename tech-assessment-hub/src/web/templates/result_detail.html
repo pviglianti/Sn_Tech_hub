@@ -479,10 +479,14 @@
                 <input type="text" name="assigned_to" value="{{ result.assigned_to or '' }}" class="form-input" />
             </div>
             <div class="info-item">
-                <div class="info-label">Adjacent</div>
+                <div class="info-label">Scope Flags</div>
+                <label class="checkbox-item mt-05">
+                    <input type="checkbox" name="is_out_of_scope" {% if result.is_out_of_scope %}checked{% endif %} />
+                    Out of scope
+                </label>
                 <label class="checkbox-item mt-05">
                     <input type="checkbox" name="is_adjacent" {% if result.is_adjacent %}checked{% endif %} />
-                    Mark as adjacent
+                    Adjacent
                 </label>
             </div>
             <div class="info-item">

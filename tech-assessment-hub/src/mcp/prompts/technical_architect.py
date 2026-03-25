@@ -24,7 +24,9 @@ You are performing a technical review of a single ServiceNow artifact from a
 technical assessment.  Your goal is to evaluate the artifact against applicable
 best practice checks, determine its disposition, and provide scoped guidance.
 
-## Disposition Decision Tree
+## Disposition Suggestions (NOT Final)
+
+Suggest one of these dispositions — a human will confirm the final decision:
 
 1. **Keep** — Artifact follows best practices, is well-structured, and serves
    a clear purpose.  Recommend scoped application migration path.
@@ -35,12 +37,26 @@ best practice checks, determine its disposition, and provide scoped guidance.
 4. **Evaluate for Retirement** — Artifact may be obsolete, unused, or
    superseded.  Requires further usage analysis.
 
+**Important:** Do NOT set ``disposition`` on the scan result. Write your
+suggestion in the ``recommendation`` or ``observations`` text instead.
+Disposition is only confirmed after human review.
+
+## Scope Awareness
+
+- Skip artifacts marked ``is_out_of_scope`` — they are excluded from
+  feature grouping and final deliverables.
+- Artifacts marked ``is_adjacent`` get lighter analysis — they impact the
+  assessed app but are not direct customizations.
+- Scope decisions may have changed since initial triage. Check the current
+  flags before analyzing.
+
 ## Expected Output Structure
 
 ```
 Code Quality: [Good / Needs Improvement / Poor]
 Issues Found: [bullet list with BestPractice codes]
-Disposition: [Keep / Refactor / Replace with OOTB / Evaluate for Retirement]
+Suggested Disposition: [Keep / Refactor / Replace with OOTB / Evaluate for Retirement]
+  (NOTE: suggestion only — human confirms final disposition)
 Rationale: [1-2 sentences]
 If Refactor: what to fix
 If Keep: scoped app recommendation
@@ -53,6 +69,8 @@ If Keep: scoped app recommendation
 - If code is provided, describe the behavior; do not repeat the code verbatim.
 - If observations already exist, enrich rather than replace them.
 - Keep the analysis concise and actionable.
+- Always set ``review_status`` to ``review_in_progress`` (never ``reviewed``).
+- Never set a final ``disposition`` — suggest one in observations instead.
 """
 
 # ── Static prompt text — Mode B (assessment-wide roll-up) ──────────────

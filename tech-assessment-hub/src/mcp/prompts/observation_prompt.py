@@ -72,52 +72,123 @@ now has an ``observations`` field containing a baseline observation and an \
 ``ai_observations`` JSON field with metadata (structural signals, update set \
 counts, usage data).
 
+## Purpose
+
+Observations are the foundation of the assessment. They describe **what each \
+artifact actually does** in functional terms. Good observations directly feed \
+feature grouping — the AI uses them to determine which artifacts work together \
+as part of a solution. The basic functional observation should already be present \
+from the initial pass; your job is to enrich it.
+
 ## Your Task
 
-For each customized ScanResult that has ``review_status = pending_review``:
+For each customized ScanResult that has ``review_status`` of ``pending_review``
+or ``review_in_progress``:
 
 1. **Read the existing observation** — check ``observations`` text and \
 ``ai_observations`` JSON for context.
 
-2. **Analyze the artifact deeper** if the baseline is generic:
-   - If the artifact is scriptable (Business Rule, Script Include, Client \
-Script, UI Action, ACL), read the code snippet (``code_body`` or \
-``meta_code_body`` field) and summarize the behavior in 1-2 sentences.
-   - Check structural relationships — parent/child signals indicate \
-dependencies that affect disposition.
-   - Review update set context — artifacts sharing update sets likely \
-belong to the same feature.
-   - If usage data is available in ``ai_observations``, interpret it: \
-zero usage within lookback window suggests the artifact may be inactive.
+2. **Enrich the functional description** if the baseline is generic or missing \
+detail:
+   - **Scriptable artifacts** (Business Rule, Script Include, Client Script, \
+UI Action, ACL): Read the code snippet (``code_body`` or ``meta_code_body``) \
+and describe the behavior concretely — what fields does it set? What tables \
+does it query or write to? What conditions trigger it? What GlideRecord \
+queries does it run and with what encodedQuery / ref qualifiers?
+   - **Fields** (dictionary entries): What table is this field on? What type \
+is it (reference, choice, string, etc.)? If it's a reference field, what table \
+does it reference and with what reference qualifier?
+   - **UI Policies / Client Scripts**: What fields do they show/hide/make \
+mandatory? What form conditions trigger them?
+   - **Check structural relationships** — parent/child signals indicate direct \
+dependencies (UI Policy → UI Policy Actions, etc.)
 
-3. **Write an enriched observation** (2-4 sentences):
-   - What the artifact does and why it matters.
-   - Risk or complexity level (simple config change vs complex script).
-   - Preliminary disposition hint if obvious (e.g., "likely has OOTB \
-replacement via Flow Designer" or "custom utility — must migrate as-is").
-   - Relationships to other artifacts or features if visible.
+3. **Call out connections to other customized artifacts**: This is critical for \
+grouping. If this artifact calls, references, queries, or is called by another \
+customized scan result in this assessment, name it explicitly. These connections \
+are definitive grouping signals:
+   - A business rule that calls a custom script include → name it
+   - A client script that references a custom field → name it
+   - An ACL that checks a custom role → name it
+   - A scheduled job that queries an in-scope table → note the table
 
 4. **Update the observation** using ``update_scan_result`` with the \
-``observations`` field. Keep ``review_status`` as ``pending_review`` — \
-human reviewers will set it to ``reviewed`` after their own check.
+``observations`` field. Keep ``review_status`` as ``review_in_progress``.
+
+## Observation Evolution
+
+Observations evolve across pipeline iterations:
+
+**Early passes (basic):** "This business rule fires on incident insert when \
+priority is 1. It queries cmdb_ci_service and sets assignment_group."
+
+**Later passes (with feature context):** "This business rule fires on incident \
+insert when priority is critical. It calls the custom script include \
+'IncidentRoutingHelper' (also in this assessment) to determine the escalation \
+group based on the affected CI's support group. Part of the Critical Incident \
+Routing feature along with the UI policy 'Critical Incident Fields' and the \
+client script 'Priority Escalation Warning'."
+
+When enriching, build on what's already there. If an observation already has \
+good functional detail, add relationship context. If it already has relationship \
+context, verify accuracy and add any missing connections.
+
+## What NOT to Include
+
+- **No disposition recommendations** — never suggest keep/remove/refactor/replace. \
+Disposition is decided by the customer's stakeholders after reviewing findings.
+- **No update set references** — observations describe functional behavior, not \
+deployment packaging.
+- **No code reproduction** — describe what the code does, don't paste it back.
+- **No severity/category judgments** — just describe function and connections.
+
+## Live Instance Queries (when needed)
+
+If the local assessment data is insufficient to understand an artifact — for \
+example, a business rule references a script include not in the scan results, \
+or a field references a table you need to inspect — you can query the ServiceNow \
+instance directly using ``query_instance_live``.
+
+**Governance:** Live queries are controlled by the ``ai_analysis.context_enrichment`` \
+property:
+- ``auto`` (default) — query only when references are detected and data is not \
+cached locally.
+- ``always`` — query for every artifact (higher cost, fuller context).
+- ``never`` — local data only, no live queries.
+
+Check the property before querying. Use live queries sparingly and only to fill \
+specific gaps — not for routine observation enrichment.
 
 ## Batch Processing Strategy
 
 - Process results in batches of 10-20.
 - Focus on scriptable and high-complexity artifacts first — they benefit \
-most from AI enrichment.
-- Simple form-field or dictionary-entry observations may be adequate as-is.
+most from enrichment and provide the most grouping signal.
+- Simple form-field or dictionary-entry observations may be adequate with \
+just the basic "field X on table Y, type Z, references table W" description.
 - Track your progress and report batch completion counts.
+
+## Scope Awareness
+
+- **Skip** artifacts marked ``is_out_of_scope`` — they are excluded from
+  feature grouping and final deliverables.
+- **Include** artifacts marked ``is_adjacent`` — they are in scope but not \
+  directly on the assessed app's tables/forms. Give them lighter treatment \
+  but still document what they do and how they interact with the assessed app.
+- Scope flags may have been set by the earlier ``ai_analysis`` stage.
 
 ## Rules
 
 - Never fabricate code behavior — only describe what you actually see.
 - If you can't determine what an artifact does, say so ("Purpose unclear \
 from available metadata; manual review recommended").
-- Keep observations concise — 2-4 sentences per artifact.
-- Do NOT change ``review_status`` — that's for human reviewers.
-- Do NOT change ``disposition`` or ``recommendation`` — those come from \
-the feature reasoning pipeline later.
+- Keep observations concise — 2-5 sentences per artifact.
+- Do NOT change ``review_status`` — it stays at ``review_in_progress``
+  throughout the pipeline until the report stage.
+- Do NOT change ``disposition`` — disposition is decided by the customer's \
+  stakeholders after all analysis is complete.
+- If a human has already reviewed and edited an observation, preserve the \
+  premise — you may refine wording for clarity but never change the substance.
 """
 
 

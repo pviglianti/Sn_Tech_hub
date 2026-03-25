@@ -30,6 +30,7 @@
         </select>
         <small>Choose a specific instance only if you want per-instance AI settings.</small>
     </div>
+    <p id="aiSetupScopeSummary" class="text-muted-plain mb-1">Editing global defaults.</p>
     {% set token_input_id = 'aiSetupAdminToken' %}
     {% set token_help_text = 'Required for remote access. Localhost access works when admin token is not configured.' %}
     {% include "components/admin_token_field.html" %}
@@ -47,12 +48,27 @@
             <select id="aiRuntimeProvider" class="form-input"></select>
         </div>
     </div>
-    <div class="form-group">
-        <label for="aiRuntimeModel">Model</label>
-        <select id="aiRuntimeModel" class="form-input"></select>
+    <div class="split-grid">
+        <div class="form-group">
+            <label for="aiRuntimeModelChoice">Model</label>
+            <select id="aiRuntimeModelChoice" class="form-input"></select>
+            <small id="aiRuntimeModelCatalogMeta" class="text-muted-plain">
+                Provider-specific suggestions load from the selected provider when available.
+            </small>
+        </div>
+        <div class="form-group">
+            <label for="aiRuntimeCustomModel">Custom Model ID</label>
+            <input
+                id="aiRuntimeCustomModel"
+                class="form-input"
+                placeholder="gpt-5.2 / claude-opus-4-1 / your-provider-model-id"
+            />
+            <small class="text-muted-plain">Required only when “Custom model ID…” is selected.</small>
+        </div>
     </div>
     <div class="button-group">
         <button class="btn btn-secondary" id="aiSetupLoadRuntime">Reload Runtime</button>
+        <button class="btn btn-secondary" id="aiSetupRefreshCatalog">Refresh Model Catalog</button>
         <button class="btn btn-primary" id="aiSetupSaveRuntime">Save Runtime</button>
     </div>
 </div>
@@ -166,7 +182,6 @@
     };
     window.AI_RUNTIME_MODE_OPTIONS = {{ runtime_mode_options_json | safe }};
     window.AI_RUNTIME_PROVIDER_OPTIONS = {{ runtime_provider_options_json | safe }};
-    window.AI_RUNTIME_MODEL_OPTIONS = {{ runtime_model_options_json | safe }};
 </script>
 <script src="/static/js/ai_setup_wizard.js?v={{ static_version }}"></script>
 {% endblock %}

@@ -57,6 +57,14 @@ INPUT_SCHEMA: Dict[str, Any] = {
             "type": "string",
             "description": "Detailed finding description.",
         },
+        "is_out_of_scope": {
+            "type": "boolean",
+            "description": "Mark artifact as out of scope (no relation to assessed app or trivial change).",
+        },
+        "is_adjacent": {
+            "type": "boolean",
+            "description": "Mark artifact as adjacent (impacts assessed app but not a direct customization).",
+        },
     },
     "required": ["result_id"],
 }
@@ -90,6 +98,11 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
         if text_field in params:
             setattr(result, text_field, params[text_field])
             updated_fields.append(text_field)
+
+    for bool_field in ("is_out_of_scope", "is_adjacent"):
+        if bool_field in params:
+            setattr(result, bool_field, bool(params[bool_field]))
+            updated_fields.append(bool_field)
 
     if not updated_fields:
         return {"success": True, "message": "No fields to update.", "result_id": result_id}

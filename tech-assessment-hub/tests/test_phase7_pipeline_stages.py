@@ -111,21 +111,11 @@ def test_pipeline_stage_labels_has_all_10():
     assert _PIPELINE_STAGE_LABELS["report"] == "Report"
 
 
-def test_pipeline_stage_autonext_includes_new_stages():
-    """_PIPELINE_STAGE_AUTONEXT must include engines->ai_analysis, ai_analysis->observations, ai_refinement->recommendations, report->complete."""
-    assert _PIPELINE_STAGE_AUTONEXT["engines"] == "ai_analysis"
-    assert _PIPELINE_STAGE_AUTONEXT["ai_analysis"] == "observations"
-    assert _PIPELINE_STAGE_AUTONEXT["ai_refinement"] == "recommendations"
-    assert _PIPELINE_STAGE_AUTONEXT["report"] == "complete"
-
-
-def test_pipeline_stage_autonext_grouping_goes_to_ai_refinement():
-    """grouping must auto-advance to ai_refinement (NOT directly to recommendations)."""
-    assert _PIPELINE_STAGE_AUTONEXT["grouping"] == "ai_refinement", (
-        f"Expected grouping -> ai_refinement, got grouping -> {_PIPELINE_STAGE_AUTONEXT.get('grouping')}"
+def test_pipeline_stage_autonext_is_empty():
+    """_PIPELINE_STAGE_AUTONEXT must be empty — every stage requires a manual button press."""
+    assert _PIPELINE_STAGE_AUTONEXT == {}, (
+        f"AUTONEXT should be empty for manual stage control, got: {_PIPELINE_STAGE_AUTONEXT}"
     )
-    # Confirm the old direct path grouping -> recommendations is gone
-    assert _PIPELINE_STAGE_AUTONEXT["grouping"] != "recommendations"
 
 
 # ---------------------------------------------------------------------------
