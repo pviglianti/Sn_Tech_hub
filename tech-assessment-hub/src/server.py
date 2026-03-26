@@ -111,6 +111,7 @@ from .services.llm import (
     seed_default_catalog, get_providers_with_models,
     AuthManager, LLMAuthSlot, LLMModel,
 )
+from .services.llm.dispatcher_router import DispatcherRouter
 from .web.routes.pulls import create_pulls_router
 import json
 import requests
@@ -1603,6 +1604,17 @@ def _run_assessment_pipeline_stage(
             checkpoint={"stage": stage},
             commit=False,
         )
+
+        # LLM preflight check for AI stages
+        _AI_STAGES = {"ai_analysis", "observations", "grouping", "ai_refinement", "recommendations", "report"}
+        if stage in _AI_STAGES:
+            try:
+                router = DispatcherRouter(session)
+                preflight_errors = router.preflight_check(stage)
+                if preflight_errors:
+                    logger.warning("LLM preflight failed for stage %s: %s", stage, preflight_errors)
+            except Exception as exc:
+                logger.warning("LLM preflight check error: %s", exc)
 
         ai_stages = {
             PipelineStage.ai_analysis.value,
@@ -7679,6 +7691,9 @@ async def api_config_summary(
 def on_startup():
     """Initialize database and seed data on startup"""
     create_db_and_tables()
+    # Seed LLM provider catalog (idempotent)
+    with Session(engine) as _seed_session:
+        seed_default_catalog(_seed_session)
     # Run seed data (idempotent - only inserts if not exists)
     run_seed()
     _cleanup_legacy_instance_data_pull_rows()
