@@ -230,6 +230,10 @@ def build_registry() -> ToolRegistry:
     registry.register(add_result_to_feature_tool)
     registry.register(remove_result_from_feature_tool)
 
+    # --- AI pipeline stage runner ---
+    from .tools.core.run_ai_stage import TOOL_SPEC as run_ai_stage_tool
+    registry.register(run_ai_stage_tool)
+
     return registry
 
 
