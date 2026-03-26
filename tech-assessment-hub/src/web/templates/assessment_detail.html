@@ -197,6 +197,7 @@
             </div>
         </div>
     </div>
+    <div id="llm-config-display" style="margin-top: 0.5rem; font-size: 0.9em; color: var(--text-secondary);"></div>
 </div>
 {% endif %}
 
@@ -1787,5 +1788,35 @@ async function advancePipelineRerun() {
         _pipelineAdvancing = false;
     }
 }
+
+async function loadLlmConfig() {
+    try {
+        const res = await fetch('/api/llm/config');
+        if (!res.ok) return;
+        const config = await res.json();
+        const el = document.getElementById('llm-config-display');
+        if (!el) return;
+        const providerId = config['ai.default_provider_id'];
+        if (!providerId) {
+            el.innerHTML = '<span style="color: var(--text-muted);">No LLM configured. <a href="/settings/llm-providers">Configure AI</a></span>';
+            return;
+        }
+        const provRes = await fetch('/api/llm/providers');
+        const providers = await provRes.json();
+        const provider = providers.find(function(p) { return String(p.provider.id) === providerId; });
+        const modelId = config['ai.default_model_id'];
+        var modelName = '';
+        if (provider && modelId) {
+            var m = provider.models.find(function(m) { return String(m.id) === modelId; });
+            modelName = m ? (m.display_name || m.model_name) : '';
+        }
+        var effort = config['ai.default_effort_level'] || 'medium';
+        el.innerHTML = '<strong>' + (provider ? provider.provider.name : 'Unknown') + '</strong> &mdash; ' + modelName + ' &mdash; ' + effort + ' effort ' +
+            '<a href="/settings/llm-providers" style="margin-left: 0.5rem;">Configure AI</a>';
+    } catch (e) {
+        console.warn('Could not load LLM config:', e);
+    }
+}
+loadLlmConfig();
 </script>
 {% endblock %}
