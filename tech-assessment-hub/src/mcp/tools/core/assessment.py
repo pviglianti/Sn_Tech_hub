@@ -16,8 +16,7 @@ from ....models import (
     Instance, Assessment, AssessmentType, AssessmentState, GlobalApp,
     NumberSequence,
 )
-from ....services.encryption import decrypt_password
-from ....services.sn_client import ServiceNowClient
+from ....services.sn_client_factory import create_client_for_instance
 from ....services.scan_executor import run_scans_for_assessment
 from ....database import get_session
 
@@ -84,12 +83,7 @@ def _run_scans_in_background(assessment_id: int, mode: str) -> None:
         instance = session.get(Instance, assessment.instance_id)
         if not instance:
             return
-        client = ServiceNowClient(
-            instance.url,
-            instance.username,
-            decrypt_password(instance.password_encrypted),
-            instance_id=instance.id,
-        )
+        client = create_client_for_instance(instance)
         run_scans_for_assessment(session, assessment, client, mode)
     except Exception:
         pass  # Errors recorded in Scan.error_message

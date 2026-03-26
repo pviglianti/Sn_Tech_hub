@@ -12,10 +12,11 @@ from sqlalchemy import case, text
 from sqlmodel import Session, select
 
 from ...database import get_session
-from ...models import ConnectionStatus, DataPullType, Instance, InstanceAppFileType
+from ...models import AuthType, ConnectionStatus, DataPullType, Instance, InstanceAppFileType
 from ...services.dictionary_pull_orchestrator import start_dictionary_pull
 from ...services.encryption import decrypt_password, encrypt_password
 from ...services.sn_client import ServiceNowClient, ServiceNowClientError
+from ...services.sn_client_factory import create_client_for_instance
 from ...services.condition_query_builder import conditions_to_sql_where
 from ...app_file_class_catalog import default_assessment_availability_for_instance_file_type
 from ...artifact_detail_defs import get_class_label
@@ -225,19 +226,31 @@ def create_instances_router(
         username: str = Form(...),
         password: str = Form(...),
         company: str = Form(None),
+        auth_type: str = Form("basic"),
+        client_id: str = Form(None),
+        client_secret: str = Form(None),
         session: Session = Depends(get_session),
     ):
         """Add a new instance."""
         url = normalize_instance_url(url)
+
+        # Validate auth_type
+        if auth_type not in (AuthType.basic.value, AuthType.oauth.value):
+            auth_type = AuthType.basic.value
 
         encrypted_password = encrypt_password(password)
 
         instance = Instance(
             name=name,
             url=url,
+            auth_type=auth_type,
             username=username,
             password_encrypted=encrypted_password,
             company=company,
+            client_id=client_id if auth_type == "oauth" else None,
+            client_secret_encrypted=(
+                encrypt_password(client_secret) if auth_type == "oauth" and client_secret else None
+            ),
         )
         session.add(instance)
         session.commit()
@@ -245,13 +258,7 @@ def create_instances_router(
 
         # Auto-capture metrics on add (best-effort)
         try:
-            instance_password = decrypt_password(instance.password_encrypted)
-            client = ServiceNowClient(
-                instance.url,
-                instance.username,
-                instance_password,
-                instance_id=instance.id,
-            )
+            client = create_client_for_instance(instance)
             test_result = client.test_connection()
             if not test_result.get("success"):
                 raise ServiceNowClientError(test_result.get("message", "Authentication failed"))
@@ -297,13 +304,7 @@ def create_instances_router(
         if not instance:
             raise HTTPException(status_code=404, detail="Instance not found")
 
-        instance_password = decrypt_password(instance.password_encrypted)
-        client = ServiceNowClient(
-            instance.url,
-            instance.username,
-            instance_password,
-            instance_id=instance.id,
-        )
+        client = create_client_for_instance(instance)
         result = client.test_connection()
 
         if result["success"]:
@@ -666,6 +667,9 @@ def create_instances_router(
         username: str = Form(...),
         password: str = Form(None),
         company: str = Form(None),
+        auth_type: str = Form("basic"),
+        client_id: str = Form(None),
+        client_secret: str = Form(None),
         session: Session = Depends(get_session),
     ):
         """Update an existing instance."""
@@ -673,15 +677,37 @@ def create_instances_router(
         if not instance:
             raise HTTPException(status_code=404, detail="Instance not found")
 
+        if auth_type not in (AuthType.basic.value, AuthType.oauth.value):
+            auth_type = AuthType.basic.value
+
         normalized_url = normalize_instance_url(url)
 
         instance.name = name
         instance.url = normalized_url
         instance.username = username
         instance.company = company
+        instance.auth_type = auth_type
 
         if password:
             instance.password_encrypted = encrypt_password(password)
+
+        # OAuth fields
+        if auth_type == "oauth":
+            if client_id is not None:
+                instance.client_id = client_id
+            if client_secret:
+                instance.client_secret_encrypted = encrypt_password(client_secret)
+            # Clear cached tokens when credentials change
+            instance.oauth_access_token_encrypted = None
+            instance.oauth_refresh_token_encrypted = None
+            instance.oauth_token_expires_at = None
+        else:
+            # Switching to basic — clear OAuth fields
+            instance.client_id = None
+            instance.client_secret_encrypted = None
+            instance.oauth_access_token_encrypted = None
+            instance.oauth_refresh_token_encrypted = None
+            instance.oauth_token_expires_at = None
 
         instance.connection_status = ConnectionStatus.untested
         instance.updated_at = datetime.utcnow()

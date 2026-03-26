@@ -30,8 +30,8 @@ from sqlalchemy import text
 
 from ..database import engine, get_session
 from ..models import Instance
-from ..services.encryption import decrypt_password
 from ..services.sn_client import ServiceNowClient, ServiceNowClientError
+from ..services.sn_client_factory import create_client_for_instance
 from ..services.sn_fetch_config import (
     DEFAULT_BATCH_SIZE,
     MAX_BATCHES,
@@ -374,13 +374,7 @@ def _get_client_for_instance(instance_id: int) -> tuple[ServiceNowClient, Instan
         instance = session.exec(select(Instance).where(Instance.id == instance_id)).first()
         if not instance:
             raise ValueError(f"Instance {instance_id} not found")
-        password = decrypt_password(instance.password_encrypted)
-        client = ServiceNowClient(
-            instance.url,
-            instance.username,
-            password,
-            instance_id=instance.id,
-        )
+        client = create_client_for_instance(instance)
         return client, instance
 
 

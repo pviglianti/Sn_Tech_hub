@@ -15,9 +15,9 @@ from sqlmodel import Session, select
 
 from ...registry import ToolSpec
 from ....models import Fact, Instance
-from ....services.encryption import decrypt_password
 from ....services.integration_properties import load_observation_properties
-from ....services.sn_client import ServiceNowClient, ServiceNowClientError
+from ....services.sn_client import ServiceNowClientError
+from ....services.sn_client_factory import create_client_for_instance
 
 
 INPUT_SCHEMA: Dict[str, Any] = {
@@ -144,13 +144,7 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
         }
 
     try:
-        password = decrypt_password(instance.password_encrypted)
-        client = ServiceNowClient(
-            instance.url,
-            instance.username,
-            password,
-            instance_id=instance.id,
-        )
+        client = create_client_for_instance(instance)
         count = int(client.get_record_count(table=table, query=resolved_query))
     except ServiceNowClientError as exc:
         return {"success": False, "error": str(exc)}

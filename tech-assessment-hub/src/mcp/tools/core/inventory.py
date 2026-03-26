@@ -5,8 +5,8 @@ from sqlmodel import Session
 
 from ...registry import ToolSpec
 from ....models import Instance
-from ....services.encryption import decrypt_password
 from ....services.sn_client import ServiceNowClient, ServiceNowClientError
+from ....services.sn_client_factory import create_client_for_instance
 
 
 INPUT_SCHEMA: Dict[str, Any] = {
@@ -27,36 +27,25 @@ INPUT_SCHEMA: Dict[str, Any] = {
 }
 
 
-def _resolve_credentials(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
+def _resolve_client(params: Dict[str, Any], session: Session) -> ServiceNowClient:
     instance_id = params.get("instance_id")
     if instance_id is not None:
         instance = session.get(Instance, int(instance_id))
         if not instance:
             raise ValueError("Instance not found")
-        return {
-            "url": instance.url,
-            "username": instance.username,
-            "password": decrypt_password(instance.password_encrypted),
-            "instance_id": instance.id,
-        }
+        return create_client_for_instance(instance)
 
     url = params.get("url")
     username = params.get("username")
     password = params.get("password")
     if not url or not username or not password:
         raise ValueError("Provide instance_id or url/username/password")
-    return {"url": url, "username": username, "password": password, "instance_id": None}
+    return ServiceNowClient(url, username, password)
 
 
 def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
     scope = params.get("scope") or "global"
-    creds = _resolve_credentials(params, session)
-    client = ServiceNowClient(
-        creds["url"],
-        creds["username"],
-        creds["password"],
-        instance_id=creds.get("instance_id"),
-    )
+    client = _resolve_client(params, session)
 
     try:
         counts = client.scan_inventory(scope=scope)

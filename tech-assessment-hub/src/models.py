@@ -13,6 +13,12 @@ from sqlalchemy import UniqueConstraint
 # ENUMS (Choice fields)
 # ============================================
 
+class AuthType(str, Enum):
+    """Authentication method for ServiceNow instances"""
+    basic = "basic"
+    oauth = "oauth"
+
+
 class ConnectionStatus(str, Enum):
     connected = "connected"
     failed = "failed"
@@ -188,8 +194,15 @@ class Instance(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(index=True)  # Display name: "DEV", "PROD", etc.
     url: str  # https://xxx.service-now.com
+    auth_type: str = Field(default=AuthType.basic.value)  # "basic" or "oauth"
     username: str
     password_encrypted: str  # Encrypted password
+    # OAuth fields (used when auth_type == "oauth")
+    client_id: Optional[str] = None
+    client_secret_encrypted: Optional[str] = None
+    oauth_access_token_encrypted: Optional[str] = None
+    oauth_refresh_token_encrypted: Optional[str] = None
+    oauth_token_expires_at: Optional[datetime] = None
     is_active: bool = True
     connection_status: ConnectionStatus = ConnectionStatus.untested
     last_connected: Optional[datetime] = None

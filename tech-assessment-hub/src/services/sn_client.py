@@ -43,6 +43,8 @@ class ServiceNowClient:
         username: str,
         password: str,
         instance_id: Optional[int] = None,
+        auth_type: str = "basic",
+        oauth_manager: Optional[Any] = None,
     ):
         """
         Initialize the ServiceNow client.
@@ -52,17 +54,32 @@ class ServiceNowClient:
             username: ServiceNow username
             password: ServiceNow password
             instance_id: Optional local Instance.id for instance-scoped config overrides
+            auth_type: "basic" or "oauth"
+            oauth_manager: OAuthTokenManager instance (required when auth_type="oauth")
         """
         # Normalize URL (remove trailing slash)
         self.instance_url = instance_url.rstrip('/')
         self.username = username
         self.password = password
+        self.auth_type = auth_type
+        self._oauth_manager = oauth_manager
         self.session = requests.Session()
-        self.session.auth = HTTPBasicAuth(username, password)
-        self.session.headers.update({
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
-        })
+
+        if auth_type == "oauth" and oauth_manager:
+            # Get initial token and set Bearer auth
+            token = oauth_manager.get_access_token()
+            self.session.headers.update({
+                'Authorization': f'Bearer {token}',
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+            })
+        else:
+            # Default: Basic auth
+            self.session.auth = HTTPBasicAuth(username, password)
+            self.session.headers.update({
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            })
 
         # Load effective fetch config from Integration Properties (AppConfig).
         # Falls back to compile-time defaults if DB is unavailable.
@@ -71,6 +88,30 @@ class ServiceNowClient:
     def _build_url(self, endpoint: str) -> str:
         """Build full URL for an API endpoint"""
         return f"{self.instance_url}/api/now/{endpoint}"
+
+    def _refresh_oauth_token(self) -> bool:
+        """Refresh the OAuth token and update the session header. Returns True on success."""
+        if self.auth_type != "oauth" or not self._oauth_manager:
+            return False
+        try:
+            token = self._oauth_manager.force_refresh()
+            self.session.headers['Authorization'] = f'Bearer {token}'
+            return True
+        except Exception:
+            return False
+
+    def _oauth_get(self, url: str, **kwargs) -> requests.Response:
+        """GET with automatic OAuth token refresh on 401."""
+        response = self.session.get(url, **kwargs)
+        if response.status_code == 401 and self._refresh_oauth_token():
+            response = self.session.get(url, **kwargs)
+        return response
+
+    def _get(self, url: str, **kwargs) -> requests.Response:
+        """Unified GET that uses OAuth retry when applicable."""
+        if self.auth_type == "oauth":
+            return self._oauth_get(url, **kwargs)
+        return self.session.get(url, **kwargs)
 
     def _handle_response(self, response: requests.Response) -> Dict[str, Any]:
         """Handle API response and raise appropriate errors"""
@@ -82,7 +123,11 @@ class ServiceNowClient:
                     "API response was not JSON (possible auth/redirect issue)."
                 )
         elif response.status_code == 401:
-            raise ServiceNowClientError("Authentication failed. Check username and password.")
+            raise ServiceNowClientError(
+                "Authentication failed. Check username and password."
+                if self.auth_type == "basic"
+                else "Authentication failed. Check OAuth credentials (client ID/secret) and user account."
+            )
         elif response.status_code == 403:
             # ServiceNow often returns a structured JSON error body for ACL failures.
             detail = ""
@@ -165,7 +210,7 @@ class ServiceNowClient:
                         "sysparm_limit": 1,
                         "sysparm_fields": "name,value"
                     }
-                    response = self.session.get(url, params=params, timeout=self._cfg['request_timeout'])
+                    response = self._get(url, params=params, timeout=self._cfg['request_timeout'])
                     if response.status_code == 200:
                         data = response.json()
                         if data.get("result") and data["result"][0].get("value"):
@@ -182,7 +227,7 @@ class ServiceNowClient:
                         "sysparm_limit": 1,
                         "sysparm_fields": "build_name"
                     }
-                    response = self.session.get(url, params=params, timeout=self._cfg['request_timeout'])
+                    response = self._get(url, params=params, timeout=self._cfg['request_timeout'])
                     if response.status_code == 200:
                         data = response.json()
                         if data.get("result") and data["result"][0].get("build_name"):
@@ -199,7 +244,7 @@ class ServiceNowClient:
                     "sysparm_limit": 1,
                     "sysparm_fields": "sys_id,user_name"
                 }
-                response = self.session.get(url, params=params, timeout=self._cfg['request_timeout'])
+                response = self._get(url, params=params, timeout=self._cfg['request_timeout'])
                 self._handle_response(response)  # Will raise if auth fails
 
             return {
@@ -254,7 +299,7 @@ class ServiceNowClient:
         if query:
             params["sysparm_query"] = query
 
-        response = self.session.get(url, params=params, timeout=self._cfg['request_timeout'])
+        response = self._get(url, params=params, timeout=self._cfg['request_timeout'])
         self._handle_response(response)
 
         # Get count from X-Total-Count header
@@ -500,7 +545,7 @@ class ServiceNowClient:
         if display_value is not None:
             params["sysparm_display_value"] = display_value
 
-        response = self.session.get(url, params=params, timeout=self._cfg['request_timeout'])
+        response = self._get(url, params=params, timeout=self._cfg['request_timeout'])
         data = self._handle_response(response)
 
         return data.get("result", [])
@@ -702,7 +747,7 @@ class ServiceNowClient:
         if fields:
             params["sysparm_fields"] = ",".join(fields)
 
-        response = self.session.get(url, params=params, timeout=self._cfg['request_timeout'])
+        response = self._get(url, params=params, timeout=self._cfg['request_timeout'])
 
         if response.status_code == 404:
             return None

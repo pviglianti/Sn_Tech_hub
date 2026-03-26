@@ -15,8 +15,8 @@ from sqlmodel import Session, select
 from ...database import get_session
 from ...inventory_class_catalog import inventory_class_tables
 from ...models import Instance
-from ...services.encryption import decrypt_password
-from ...services.sn_client import ServiceNowClient, ServiceNowClientError
+from ...services.sn_client import ServiceNowClientError
+from ...services.sn_client_factory import create_client_for_instance
 
 analytics_router = APIRouter(tags=["analytics"])
 
@@ -238,8 +238,7 @@ async def api_tasks_series(
 
     series = {}
     for inst in instances:
-        password = decrypt_password(inst.password_encrypted)
-        client = ServiceNowClient(inst.url, inst.username, password, instance_id=inst.id)
+        client = create_client_for_instance(inst)
         inst_labels, inst_counts = client.get_monthly_counts(
             task_tables[task_type],
             instance_starts[inst.id],
@@ -293,8 +292,7 @@ async def api_tasks_summary(
     series: Dict[str, Dict[str, Optional[int]]] = {key: {} for key in task_keys}
 
     for inst in instances:
-        password = decrypt_password(inst.password_encrypted)
-        client = ServiceNowClient(inst.url, inst.username, password, instance_id=inst.id)
+        client = create_client_for_instance(inst)
 
         inst_end = end
         if inst.metrics_last_refreshed_at and end:
@@ -376,8 +374,7 @@ async def api_config_summary(
         series[key] = {}
 
     for inst in instances:
-        password = decrypt_password(inst.password_encrypted)
-        client = ServiceNowClient(inst.url, inst.username, password, instance_id=inst.id)
+        client = create_client_for_instance(inst)
 
         inst_end = end
         if inst.metrics_last_refreshed_at and end:

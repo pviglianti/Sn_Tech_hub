@@ -25,8 +25,8 @@ from ..models import (
     UpdateSet,
     UpdateSetArtifactLink,
 )
-from .encryption import decrypt_password
-from .sn_client import ServiceNowClient, ServiceNowClientError
+from .sn_client import ServiceNowClientError
+from .sn_client_factory import create_client_for_instance
 
 logger = logging.getLogger(__name__)
 
@@ -181,13 +181,7 @@ def lookup_reference_remote(
         return None
 
     try:
-        password = decrypt_password(instance.password_encrypted)
-        client = ServiceNowClient(
-            instance.url,
-            instance.username,
-            password,
-            instance_id=instance.id,
-        )
+        client = create_client_for_instance(instance)
         records = client.get_records(
             table=ref["table"],
             query=f"number={ref['number']}",

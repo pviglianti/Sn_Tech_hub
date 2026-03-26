@@ -345,9 +345,8 @@ class TestLookupReferenceLocal:
 class TestLookupReferenceRemote:
     """Tests for lookup_reference_remote()."""
 
-    @patch("src.services.contextual_lookup.decrypt_password", return_value="secret")
-    @patch("src.services.contextual_lookup.ServiceNowClient")
-    def test_queries_sn_and_caches_result(self, mock_sn_cls, mock_decrypt, db_session):
+    @patch("src.services.contextual_lookup.create_client_for_instance")
+    def test_queries_sn_and_caches_result(self, mock_factory, db_session):
         from src.services.contextual_lookup import lookup_reference_remote
 
         inst = _make_instance(db_session)
@@ -357,7 +356,7 @@ class TestLookupReferenceRemote:
         mock_client.get_records.return_value = [
             {"number": "INC0012345", "short_description": "Server crash", "state": "2"}
         ]
-        mock_sn_cls.return_value = mock_client
+        mock_factory.return_value = mock_client
 
         result = lookup_reference_remote(db_session, inst.id, ref)
         assert result is not None
@@ -376,9 +375,8 @@ class TestLookupReferenceRemote:
         cached_data = json.loads(cached.fact_value)
         assert cached_data["number"] == "INC0012345"
 
-    @patch("src.services.contextual_lookup.decrypt_password", return_value="secret")
-    @patch("src.services.contextual_lookup.ServiceNowClient")
-    def test_returns_none_when_no_records(self, mock_sn_cls, mock_decrypt, db_session):
+    @patch("src.services.contextual_lookup.create_client_for_instance")
+    def test_returns_none_when_no_records(self, mock_factory, db_session):
         from src.services.contextual_lookup import lookup_reference_remote
 
         inst = _make_instance(db_session)
@@ -386,14 +384,13 @@ class TestLookupReferenceRemote:
 
         mock_client = MagicMock()
         mock_client.get_records.return_value = []
-        mock_sn_cls.return_value = mock_client
+        mock_factory.return_value = mock_client
 
         result = lookup_reference_remote(db_session, inst.id, ref)
         assert result is None
 
-    @patch("src.services.contextual_lookup.decrypt_password", return_value="secret")
-    @patch("src.services.contextual_lookup.ServiceNowClient")
-    def test_returns_none_on_sn_error(self, mock_sn_cls, mock_decrypt, db_session):
+    @patch("src.services.contextual_lookup.create_client_for_instance")
+    def test_returns_none_on_sn_error(self, mock_factory, db_session):
         from src.services.contextual_lookup import lookup_reference_remote
 
         inst = _make_instance(db_session)
@@ -401,7 +398,7 @@ class TestLookupReferenceRemote:
 
         mock_client = MagicMock()
         mock_client.get_records.side_effect = Exception("SN unavailable")
-        mock_sn_cls.return_value = mock_client
+        mock_factory.return_value = mock_client
 
         result = lookup_reference_remote(db_session, inst.id, ref)
         assert result is None
@@ -453,9 +450,8 @@ class TestResolveReferences:
         assert results[0]["source"] == "local"
         assert results[0]["data"]["short_description"] == "Cached hit"
 
-    @patch("src.services.contextual_lookup.decrypt_password", return_value="secret")
-    @patch("src.services.contextual_lookup.ServiceNowClient")
-    def test_mode_auto_falls_back_to_remote(self, mock_sn_cls, mock_decrypt, db_session):
+    @patch("src.services.contextual_lookup.create_client_for_instance")
+    def test_mode_auto_falls_back_to_remote(self, mock_factory, db_session):
         from src.services.contextual_lookup import resolve_references
 
         inst = _make_instance(db_session)
@@ -464,7 +460,7 @@ class TestResolveReferences:
         mock_client.get_records.return_value = [
             {"number": "INC0012345", "short_description": "Remote hit"}
         ]
-        mock_sn_cls.return_value = mock_client
+        mock_factory.return_value = mock_client
 
         results = resolve_references(db_session, inst.id, "See INC0012345", enrichment_mode="auto")
         assert len(results) == 1
@@ -472,9 +468,8 @@ class TestResolveReferences:
         assert results[0]["source"] == "remote"
         assert results[0]["data"]["short_description"] == "Remote hit"
 
-    @patch("src.services.contextual_lookup.decrypt_password", return_value="secret")
-    @patch("src.services.contextual_lookup.ServiceNowClient")
-    def test_mode_always_queries_remote_even_if_local_exists(self, mock_sn_cls, mock_decrypt, db_session):
+    @patch("src.services.contextual_lookup.create_client_for_instance")
+    def test_mode_always_queries_remote_even_if_local_exists(self, mock_factory, db_session):
         from src.services.contextual_lookup import resolve_references
 
         inst = _make_instance(db_session)
@@ -498,7 +493,7 @@ class TestResolveReferences:
         mock_client.get_records.return_value = [
             {"number": "INC0012345", "short_description": "Fresh remote"}
         ]
-        mock_sn_cls.return_value = mock_client
+        mock_factory.return_value = mock_client
 
         results = resolve_references(db_session, inst.id, "See INC0012345", enrichment_mode="always")
         assert len(results) == 1

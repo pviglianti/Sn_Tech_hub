@@ -31,7 +31,9 @@
                 <td><strong>{{ instance.name }}</strong></td>
                 <td>{{ instance.company or '-' }}</td>
                 <td><a href="{{ instance.url }}" target="_blank">{{ instance.url }}</a></td>
-                <td>{{ instance.username }}</td>
+                <td>{{ instance.username }}
+                    {% if instance.auth_type == 'oauth' %}<span class="auth-badge auth-oauth" title="OAuth 2.0">OAuth</span>{% endif %}
+                </td>
                 <td>
                     {% set badge_status = instance.connection_status.value %}
                     {% set badge_text = instance.connection_status.value %}
@@ -76,6 +78,10 @@
         <div id="inventoryResults"></div>
     </div>
 </div>
+<style>
+.auth-badge { font-size: 0.7em; padding: 2px 6px; border-radius: 4px; margin-left: 6px; vertical-align: middle; font-weight: 600; }
+.auth-oauth { background: var(--primary-bg, rgba(37,99,235,0.1)); color: var(--primary-color, #2563eb); }
+</style>
 {% endblock %}
 
 {% block scripts %}

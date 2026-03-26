@@ -40,6 +40,7 @@ from .models import (
 )
 from .services.encryption import encrypt_password, decrypt_password
 from .services.sn_client import ServiceNowClient, ServiceNowClientError
+from .services.sn_client_factory import create_client_for_instance
 from .services.scan_executor import run_scans_for_assessment, execute_scan, reset_scan_state, classify_scan_results
 from .services.data_pull_executor import (
     run_data_pulls_for_instance,
@@ -2851,11 +2852,7 @@ def _start_proactive_vh_pull(instance_id: int) -> bool:
                 instance = bg_session.get(Instance, instance_id)
                 if not instance:
                     return
-                password = decrypt_password(instance.password_encrypted)
-                client = ServiceNowClient(
-                    instance.url, instance.username, password,
-                    instance_id=instance.id,
-                )
+                client = create_client_for_instance(instance)
                 # Phase 1: current-only (fast, unblocks classification)
                 execute_data_pull(
                     session=bg_session,
@@ -6657,13 +6654,7 @@ def _run_scans_background(assessment_id: int, mode: str = "full") -> None:
         instance = assessment.instance or bg_session.get(Instance, assessment.instance_id)
         if not instance:
             raise RuntimeError("Instance not found")
-        password = decrypt_password(instance.password_encrypted)
-        client = ServiceNowClient(
-            instance.url,
-            instance.username,
-            password,
-            instance_id=instance.id,
-        )
+        client = create_client_for_instance(instance)
         test_result = client.test_connection()
         if not test_result.get("success"):
             message = test_result.get("message") or "Connection test failed"
@@ -6858,13 +6849,7 @@ def _run_single_scan_background(scan_id: int, mode: str = "full") -> None:
         instance = assessment.instance or bg_session.get(Instance, assessment.instance_id)
         if not instance:
             return
-        password = decrypt_password(instance.password_encrypted)
-        client = ServiceNowClient(
-            instance.url,
-            instance.username,
-            password,
-            instance_id=instance.id,
-        )
+        client = create_client_for_instance(instance)
         test_result = client.test_connection()
         if not test_result.get("success"):
             return
@@ -6942,13 +6927,7 @@ def _run_data_pulls_background(
                     error_message="Instance not found.",
                 )
             return
-        password = decrypt_password(instance.password_encrypted)
-        client = ServiceNowClient(
-            instance.url,
-            instance.username,
-            password,
-            instance_id=instance.id,
-        )
+        client = create_client_for_instance(instance)
         test_result = client.test_connection()
         if not test_result.get("success"):
             if run_uid:
@@ -7286,11 +7265,7 @@ def _run_assessment_preflight_data_sync(
                     bg_inst = bg_session.get(Instance, inst_id)
                     if not bg_inst:
                         return
-                    pw = decrypt_password(bg_inst.password_encrypted)
-                    bg_client = ServiceNowClient(
-                        bg_inst.url, bg_inst.username, pw,
-                        instance_id=bg_inst.id,
-                    )
+                    bg_client = create_client_for_instance(bg_inst)
                     extra_kwargs: Dict[str, Any] = {}
                     if _dt == DataPullType.version_history and version_history_current_only:
                         extra_kwargs["version_state_filter"] = "current"
@@ -7511,13 +7486,7 @@ def _apply_instance_metrics(instance: Instance, metrics: Dict[str, Any]) -> None
 
 
 def _refresh_instance_metrics(instance: Instance) -> Dict[str, Any]:
-    password = decrypt_password(instance.password_encrypted)
-    client = ServiceNowClient(
-        instance.url,
-        instance.username,
-        password,
-        instance_id=instance.id,
-    )
+    client = create_client_for_instance(instance)
     test_result = client.test_connection()
     if not test_result.get("success"):
         raise ServiceNowClientError(test_result.get("message", "Authentication failed"))
@@ -7543,13 +7512,7 @@ def _sync_app_file_types_for_instance(
 
     Returns effective mode: full, delta, or skip.
     """
-    password = decrypt_password(instance.password_encrypted)
-    client = ServiceNowClient(
-        instance.url,
-        instance.username,
-        password,
-        instance_id=instance.id,
-    )
+    client = create_client_for_instance(instance)
     test_result = client.test_connection()
     if not test_result.get("success"):
         raise ServiceNowClientError(test_result.get("message", "Authentication failed"))
@@ -10318,13 +10281,7 @@ async def api_instance_inventory(
     if instance.inventory_json:
         return {"success": True, "inventory": _safe_json(instance.inventory_json, {}), "cached": True}
 
-    password = decrypt_password(instance.password_encrypted)
-    client = ServiceNowClient(
-        instance.url,
-        instance.username,
-        password,
-        instance_id=instance.id,
-    )
+    client = create_client_for_instance(instance)
 
     try:
         inventory = client.scan_inventory(scope="global")

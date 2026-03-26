@@ -10,8 +10,8 @@ from sqlmodel import Session
 
 from ...registry import ToolSpec
 from ....models import Instance
-from ....services.encryption import decrypt_password
-from ....services.sn_client import ServiceNowClient, ServiceNowClientError
+from ....services.sn_client import ServiceNowClientError
+from ....services.sn_client_factory import create_client_for_instance
 
 
 INPUT_SCHEMA: Dict[str, Any] = {
@@ -63,13 +63,7 @@ def handle_query_instance_live(params: Dict[str, Any], session: Session) -> Dict
 
     # --- Build SN client and execute query ---
     try:
-        password = decrypt_password(instance.password_encrypted)
-        client = ServiceNowClient(
-            instance.url,
-            instance.username,
-            password,
-            instance_id=instance.id,
-        )
+        client = create_client_for_instance(instance)
         records = client.get_records(
             table=table,
             query=encoded_query,

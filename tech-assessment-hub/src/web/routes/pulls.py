@@ -35,9 +35,8 @@ from ...models import (
 )
 from ...services.data_pull_executor import _estimate_expected_total, _get_db_derived_watermark
 from ...services.dictionary_pull_orchestrator import get_dictionary_pull_status
-from ...services.encryption import decrypt_password
 from ...services.integration_sync_runner import resolve_delta_decision
-from ...services.sn_client import ServiceNowClient
+from ...services.sn_client_factory import create_client_for_instance
 
 
 def create_pulls_router(
@@ -336,13 +335,7 @@ def create_pulls_router(
         ).one()
 
         try:
-            instance_password = decrypt_password(instance.password_encrypted)
-            client = ServiceNowClient(
-                instance.url,
-                instance.username,
-                instance_password,
-                instance_id=instance.id,
-            )
+            client = create_client_for_instance(instance)
             remote_count = _estimate_expected_total(session, client, dt, since=None, instance_id=instance_id) or 0
         except Exception as exc:
             return {

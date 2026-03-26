@@ -11,8 +11,7 @@ from sqlmodel import Session
 
 from ...registry import ToolSpec
 from ....models import Instance, DataPullType
-from ....services.encryption import decrypt_password
-from ....services.sn_client import ServiceNowClient
+from ....services.sn_client_factory import create_client_for_instance
 from ....services.data_pull_executor import execute_data_pull
 from ....database import get_session
 
@@ -51,12 +50,7 @@ def _run_pull_in_background(instance_id: int, data_types: List[DataPullType], mo
         instance = session.get(Instance, instance_id)
         if not instance:
             return
-        client = ServiceNowClient(
-            instance.url,
-            instance.username,
-            decrypt_password(instance.password_encrypted),
-            instance_id=instance.id,
-        )
+        client = create_client_for_instance(instance)
         for dt in data_types:
             try:
                 execute_data_pull(session, instance, client, dt, mode)

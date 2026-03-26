@@ -33,7 +33,7 @@ from ..csdm_table_catalog import (
 )
 from .sn_client import ServiceNowClient, ServiceNowClientError
 from .sn_dictionary import extract_full_dictionary
-from .encryption import decrypt_password
+from .sn_client_factory import create_client_for_instance
 from ..table_registry_catalog import PREFLIGHT_SN_TABLE_MAP
 
 logger = logging.getLogger(__name__)
@@ -559,13 +559,7 @@ def pull_dictionary_for_instance(
             return
 
         try:
-            password = decrypt_password(instance.password_encrypted)
-            client = ServiceNowClient(
-                instance.url,
-                instance.username,
-                password,
-                instance_id=instance.id,
-            )
+            client = create_client_for_instance(instance)
         except Exception as exc:
             error_message = f"Failed to create client: {exc}"
             progress.status = "failed"
@@ -962,13 +956,7 @@ def backfill_missing_labels(instance_id: int) -> int:
             logger.warning("Instance %d not found for backfill", instance_id)
             return 0
 
-        password = decrypt_password(instance.password_encrypted)
-        client = ServiceNowClient(
-            instance.url,
-            instance.username,
-            password,
-            instance_id=instance.id,
-        )
+        client = create_client_for_instance(instance)
 
         # Find registries with field mappings missing labels
         registries = session.exec(
