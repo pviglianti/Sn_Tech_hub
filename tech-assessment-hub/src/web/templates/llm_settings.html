@@ -1,0 +1,229 @@
+{% extends "base.html" %}
+{% block title %}LLM Provider Settings{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h1>LLM Provider Settings</h1>
+    <p class="page-subtitle">Configure AI providers for assessment pipeline stages</p>
+</div>
+
+<!-- Provider Setup Cards -->
+<div class="section-card" style="margin-bottom: 2rem;">
+    <h2 class="section-title">Provider Authentication</h2>
+    <div id="provider-cards" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; margin-top: 1rem;">
+    </div>
+</div>
+
+<!-- AI Configuration -->
+<div class="section-card">
+    <h2 class="section-title">Default AI Configuration</h2>
+    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-top: 1rem; max-width: 800px;">
+        <div>
+            <label class="form-label">Provider</label>
+            <select id="cfg-provider" class="form-select" onchange="onProviderChange()">
+                <option value="">-- Select --</option>
+            </select>
+        </div>
+        <div>
+            <label class="form-label">Model</label>
+            <select id="cfg-model" class="form-select">
+                <option value="">-- Select provider first --</option>
+            </select>
+        </div>
+        <div>
+            <label class="form-label">Effort Level</label>
+            <select id="cfg-effort" class="form-select">
+                <option value="low">Low</option>
+                <option value="medium" selected>Medium</option>
+                <option value="high">High</option>
+                <option value="max">Max</option>
+            </select>
+        </div>
+    </div>
+    <button class="btn btn-primary" style="margin-top: 1rem;" onclick="saveDefaults()">Save Defaults</button>
+
+    <h3 style="margin-top: 2rem;">Per-Stage Overrides <span style="font-weight: normal; font-size: 0.85em; color: var(--text-muted);">(optional)</span></h3>
+    <div id="stage-overrides" style="margin-top: 0.75rem;"></div>
+    <button class="btn btn-secondary" style="margin-top: 0.75rem;" onclick="addStageOverride()">+ Add Override</button>
+</div>
+
+<script>
+const AI_STAGES = ['ai_analysis','observations','grouping','ai_refinement','recommendations','report'];
+let _providers = [];
+let _config = {};
+let _cliStatus = {};
+
+async function loadAll() {
+    const [provRes, cfgRes, cliRes] = await Promise.all([
+        fetch('/api/llm/providers'),
+        fetch('/api/llm/config'),
+        fetch('/api/llm/detect-clis'),
+    ]);
+    _providers = await provRes.json();
+    _config = await cfgRes.json();
+    _cliStatus = await cliRes.json();
+    renderProviderCards();
+    renderConfigForm();
+    renderStageOverrides();
+}
+
+function renderProviderCards() {
+    const container = document.getElementById('provider-cards');
+    container.innerHTML = '';
+    for (const entry of _providers) {
+        const p = entry.provider;
+        const auth = entry.auth || {};
+        const cli = _cliStatus[p.provider_kind] || {};
+        const isOk = auth.last_test_result === 'ok';
+        const isError = auth.last_test_result && auth.last_test_result.startsWith('error');
+        const borderColor = isOk ? 'var(--success, #22c55e)' : isError ? 'var(--danger, #ef4444)' : 'var(--border-color, #e5e7eb)';
+
+        const card = document.createElement('div');
+        card.className = 'section-card';
+        card.style.cssText = 'border: 2px solid ' + borderColor + '; padding: 1.25rem;';
+        card.innerHTML =
+            '<h3 style="margin: 0 0 0.75rem;">' + p.name + '</h3>' +
+            '<div style="margin-bottom: 0.75rem; font-size: 0.9em;">' +
+            '<strong>CLI:</strong> ' + (cli.installed ? '&#10003; ' + (cli.version || 'installed') : '&#10007; not found') +
+            '</div>' +
+            '<div style="margin-bottom: 0.75rem; font-size: 0.9em;">' +
+            '<strong>Status:</strong> ' + (isOk ? '&#9679; OK' : isError ? '&#9679; ' + auth.last_test_result : '&#9675; Not configured') +
+            (auth.slot_kind === 'api_key' && auth.api_key_hint ? ' (key: ...' + auth.api_key_hint + ')' : '') +
+            '</div>' +
+            '<div style="margin-bottom: 0.5rem;"><strong>Models:</strong> ' + entry.models.length + '</div>' +
+            '<div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem;">' +
+            '<button class="btn btn-secondary btn-sm" onclick="triggerCliLogin(\'' + p.provider_kind + '\')" ' + (!cli.installed ? 'disabled title="CLI not installed"' : '') + '>Sign In</button>' +
+            '<button class="btn btn-secondary btn-sm" onclick="connectCli(' + p.id + ')" ' + (!cli.installed ? 'disabled title="CLI not installed"' : '') + '>Connect CLI</button>' +
+            '<button class="btn btn-secondary btn-sm" onclick="connectApiKey(' + p.id + ')">Use API Key</button>' +
+            (auth.has_auth ? '<button class="btn btn-secondary btn-sm" onclick="refreshModels(' + p.id + ')">Refresh Models</button>' : '') +
+            '</div>' +
+            '<div id="card-msg-' + p.id + '" style="margin-top: 0.5rem; font-size: 0.85em;"></div>';
+        container.appendChild(card);
+    }
+}
+
+function renderConfigForm() {
+    const provSelect = document.getElementById('cfg-provider');
+    provSelect.innerHTML = '<option value="">-- Select --</option>';
+    for (const entry of _providers) {
+        if (entry.auth && entry.auth.last_test_result === 'ok') {
+            const opt = document.createElement('option');
+            opt.value = entry.provider.id;
+            opt.textContent = entry.provider.name;
+            if (_config['ai.default_provider_id'] === String(entry.provider.id)) opt.selected = true;
+            provSelect.appendChild(opt);
+        }
+    }
+    onProviderChange();
+    const effortSelect = document.getElementById('cfg-effort');
+    effortSelect.value = _config['ai.default_effort_level'] || 'medium';
+}
+
+async function onProviderChange() {
+    const pid = document.getElementById('cfg-provider').value;
+    const modelSelect = document.getElementById('cfg-model');
+    modelSelect.innerHTML = '<option value="">-- Select --</option>';
+    if (!pid) return;
+    const res = await fetch('/api/llm/providers/' + pid + '/models');
+    const models = await res.json();
+    for (const m of models) {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        opt.textContent = m.display_name || m.model_name;
+        if (_config['ai.default_model_id'] === String(m.id)) opt.selected = true;
+        modelSelect.appendChild(opt);
+    }
+}
+
+function renderStageOverrides() {
+    const container = document.getElementById('stage-overrides');
+    container.innerHTML = '';
+    for (const stage of AI_STAGES) {
+        const pid = _config['ai.stage.' + stage + '.provider_id'];
+        if (!pid) continue;
+        const row = document.createElement('div');
+        row.className = 'section-card';
+        row.style.cssText = 'padding: 0.75rem; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 1rem;';
+        const effort = _config['ai.stage.' + stage + '.effort_level'] || 'medium';
+        const provider = _providers.find(function(e) { return String(e.provider.id) === pid; });
+        const pName = provider ? provider.provider.name : pid;
+        row.innerHTML = '<strong style="min-width: 130px;">' + stage + '</strong>' +
+            '<span>' + pName + ' / effort: ' + effort + '</span>' +
+            '<button class="btn btn-secondary btn-sm" onclick="removeStageOverride(\'' + stage + '\')">Remove</button>';
+        container.appendChild(row);
+    }
+}
+
+async function saveDefaults() {
+    const body = {};
+    const pid = document.getElementById('cfg-provider').value;
+    const mid = document.getElementById('cfg-model').value;
+    const effort = document.getElementById('cfg-effort').value;
+    if (pid) body['ai.default_provider_id'] = pid;
+    if (mid) body['ai.default_model_id'] = mid;
+    if (effort) body['ai.default_effort_level'] = effort;
+    await fetch('/api/llm/config', { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    await loadAll();
+}
+
+async function triggerCliLogin(kind) {
+    await fetch('/api/llm/cli-login/' + kind, { method: 'POST' });
+    alert('Login command opened in Terminal. Complete sign-in in browser, then click Connect CLI.');
+}
+
+async function connectCli(providerId) {
+    const res = await fetch('/api/llm/auth-slots', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ provider_id: providerId, slot_kind: 'cli' }),
+    });
+    const slot = await res.json();
+    await fetch('/api/llm/auth-slots/' + slot.id + '/test', { method: 'POST' });
+    await loadAll();
+}
+
+async function connectApiKey(providerId) {
+    const key = prompt('Enter API key:');
+    if (!key) return;
+    await fetch('/api/llm/auth-slots', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ provider_id: providerId, slot_kind: 'api_key', api_key: key }),
+    });
+    await loadAll();
+}
+
+async function refreshModels(providerId) {
+    var msgEl = document.getElementById('card-msg-' + providerId);
+    if (msgEl) msgEl.textContent = 'Refreshing...';
+    await fetch('/api/llm/providers/' + providerId + '/models/refresh', { method: 'POST' });
+    await loadAll();
+    if (msgEl) msgEl.textContent = '';
+}
+
+function addStageOverride() {
+    const stage = prompt('Enter stage name:\n' + AI_STAGES.join(', '));
+    if (!stage || AI_STAGES.indexOf(stage) === -1) return;
+    const pid = document.getElementById('cfg-provider').value;
+    const mid = document.getElementById('cfg-model').value;
+    const effort = document.getElementById('cfg-effort').value;
+    if (!pid) { alert('Select a provider first'); return; }
+    var body = {};
+    body['ai.stage.' + stage + '.provider_id'] = pid;
+    if (mid) body['ai.stage.' + stage + '.model_id'] = mid;
+    body['ai.stage.' + stage + '.effort_level'] = effort;
+    fetch('/api/llm/config', { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) })
+        .then(function() { loadAll(); });
+}
+
+async function removeStageOverride(stage) {
+    var body = {};
+    body['ai.stage.' + stage + '.provider_id'] = '';
+    body['ai.stage.' + stage + '.model_id'] = '';
+    body['ai.stage.' + stage + '.effort_level'] = '';
+    await fetch('/api/llm/config', { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    await loadAll();
+}
+
+document.addEventListener('DOMContentLoaded', loadAll);
+</script>
+{% endblock %}

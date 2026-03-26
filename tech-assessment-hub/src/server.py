@@ -10517,6 +10517,13 @@ async def admin_best_practice_record_page(
     )
 
 
+@app.get("/settings/llm-providers", response_class=HTMLResponse)
+def page_llm_settings(request: Request, session: Session = Depends(get_session)):
+    """LLM provider settings page."""
+    seed_default_catalog(session)
+    return templates.TemplateResponse("llm_settings.html", {"request": request})
+
+
 # ---------------------------------------------------------------------------
 # Admin: database health & maintenance
 # ---------------------------------------------------------------------------
