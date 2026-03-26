@@ -107,6 +107,10 @@ from .web.routes.mcp_admin import mcp_admin_router
 from .web.routes.preferences import create_preferences_router
 from .web.routes.assessment_runtime_usage import create_assessment_runtime_usage_router
 from .web.routes.customizations import customizations_router
+from .services.llm import (
+    seed_default_catalog, get_providers_with_models,
+    AuthManager, LLMAuthSlot, LLMModel,
+)
 from .web.routes.pulls import create_pulls_router
 import json
 import requests
@@ -10537,3 +10541,145 @@ async def api_admin_db_wal_checkpoint():
     result = run_wal_checkpoint()
     health = get_db_health()
     return {"checkpoint": result, "health": health}
+
+
+# ── LLM Provider Settings API ──────────────────────────────────────
+
+@app.get("/api/llm/providers")
+def api_llm_providers(session: Session = Depends(get_session)):
+    """List all LLM providers with their models and auth status."""
+    seed_default_catalog(session)
+    providers = get_providers_with_models(session)
+    for entry in providers:
+        pid = entry["provider"]["id"]
+        slot = session.exec(
+            select(LLMAuthSlot).where(
+                LLMAuthSlot.provider_id == pid,
+                LLMAuthSlot.is_active == True,  # noqa: E712
+            )
+        ).first()
+        entry["auth"] = {
+            "has_auth": slot is not None,
+            "slot_kind": slot.slot_kind if slot else None,
+            "last_test_result": slot.last_test_result if slot else None,
+            "api_key_hint": slot.api_key_hint if slot else None,
+        } if slot else {"has_auth": False}
+    return providers
+
+
+@app.get("/api/llm/providers/{provider_id}/models")
+def api_llm_provider_models(
+    provider_id: int, session: Session = Depends(get_session)
+):
+    """List models for a provider."""
+    models = session.exec(
+        select(LLMModel).where(LLMModel.provider_id == provider_id)
+    ).all()
+    return [
+        {
+            "id": m.id,
+            "model_name": m.model_name,
+            "display_name": m.display_name,
+            "context_window": m.context_window,
+            "supports_effort": m.supports_effort,
+            "is_default": m.is_default,
+            "source": m.source,
+        }
+        for m in models
+    ]
+
+
+@app.get("/api/llm/detect-clis")
+def api_llm_detect_clis(session: Session = Depends(get_session)):
+    """Detect which LLM CLIs are installed."""
+    mgr = AuthManager(session)
+    return mgr.detect_clis()
+
+
+@app.post("/api/llm/cli-login/{provider_kind}")
+def api_llm_cli_login(
+    provider_kind: str, session: Session = Depends(get_session)
+):
+    """Trigger CLI browser login for a provider."""
+    mgr = AuthManager(session)
+    mgr.trigger_cli_login(provider_kind)
+    return {"status": "login_triggered", "provider_kind": provider_kind}
+
+
+@app.post("/api/llm/auth-slots")
+async def api_llm_create_auth_slot(
+    request: Request, session: Session = Depends(get_session)
+):
+    """Create an auth slot (CLI or API key)."""
+    body = await request.json()
+    mgr = AuthManager(session)
+    provider_id = body["provider_id"]
+    slot_kind = body.get("slot_kind", "cli")
+
+    if slot_kind == "api_key":
+        slot = mgr.store_api_key(provider_id, body["api_key"])
+    else:
+        slot = mgr.create_cli_slot(provider_id)
+
+    return {
+        "id": slot.id,
+        "provider_id": slot.provider_id,
+        "slot_kind": slot.slot_kind,
+        "api_key_hint": slot.api_key_hint,
+        "is_active": slot.is_active,
+        "last_test_result": slot.last_test_result,
+    }
+
+
+@app.post("/api/llm/auth-slots/{slot_id}/test")
+def api_llm_test_auth_slot(
+    slot_id: int, session: Session = Depends(get_session)
+):
+    """Test an auth slot's connectivity."""
+    mgr = AuthManager(session)
+    ok, msg = mgr.test_auth_slot(slot_id)
+    return {"success": ok, "message": msg}
+
+
+@app.delete("/api/llm/auth-slots/{slot_id}")
+def api_llm_delete_auth_slot(
+    slot_id: int, session: Session = Depends(get_session)
+):
+    """Delete an auth slot."""
+    slot = session.get(LLMAuthSlot, slot_id)
+    if not slot:
+        return {"error": "not found"}
+    session.delete(slot)
+    session.commit()
+    return {"deleted": True}
+
+
+@app.get("/api/llm/config")
+def api_llm_config(session: Session = Depends(get_session)):
+    """Get current LLM configuration."""
+    rows = session.exec(
+        select(AppConfig).where(AppConfig.key.startswith("ai."))  # type: ignore
+    ).all()
+    return {row.key: row.value for row in rows}
+
+
+@app.put("/api/llm/config")
+async def api_llm_update_config(
+    request: Request, session: Session = Depends(get_session)
+):
+    """Update LLM configuration properties."""
+    body = await request.json()
+    for key, value in body.items():
+        if not key.startswith("ai."):
+            continue
+        existing = session.exec(
+            select(AppConfig).where(AppConfig.key == key)
+        ).first()
+        if existing:
+            existing.value = str(value)
+            existing.updated_at = datetime.utcnow()
+            session.add(existing)
+        else:
+            session.add(AppConfig(key=key, value=str(value)))
+    session.commit()
+    return {"updated": True}
