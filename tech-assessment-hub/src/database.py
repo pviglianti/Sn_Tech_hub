@@ -48,6 +48,7 @@ def create_db_and_tables():
         SnTableRegistry, SnFieldMapping, SnIngestionState,
         SnJobLog, SnCustomTableRequest,
     )
+    from .services.llm import models as llm_models  # noqa: F401
     SQLModel.metadata.create_all(engine)
     _ensure_instance_columns()
     _ensure_app_config_instance_scope()
@@ -91,6 +92,9 @@ def create_db_and_tables():
         "update_set_artifact_link",
         "naming_cluster",
         "table_colocation_summary",
+        "llm_provider",
+        "llm_model",
+        "llm_auth_slot",
     ])
     _ensure_assessment_pipeline_defaults()
     _ensure_instance_app_file_type_defaults()
