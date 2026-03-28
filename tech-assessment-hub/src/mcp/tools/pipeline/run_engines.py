@@ -30,7 +30,8 @@ INPUT_SCHEMA: Dict[str, Any] = {
                 "Optional list of engine names to run. "
                 "Default: all available engines. "
                 "Options: structural_mapper, code_reference_parser, "
-                "update_set_analyzer, temporal_clusterer, naming_analyzer, table_colocation"
+                "update_set_analyzer, temporal_clusterer, naming_analyzer, "
+                "table_colocation, dependency_mapper"
             ),
         },
     },
@@ -47,6 +48,8 @@ _ENGINE_REGISTRY: Dict[str, str] = {
     "temporal_clusterer": "src.engines.temporal_clusterer",
     "naming_analyzer": "src.engines.naming_analyzer",
     "table_colocation": "src.engines.table_colocation",
+    # Phase 3 engines (depends on Phase 1 outputs)
+    "dependency_mapper": "src.engines.dependency_mapper",
 }
 
 
@@ -108,7 +111,7 @@ TOOL_SPEC = ToolSpec(
         "Run deterministic pre-processing engines for an assessment. "
         "Populates structural_relationship, code_reference, update_set_overlap, "
         "update_set_artifact_link, temporal_cluster, naming_cluster, and "
-        "table_colocation_summary tables."
+        "table_colocation_summary, dependency_chain, and dependency_cluster tables."
     ),
     input_schema=INPUT_SCHEMA,
     handler=handle,

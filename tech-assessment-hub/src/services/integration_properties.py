@@ -65,6 +65,8 @@ REASONING_TEMPORAL_GAP_THRESHOLD = "reasoning.temporal.gap_threshold_minutes"
 REASONING_TEMPORAL_MIN_CLUSTER_SIZE = "reasoning.temporal.min_cluster_size"
 REASONING_NAMING_MIN_CLUSTER_SIZE = "reasoning.naming.min_cluster_size"
 REASONING_NAMING_MIN_PREFIX_TOKENS = "reasoning.naming.min_prefix_tokens"
+REASONING_DEPENDENCY_MAX_TRANSITIVE_DEPTH = "reasoning.dependency.max_transitive_depth"
+REASONING_DEPENDENCY_MIN_CLUSTER_SIZE = "reasoning.dependency.min_cluster_size"
 REASONING_FEATURE_MAX_ITERATIONS = "reasoning.feature.max_iterations"
 REASONING_FEATURE_MEMBERSHIP_DELTA_THRESHOLD = "reasoning.feature.membership_delta_threshold"
 REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE = "reasoning.feature.min_assignment_confidence"
@@ -135,6 +137,8 @@ class ReasoningEngineProperties:
     temporal_min_cluster_size: int = 2
     naming_min_cluster_size: int = 2
     naming_min_prefix_tokens: int = 2
+    dependency_max_transitive_depth: int = 3
+    dependency_min_cluster_size: int = 2
     feature_max_iterations: int = 3
     feature_membership_delta_threshold: float = 0.02
     feature_min_assignment_confidence: float = 0.6
@@ -255,6 +259,8 @@ PROPERTY_DEFAULTS: Dict[str, str] = {
     REASONING_TEMPORAL_MIN_CLUSTER_SIZE: "2",
     REASONING_NAMING_MIN_CLUSTER_SIZE: "2",
     REASONING_NAMING_MIN_PREFIX_TOKENS: "2",
+    REASONING_DEPENDENCY_MAX_TRANSITIVE_DEPTH: "3",
+    REASONING_DEPENDENCY_MIN_CLUSTER_SIZE: "2",
     REASONING_FEATURE_MAX_ITERATIONS: "3",
     REASONING_FEATURE_MEMBERSHIP_DELTA_THRESHOLD: "0.02",
     REASONING_FEATURE_MIN_ASSIGNMENT_CONFIDENCE: "0.6",
@@ -539,6 +545,30 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         section=SECTION_REASONING,
         min_value=1,
         max_value=10,
+    ),
+    REASONING_DEPENDENCY_MAX_TRANSITIVE_DEPTH: IntegrationPropertyDefinition(
+        key=REASONING_DEPENDENCY_MAX_TRANSITIVE_DEPTH,
+        label="Max Transitive Depth (Dependency)",
+        description="Maximum hops for transitive dependency chain resolution.",
+        value_type="int",
+        default=PROPERTY_DEFAULTS[REASONING_DEPENDENCY_MAX_TRANSITIVE_DEPTH],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="reasoning",
+        section=SECTION_REASONING,
+        min_value=1,
+        max_value=10,
+    ),
+    REASONING_DEPENDENCY_MIN_CLUSTER_SIZE: IntegrationPropertyDefinition(
+        key=REASONING_DEPENDENCY_MIN_CLUSTER_SIZE,
+        label="Min Cluster Size (Dependency)",
+        description="Minimum number of customized artifacts to form a dependency cluster.",
+        value_type="int",
+        default=PROPERTY_DEFAULTS[REASONING_DEPENDENCY_MIN_CLUSTER_SIZE],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="reasoning",
+        section=SECTION_REASONING,
+        min_value=2,
+        max_value=50,
     ),
     REASONING_FEATURE_MAX_ITERATIONS: IntegrationPropertyDefinition(
         key=REASONING_FEATURE_MAX_ITERATIONS,
@@ -1266,6 +1296,18 @@ def load_reasoning_engine_properties(
             session,
             REASONING_NAMING_MIN_PREFIX_TOKENS,
             defaults.naming_min_prefix_tokens,
+            instance_id=instance_id,
+        ),
+        dependency_max_transitive_depth=_get_int(
+            session,
+            REASONING_DEPENDENCY_MAX_TRANSITIVE_DEPTH,
+            defaults.dependency_max_transitive_depth,
+            instance_id=instance_id,
+        ),
+        dependency_min_cluster_size=_get_int(
+            session,
+            REASONING_DEPENDENCY_MIN_CLUSTER_SIZE,
+            defaults.dependency_min_cluster_size,
             instance_id=instance_id,
         ),
         feature_max_iterations=_get_int(
