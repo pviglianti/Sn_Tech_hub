@@ -647,6 +647,10 @@ class Feature(SQLModel, table=True):
     date_range_end: Optional[datetime] = None
     pass_number: Optional[int] = None
 
+    # ---- Dependency risk scoring ----
+    change_risk_score: Optional[float] = None
+    change_risk_level: Optional[str] = None  # critical, high, medium, low
+
     # ---- Visual styling ----
     color_index: Optional[int] = None
 
@@ -1808,6 +1812,63 @@ class TableColocationSummary(SQLModel, table=True):
     record_ids_json: str  # JSON array of scan_result IDs
     artifact_types_json: str  # JSON array of distinct sys_class_name values
     developers_json: str  # JSON array of distinct developers
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============================================
+# TABLE: DependencyChain (resolved dependency paths)
+# Populated by the Dependency Mapper engine
+# ============================================
+
+class DependencyChain(SQLModel, table=True):
+    """Resolved dependency path between two customized scan results."""
+    __tablename__ = "dependency_chain"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    scan_id: int = Field(foreign_key="scan.id", index=True)
+    instance_id: int = Field(foreign_key="instance.id", index=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+
+    source_scan_result_id: int = Field(foreign_key="scan_result.id", index=True)
+    target_scan_result_id: int = Field(foreign_key="scan_result.id", index=True)
+
+    dependency_type: str  # code_reference, structural, transitive, shared_dependency
+    direction: str  # outbound, inbound
+    hop_count: int  # 1 = direct, 2-3 = transitive
+    chain_path_json: str  # JSON array of intermediate scan_result IDs
+    chain_weight: float  # Diminishing: 3.0, 2.0, 1.0
+    criticality: str  # high, medium, low
+
+    shared_via_identifier: Optional[str] = None  # For shared_dependency type
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============================================
+# TABLE: DependencyCluster (connected dependency subgraphs)
+# Populated by the Dependency Mapper engine
+# ============================================
+
+class DependencyCluster(SQLModel, table=True):
+    """Group of customized artifacts forming a connected dependency subgraph."""
+    __tablename__ = "dependency_cluster"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    scan_id: int = Field(foreign_key="scan.id", index=True)
+    instance_id: int = Field(foreign_key="instance.id", index=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+
+    cluster_label: str
+    member_ids_json: str  # JSON array of scan_result IDs
+    member_count: int
+    internal_edge_count: int
+    coupling_score: float
+    impact_radius: str  # very_high, high, medium, low
+    change_risk_score: float  # 0-100
+    change_risk_level: str  # critical, high, medium, low
+    circular_dependencies_json: str  # JSON array of cycle paths
+    tables_involved_json: str  # JSON array of distinct table_names
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
