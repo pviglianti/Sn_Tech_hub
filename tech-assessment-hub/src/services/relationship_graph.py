@@ -29,6 +29,8 @@ from ..models import (
 
 # Shared edge weight constants — used by both graph builder and seed_feature_groups
 EDGE_WEIGHTS: Dict[str, float] = {
+    "dependency_cluster": 3.5,
+    "ai_relationship": 3.5,
     "update_set_overlap": 3.0,
     "update_set_artifact_link": 2.5,
     "code_reference": 3.0,

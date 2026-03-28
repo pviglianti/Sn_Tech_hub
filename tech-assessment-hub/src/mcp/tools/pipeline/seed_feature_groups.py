@@ -7,6 +7,7 @@ Deterministically seeds feature groups from engine outputs:
 - temporal clusters
 - naming clusters
 - table co-location
+- dependency clusters (transitive dependency chains + shared dependencies)
 
 Only customized records are persisted as feature members. Non-customized records
 are stored as context artifacts when they provide supporting signal evidence.
@@ -27,6 +28,7 @@ from ...registry import ToolSpec
 from ....models import (
     Assessment,
     CodeReference,
+    DependencyCluster,
     Feature,
     FeatureContextArtifact,
     FeatureScanResult,
@@ -141,6 +143,10 @@ def _is_customized(result: ScanResult) -> bool:
     return (_origin_value(result) or "") in _CUSTOMIZED_ORIGIN_VALUES
 
 
+def _is_in_scope_for_grouping(result: ScanResult) -> bool:
+    return _is_customized(result) and not bool(result.is_out_of_scope)
+
+
 def _pair_key(a: int, b: int) -> Tuple[int, int]:
     return (a, b) if a < b else (b, a)
 
@@ -166,6 +172,29 @@ def _parse_result_id_list(value: Optional[str]) -> List[int]:
         try:
             if candidate is not None:
                 result_ids.append(int(candidate))
+        except (TypeError, ValueError):
+            continue
+    return result_ids
+
+
+def _parse_ai_related_result_ids(value: Optional[str]) -> List[int]:
+    parsed = _safe_json(value, {})
+    if not isinstance(parsed, dict):
+        return []
+
+    candidates = (
+        parsed.get("directly_related_result_ids")
+        or parsed.get("related_result_ids")
+        or parsed.get("in_scope_related_result_ids")
+        or []
+    )
+    if not isinstance(candidates, list):
+        return []
+
+    result_ids: List[int] = []
+    for item in candidates:
+        try:
+            result_ids.append(int(item))
         except (TypeError, ValueError):
             continue
     return result_ids
@@ -325,7 +354,11 @@ def seed_feature_groups(
     customized_ids = {rid for rid, row in result_by_id.items() if _is_customized(row)}
     non_customized_ids = set(result_by_id.keys()) - customized_ids
     human_locked_ids = _current_human_locked_result_ids(session, assessment_id)
-    eligible_customized_ids = sorted(customized_ids - human_locked_ids)
+    eligible_customized_ids = sorted(
+        rid
+        for rid, row in result_by_id.items()
+        if rid not in human_locked_ids and _is_in_scope_for_grouping(row)
+    )
 
     if reset_existing and not dry_run:
         _reset_existing_seed_rows(session, assessment_id)
@@ -399,6 +432,26 @@ def seed_feature_groups(
                     confidence=0.55,
                     payload={"update_set_id": us_id},
                 )
+
+    # AI-discovered relationships from ai_analysis scope triage.
+    for custom_id in eligible_customized_ids:
+        row = result_by_id.get(custom_id)
+        if row is None:
+            continue
+        for related_id in _parse_ai_related_result_ids(row.ai_observations):
+            related_row = result_by_id.get(related_id)
+            if related_row is None or not _is_in_scope_for_grouping(related_row):
+                continue
+            if related_id not in eligible_set:
+                continue
+            _add_edge(
+                edge_support,
+                a=custom_id,
+                b=related_id,
+                signal_type="ai_relationship",
+                weight=EDGE_WEIGHTS["ai_relationship"],
+                payload={"source": "ai_observations"},
+            )
 
     # Update-set overlaps (cross-update-set group cohesion)
     overlaps = session.exec(
@@ -596,6 +649,28 @@ def seed_feature_groups(
                 context_type="structural_parent_context",
                 confidence=max(0.0, min(1.0, float(rel.confidence))),
                 payload={"relationship_id": rel.id, "relationship_type": rel.relationship_type},
+            )
+
+    # Dependency clusters (from dependency_mapper engine)
+    dep_clusters = list(session.exec(
+        select(DependencyCluster).where(DependencyCluster.assessment_id == assessment_id)
+    ).all())
+    for cluster in dep_clusters:
+        member_ids = _parse_result_id_list(cluster.member_ids_json)
+        custom_members = [rid for rid in member_ids if rid in eligible_set]
+        for a, b in _iter_limited_pairs(custom_members, max_pairs_per_signal):
+            _add_edge(
+                edge_support,
+                a=a,
+                b=b,
+                signal_type="dependency_cluster",
+                weight=EDGE_WEIGHTS["dependency_cluster"],
+                payload={
+                    "cluster_id": cluster.id,
+                    "cluster_label": cluster.cluster_label,
+                    "coupling_score": cluster.coupling_score,
+                    "change_risk_level": cluster.change_risk_level,
+                },
             )
 
     # Build adjacency graph from weighted edges.

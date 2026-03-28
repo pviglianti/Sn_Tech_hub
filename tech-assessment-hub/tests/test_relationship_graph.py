@@ -83,6 +83,8 @@ def _make_scan_result(scan, sys_id, name, origin_type=None):
 def test_edge_weights_expected_keys():
     """EDGE_WEIGHTS should contain all expected signal types."""
     expected_keys = {
+        "dependency_cluster",
+        "ai_relationship",
         "update_set_overlap",
         "update_set_artifact_link",
         "code_reference",
