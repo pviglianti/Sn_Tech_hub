@@ -19,6 +19,7 @@ Additionally, snow-flow's dependency analysis includes coupling, impact radius, 
 - New fields on `Feature` model: `change_risk_score`, `change_risk_level`
 - Integration as a high-weight signal (3.5) for feature grouping
 - Only operates on **customized** scan results (`origin_type` in `modified_ootb`, `net_new_customer`) for a given assessment scan
+- Dependency map visualization includes ALL artifacts (customized + non-customized) but visually distinguishes them; only customized artifacts participate in clustering/grouping
 
 ## 3. Data Model
 
@@ -90,17 +91,19 @@ class DependencyGraph:
 
 ### 4.2 Edge Sources
 
-Only two source tables, filtered to customized scan results for the assessment:
+Two source tables. The graph includes ALL scan results for the assessment (customized + non-customized) so the visualization shows the full dependency web. However, `customized_ids` tracks which nodes are customized, and only those participate in clustering/grouping.
 
 **CodeReference** → directional edges
 - source_scan_result_id → target_scan_result_id (outbound)
-- Both must be customized, OR target is non-customized (for shared_dependency detection)
+- Includes edges to/from non-customized artifacts (needed for visualization and shared_dependency detection)
 - Weight: 3.0
 
 **StructuralRelationship** → directional edges
 - parent_scan_result_id → child_scan_result_id
-- Both must be customized
+- Includes non-customized nodes for visualization completeness
 - Weight: 2.5
+
+**Clustering/grouping constraint:** Only customized nodes (`origin_type` in `modified_ootb`, `net_new_customer`) are included in cluster computation and feature grouping. Non-customized nodes appear in the graph and visualization but are excluded from clusters, transitive chain resolution, and scoring.
 
 ### 4.3 Shared Dependency Detection
 
@@ -284,7 +287,110 @@ The AI analysis and grouping stages can query:
 
 These inform feature creation, merging decisions, and disposition recommendations.
 
-## 7. Configuration
+## 7. Visualization
+
+### 7.1 Graph Rendering
+
+The dependency map view renders the full dependency graph including both customized and non-customized artifacts. This gives reviewers the complete picture of how dependencies flow, while making it immediately clear which artifacts are customizations vs OOTB.
+
+### 7.2 Node Styling
+
+**Customized artifacts** (modified_ootb, net_new_customer):
+- Solid fill, bold border
+- Color-coded by artifact type (script=blue, UI policy=green, table=orange, etc.)
+- These are the "actionable" nodes — the ones that get grouped into features
+
+**Non-customized artifacts** (OOTB, unmodified):
+- Light/muted fill, dashed border
+- Gray or light tone to visually recede
+- Labeled with a tag/badge like "OOTB" or "Unmodified"
+- Not clickable for disposition/review (read-only context)
+
+### 7.3 Edge Styling
+
+| Edge Type | Style | Label |
+|-----------|-------|-------|
+| code_reference (direct) | Solid arrow, thick | "calls" / "references" |
+| structural (parent→child) | Solid arrow, medium | "owns" |
+| transitive (multi-hop) | Dashed arrow, thin | "transitive (N hops)" |
+| shared_dependency | Dotted line, bidirectional | "shared dep: {identifier}" |
+
+### 7.4 Mermaid Diagram Generation
+
+Adapted from snow-flow's `generateMermaidDiagram` pattern:
+
+```
+graph TD
+  %% Customized nodes - solid, colored
+  A[Script Include: MyUtils]:::customized
+  B[Business Rule: ValidateIncident]:::customized
+  C[Client Script: FormHelper]:::customized
+
+  %% Non-customized nodes - muted, dashed
+  X[Script Include: GlideRecord]:::ootb
+  Y[Table: incident]:::ootb
+
+  %% Dependency edges
+  B -->|calls| A
+  C -.->|references| A
+  B -->|queries| Y
+  A -.->|shared dep| C
+
+  classDef customized fill:#4A90D9,stroke:#2C5F8A,stroke-width:3px,color:#fff;
+  classDef ootb fill:#E8E8E8,stroke:#999,stroke-width:1px,stroke-dasharray:5 5,color:#666;
+```
+
+### 7.5 Cluster Highlighting
+
+When viewing a specific dependency cluster:
+- Cluster members highlighted with a colored boundary/group box
+- Coupling score, impact radius, and change risk displayed as badges
+- Circular dependencies highlighted in red
+- Non-cluster artifacts shown but dimmed further
+
+### 7.6 Data Contract
+
+The visualization endpoint returns:
+
+```python
+{
+  "nodes": [
+    {
+      "id": int,                    # scan_result_id
+      "label": str,                 # artifact name
+      "table_name": str,            # sys_script_include, etc.
+      "origin_type": str,           # modified_ootb, net_new_customer, ootb, etc.
+      "is_customized": bool,        # convenience flag
+      "cluster_id": int | None,     # which dependency cluster, if any
+      "coupling_score": float | None
+    }
+  ],
+  "edges": [
+    {
+      "source": int,
+      "target": int,
+      "dependency_type": str,
+      "weight": float,
+      "criticality": str,
+      "hop_count": int,
+      "shared_via": str | None
+    }
+  ],
+  "clusters": [
+    {
+      "id": int,
+      "member_ids": List[int],
+      "coupling_score": float,
+      "impact_radius": str,
+      "change_risk_score": float,
+      "change_risk_level": str,
+      "circular_dependencies": List[List[int]]
+    }
+  ]
+}
+```
+
+## 8. Configuration
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
