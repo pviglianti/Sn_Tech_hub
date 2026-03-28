@@ -24,6 +24,7 @@ from src.models import (
     ScanType,
     StructuralRelationship,
 )
+from src.engines.dependency_mapper import run
 
 
 # ---------------------------------------------------------------------------
@@ -161,3 +162,143 @@ class TestDependencyModelsExist:
         db_session.add(cluster)
         db_session.flush()
         assert cluster.id is not None
+
+
+class TestDependencyMapperEngine:
+    """Integration tests for the dependency_mapper engine run() function."""
+
+    def test_basic_chain_persisted(self, db_session):
+        inst, asmt, scan = _setup_base(db_session)
+        a = _add_scan_result(db_session, scan, "ScriptA")
+        b = _add_scan_result(db_session, scan, "ScriptB")
+        _add_code_reference(db_session, inst, asmt, a, b)
+
+        result = run(asmt.id, db_session)
+
+        assert result["success"] is True
+        assert result["chains_created"] >= 1
+        assert result["errors"] == []
+
+        chains = list(db_session.exec(
+            select(DependencyChain).where(DependencyChain.assessment_id == asmt.id)
+        ).all())
+        assert len(chains) >= 1
+        direct = [c for c in chains if c.source_scan_result_id == a.id
+                  and c.target_scan_result_id == b.id]
+        assert len(direct) == 1
+        assert direct[0].hop_count == 1
+        assert direct[0].dependency_type == "code_reference"
+
+    def test_cluster_persisted(self, db_session):
+        inst, asmt, scan = _setup_base(db_session)
+        a = _add_scan_result(db_session, scan, "ScriptA")
+        b = _add_scan_result(db_session, scan, "ScriptB")
+        _add_code_reference(db_session, inst, asmt, a, b)
+
+        result = run(asmt.id, db_session)
+        assert result["clusters_created"] >= 1
+
+        clusters = list(db_session.exec(
+            select(DependencyCluster).where(DependencyCluster.assessment_id == asmt.id)
+        ).all())
+        assert len(clusters) >= 1
+        member_ids = json.loads(clusters[0].member_ids_json)
+        assert set(member_ids) == {a.id, b.id}
+
+    def test_idempotent(self, db_session):
+        inst, asmt, scan = _setup_base(db_session)
+        a = _add_scan_result(db_session, scan, "ScriptA")
+        b = _add_scan_result(db_session, scan, "ScriptB")
+        _add_code_reference(db_session, inst, asmt, a, b)
+
+        run(asmt.id, db_session)
+        result2 = run(asmt.id, db_session)
+
+        chains = list(db_session.exec(
+            select(DependencyChain).where(DependencyChain.assessment_id == asmt.id)
+        ).all())
+        clusters = list(db_session.exec(
+            select(DependencyCluster).where(DependencyCluster.assessment_id == asmt.id)
+        ).all())
+        assert result2["success"] is True
+        assert len(chains) == result2["chains_created"]
+        assert len(clusters) == result2["clusters_created"]
+
+    def test_only_customized_in_clusters(self, db_session):
+        inst, asmt, scan = _setup_base(db_session)
+        a = _add_scan_result(db_session, scan, "CustomA")
+        ootb = _add_scan_result(db_session, scan, "OOTB",
+                                origin_type=OriginType.ootb_untouched)
+        _add_code_reference(db_session, inst, asmt, a, ootb)
+
+        result = run(asmt.id, db_session)
+        assert result["clusters_created"] == 0
+
+    def test_assessment_not_found(self, db_session):
+        result = run(999999, db_session)
+        assert result["success"] is False
+        assert "Assessment not found" in result["errors"][0]
+
+    def test_no_scan_results(self, db_session):
+        inst, asmt, scan = _setup_base(db_session)
+        result = run(asmt.id, db_session)
+        assert result["success"] is True
+        assert result["chains_created"] == 0
+        assert result["clusters_created"] == 0
+
+    def test_transitive_chain_persisted(self, db_session):
+        inst, asmt, scan = _setup_base(db_session)
+        a = _add_scan_result(db_session, scan, "A")
+        b = _add_scan_result(db_session, scan, "B")
+        node_c = _add_scan_result(db_session, scan, "C")
+        _add_code_reference(db_session, inst, asmt, a, b)
+        _add_code_reference(db_session, inst, asmt, b, node_c)
+
+        result = run(asmt.id, db_session)
+
+        chains = list(db_session.exec(
+            select(DependencyChain).where(
+                DependencyChain.assessment_id == asmt.id,
+                DependencyChain.dependency_type == "transitive",
+            )
+        ).all())
+        a_to_c = [ch for ch in chains
+                   if ch.source_scan_result_id == a.id
+                   and ch.target_scan_result_id == node_c.id]
+        assert len(a_to_c) == 1
+        assert a_to_c[0].hop_count == 2
+
+    def test_circular_detected_in_cluster(self, db_session):
+        inst, asmt, scan = _setup_base(db_session)
+        a = _add_scan_result(db_session, scan, "A")
+        b = _add_scan_result(db_session, scan, "B")
+        _add_code_reference(db_session, inst, asmt, a, b)
+        _add_code_reference(db_session, inst, asmt, b, a)
+
+        result = run(asmt.id, db_session)
+
+        clusters = list(db_session.exec(
+            select(DependencyCluster).where(DependencyCluster.assessment_id == asmt.id)
+        ).all())
+        assert len(clusters) == 1
+        circulars = json.loads(clusters[0].circular_dependencies_json)
+        assert len(circulars) >= 1
+
+    def test_shared_dependency_chain(self, db_session):
+        inst, asmt, scan = _setup_base(db_session)
+        a = _add_scan_result(db_session, scan, "CustomA")
+        b = _add_scan_result(db_session, scan, "CustomB")
+        ootb = _add_scan_result(db_session, scan, "SharedOOTB",
+                                origin_type=OriginType.ootb_untouched)
+        _add_code_reference(db_session, inst, asmt, a, ootb)
+        _add_code_reference(db_session, inst, asmt, b, ootb)
+
+        result = run(asmt.id, db_session)
+
+        assert result["clusters_created"] >= 1
+        clusters = list(db_session.exec(
+            select(DependencyCluster).where(DependencyCluster.assessment_id == asmt.id)
+        ).all())
+        member_ids = json.loads(clusters[0].member_ids_json)
+        assert a.id in member_ids
+        assert b.id in member_ids
