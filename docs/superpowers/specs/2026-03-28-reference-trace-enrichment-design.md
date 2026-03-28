@@ -178,7 +178,60 @@ class ScanType(str, Enum):
     enrichment = "enrichment"
 ```
 
-## 9. Testing Strategy
+## 9. AI Prompt & Context Updates
+
+The AI analysis stages need to be aware of enrichment-discovered artifacts. Several prompts and context builders must be updated:
+
+### 9.1 Artifact Analyzer Prompt (`src/mcp/prompts/artifact_analyzer.py`)
+
+The handler's context injection should include:
+- **Enrichment source indicator:** When the artifact came from an enrichment scan, note it: "This artifact was discovered via reference tracing from in-scope artifacts. It was not part of the original scan scope."
+- **Referencing artifacts:** List which in-scope artifacts referenced this table/artifact (the code references that triggered the trace). This tells the AI *why* this artifact matters.
+- **Pre-set adjacency context:** If `is_adjacent=True` is already set (from enrichment), the prompt should tell the AI: "This artifact is pre-flagged as adjacent (discovered via dependency tracing). Confirm or override this classification based on your analysis."
+
+### 9.2 Observation Prompts (`src/mcp/prompts/observation_prompt.py`)
+
+The artifact observation reviewer should know:
+- Enrichment-discovered artifacts may reference tables the AI hasn't seen in the main scan
+- When writing observations for adjacent artifacts, note the dependency chain: "This artifact was discovered because [in-scope artifact X] references table [Y]"
+
+### 9.3 Depth-First Analyzer (`src/services/depth_first_analyzer.py`)
+
+When gathering context for an artifact from an enrichment scan:
+- Include the enrichment source in the context (which original artifacts triggered the discovery)
+- Enrichment artifacts should be traversed during DFS but with awareness they're adjacent scope
+
+### 9.4 AI Analysis Dispatch (`src/services/ai_analysis_dispatch.py`)
+
+The fallback guidance and batch prompts should include:
+- A section listing enrichment-discovered tables and artifact counts
+- Instruction: "Artifacts from enrichment scans are pre-flagged as `is_adjacent=True`. They were discovered because in-scope customizations reference their tables. Assess whether the adjacency flag is correct — some may warrant promotion to in-scope if they are tightly coupled to in-scope features."
+
+### 9.5 Enrichment Summary in ScanResult Context
+
+Store enrichment provenance in the `ai_observations` JSON of discovered artifacts:
+```json
+{
+  "enrichment_source": {
+    "discovered_via": "reference_trace",
+    "referenced_by": [
+      {"scan_result_id": 123, "name": "Incident Auto Route", "reference_type": "table_query"}
+    ],
+    "discovered_table": "contract_sla",
+    "enrichment_scan_id": 42
+  }
+}
+```
+
+This gives every downstream AI stage the provenance chain — they can see exactly why this artifact was pulled in and which in-scope artifacts depend on it.
+
+### 9.6 Report Writer (`src/mcp/prompts/report_writer.py`)
+
+The report context handler should:
+- Include a section on enrichment discoveries: how many tables were traced, how many artifacts discovered
+- Adjacent artifacts should appear in the report with a note: "Discovered via dependency tracing — not in original assessment scope but referenced by in-scope customizations"
+
+## 10. Testing Strategy
 
 - Unit tests for regex reference parsing (each pattern type with positive/negative cases)
 - Unit tests for table filtering logic (in-scope removal, exclusion list, deduplication)
