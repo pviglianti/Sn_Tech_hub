@@ -16,6 +16,8 @@ from src.models import (
     CodeReference,
     DependencyChain,
     DependencyCluster,
+    Feature,
+    FeatureScanResult,
     Instance,
     OriginType,
     Scan,
@@ -302,3 +304,27 @@ class TestDependencyMapperEngine:
         member_ids = json.loads(clusters[0].member_ids_json)
         assert a.id in member_ids
         assert b.id in member_ids
+
+    def test_change_risk_propagates_to_feature(self, db_session):
+        inst, asmt, scan = _setup_base(db_session)
+        a = _add_scan_result(db_session, scan, "ScriptA", table_name="sys_script")
+        b = _add_scan_result(db_session, scan, "ScriptB", table_name="sys_script_include")
+        _add_code_reference(db_session, inst, asmt, a, b)
+
+        feature = Feature(
+            assessment_id=asmt.id,
+            name="Working Feature 01",
+        )
+        db_session.add(feature)
+        db_session.flush()
+
+        db_session.add(FeatureScanResult(feature_id=feature.id, scan_result_id=a.id))
+        db_session.commit()
+
+        result = run(asmt.id, db_session)
+
+        db_session.refresh(feature)
+
+        assert result["success"] is True
+        assert feature.change_risk_score is not None
+        assert feature.change_risk_level in {"low", "medium", "high", "critical"}

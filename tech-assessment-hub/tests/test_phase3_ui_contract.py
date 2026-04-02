@@ -283,6 +283,30 @@ def test_hierarchy_summary_object_matches_ui_component(ui_contract_ctx):
     assert summary["customized_member_count"] >= 1
 
 
+def test_hierarchy_summary_exposes_bucket_and_provisional_counts(ui_contract_ctx):
+    payload = _build_feature_hierarchy_payload(
+        ui_contract_ctx.session,
+        assessment_id=ui_contract_ctx.assessment.id,
+    )
+
+    summary = payload["summary"]
+    for key in ("bucket_feature_count", "provisional_feature_count"):
+        assert key in summary, f"summary missing '{key}'"
+        assert isinstance(summary[key], int), f"summary['{key}'] should be int"
+
+
+def test_hierarchy_feature_nodes_expose_feature_metadata(ui_contract_ctx):
+    payload = _build_feature_hierarchy_payload(
+        ui_contract_ctx.session,
+        assessment_id=ui_contract_ctx.assessment.id,
+    )
+
+    assert payload["features"], "Expected at least one feature"
+    feature = payload["features"][0]
+    for key in ("feature_kind", "composition_type", "name_status", "bucket_key"):
+        assert key in feature, f"feature missing '{key}'"
+
+
 def test_hierarchy_member_rows_have_nested_scan_result(ui_contract_ctx):
     """
     FeatureHierarchyTree._renderMemberRow reads member.scan_result.id,
@@ -311,7 +335,7 @@ def test_hierarchy_member_rows_have_nested_scan_result(ui_contract_ctx):
     # Nested scan_result object
     assert "scan_result" in member
     sr = member["scan_result"]
-    for key in ("id", "name", "table_name", "origin_type", "is_customized"):
+    for key in ("id", "name", "table_name", "origin_type", "is_customized", "is_adjacent"):
         assert key in sr, f"member.scan_result missing '{key}'"
 
     # Top-level assignment fields

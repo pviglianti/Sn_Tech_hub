@@ -80,6 +80,11 @@ def test_update_result_tool_updates_existing_customization_row(db_session):
         "review_status": "reviewed",
         "disposition": "keep_and_refactor",
         "observations": "Updated from MCP tool",
+        "ai_observations": {
+            "analysis_stage": "ai_analysis",
+            "scope_decision": "adjacent",
+            "directly_related_result_ids": [999],
+        },
         "recommendation": "Refactor and modularize",
     }
     response = handle(payload, db_session)
@@ -94,6 +99,11 @@ def test_update_result_tool_updates_existing_customization_row(db_session):
     assert customization.disposition == Disposition.keep_and_refactor
     assert customization.observations == "Updated from MCP tool"
     assert customization.recommendation == "Refactor and modularize"
+
+    refreshed = db_session.get(ScanResult, result_id)
+    assert refreshed is not None
+    assert refreshed.ai_observations is not None
+    assert "\"scope_decision\": \"adjacent\"" in refreshed.ai_observations
 
 
 def test_update_result_tool_backfills_missing_customization_row(db_session):

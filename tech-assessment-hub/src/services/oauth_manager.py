@@ -75,7 +75,9 @@ class OAuthTokenManager:
             except OAuthError:
                 logger.warning("OAuth refresh failed, falling back to full auth")
 
-        # Full password grant
+        # Use client_credentials if no password, otherwise password grant
+        if not self.password:
+            return self._client_credentials_grant()
         return self._password_grant()
 
     def _password_grant(self) -> str:
@@ -86,6 +88,15 @@ class OAuthTokenManager:
             "client_secret": self.client_secret,
             "username": self.username,
             "password": self.password,
+        }
+        return self._exchange_token(data)
+
+    def _client_credentials_grant(self) -> str:
+        """Exchange client_id + client_secret for an access token (no user password needed)."""
+        data = {
+            "grant_type": "client_credentials",
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
         }
         return self._exchange_token(data)
 

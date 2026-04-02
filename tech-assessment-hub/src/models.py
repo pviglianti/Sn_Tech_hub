@@ -339,6 +339,9 @@ class GlobalApp(SQLModel, table=True):
     # Keywords for 123TEXTQUERY321 search
     keywords_json: Optional[str] = None  # ["incident", "inc"]
 
+    # Table prefix patterns for broadened scope matching (e.g., ["cmdb_", "sp_"])
+    table_prefixes_json: Optional[str] = None
+
     is_active: bool = True
     display_order: int = 0
 
@@ -370,6 +373,83 @@ class AppFileClass(SQLModel, table=True):
     is_important: bool = True  # User can toggle
     display_order: int = 0
     is_active: bool = True
+
+
+# ============================================
+# TABLE: AppFileClassQuery (Query patterns per file class)
+# ============================================
+
+class AppFileClassQuery(SQLModel, table=True):
+    """Query patterns for scanning a specific application file class.
+
+    Each AppFileClass can have multiple query patterns (e.g., a table-based
+    pattern AND a keyword pattern).  If no queries are defined for a class,
+    the scan engine falls back to a default metadata query:
+    ``sys_class_name={class}^123TEXTQUERY321={keyword}``
+    """
+    __tablename__ = "app_file_class_query"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    app_file_class_id: int = Field(foreign_key="app_file_class.id", index=True)
+
+    # "table_pattern", "keyword_pattern", or "text_search"
+    query_type: str
+
+    # Encoded query template with {table}, {keyword}, {base} placeholders
+    pattern: str
+
+    # The SN metadata ref field used for artifact detail pulls
+    # e.g., "ref_sys_script.collection"
+    target_table_field: Optional[str] = None
+
+    description: Optional[str] = None
+    is_active: bool = True
+    display_order: int = 0
+
+
+# ============================================
+# TABLE: AssessmentTypeConfig (Assessment type definitions)
+# ============================================
+
+class AssessmentTypeConfig(SQLModel, table=True):
+    """Configuration for each assessment type (global_app, table, plugin, etc.).
+
+    Replaces the ``assessment_types`` section of scan_rules.yaml.
+    """
+    __tablename__ = "assessment_type_config"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(unique=True, index=True)  # global_app, table, plugin, platform_global
+    label: str
+    description: Optional[str] = None
+
+    # JSON arrays
+    required_fields_json: str  # e.g. ["target_app_id", "app_file_classes_json"]
+    default_scans_json: str    # e.g. ["metadata_index"]
+    scope_options_json: str    # e.g. ["all", "global"]
+    drivers_json: str          # e.g. ["core_tables", "keywords"]
+
+    is_active: bool = True
+    display_order: int = 0
+
+
+# ============================================
+# TABLE: ScanKindConfig (Scan kind definitions)
+# ============================================
+
+class ScanKindConfig(SQLModel, table=True):
+    """Configuration for each scan kind (metadata_index, update_xml, etc.).
+
+    Replaces the ``scan_kinds`` section of scan_rules.yaml.
+    """
+    __tablename__ = "scan_kind_config"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(unique=True, index=True)  # metadata_index, update_xml, etc.
+    target_table: str  # sys_metadata, sys_update_xml, etc.
+    description: Optional[str] = None
+    is_active: bool = True
+    display_order: int = 0
 
 
 # ============================================
@@ -623,6 +703,10 @@ class Feature(SQLModel, table=True):
 
     name: str
     description: Optional[str] = None
+    feature_kind: str = "functional"  # functional | bucket
+    composition_type: Optional[str] = None  # direct | adjacent | mixed
+    name_status: str = "provisional"  # provisional | final | human_locked
+    bucket_key: Optional[str] = None
 
     # Parent feature (for hierarchical grouping)
     parent_id: Optional[int] = Field(default=None, foreign_key="feature.id")

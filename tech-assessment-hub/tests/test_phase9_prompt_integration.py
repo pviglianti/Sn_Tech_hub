@@ -21,6 +21,7 @@ from src.models import (
     ScanType,
 )
 from src.services.integration_properties import PipelinePromptProperties
+from src.services.ai_feature_dispatch import AIFeatureStageSummary
 
 
 def _seed_base_assessment(
@@ -65,6 +66,7 @@ def _seed_refinement_feature_with_members(db_session, *, asmt: Assessment, scan:
         assessment_id=asmt.id,
         name="Prompt Feature",
         description="feature for prompt integration test",
+        name_status="final",
     )
     db_session.add(feature)
     db_session.flush()
@@ -92,6 +94,27 @@ def _seed_refinement_feature_with_members(db_session, *, asmt: Assessment, scan:
         )
     db_session.commit()
     return feature, members
+
+
+def _mock_feature_dispatch_summary(
+    *,
+    stage="ai_refinement",
+    pass_count=2,
+    feature_count=1,
+    assigned_count=5,
+    unassigned_count=0,
+    provisional_feature_count=0,
+    run_id=501,
+):
+    return AIFeatureStageSummary(
+        stage=stage,
+        pass_count=pass_count,
+        feature_count=feature_count,
+        assigned_count=assigned_count,
+        unassigned_count=unassigned_count,
+        provisional_feature_count=provisional_feature_count,
+        run_id=run_id,
+    )
 
 
 def test_ai_analysis_uses_registered_prompt_when_enabled(db_session, db_engine):
@@ -172,6 +195,10 @@ def test_ai_refinement_uses_registered_prompts_when_enabled(db_session, db_engin
         patch("src.server._set_assessment_pipeline_job_state"), \
         patch("src.server._set_assessment_pipeline_stage"), \
         patch(
+            "src.server.run_ai_feature_stage_dispatch",
+            return_value=_mock_feature_dispatch_summary(),
+        ), \
+        patch(
             "src.server.load_pipeline_prompt_properties",
             return_value=PipelinePromptProperties(use_registered_prompts=True),
         ), \
@@ -217,6 +244,10 @@ def test_ai_refinement_skips_registered_prompts_when_disabled(db_session, db_eng
     with patch("src.server.engine", db_engine), \
         patch("src.server._set_assessment_pipeline_job_state"), \
         patch("src.server._set_assessment_pipeline_stage"), \
+        patch(
+            "src.server.run_ai_feature_stage_dispatch",
+            return_value=_mock_feature_dispatch_summary(),
+        ), \
         patch(
             "src.server.load_pipeline_prompt_properties",
             return_value=PipelinePromptProperties(use_registered_prompts=False),
@@ -266,6 +297,10 @@ def test_ai_refinement_records_prompt_errors_when_not_registered(db_session, db_
         patch("src.server._set_assessment_pipeline_job_state"), \
         patch("src.server._set_assessment_pipeline_stage"), \
         patch(
+            "src.server.run_ai_feature_stage_dispatch",
+            return_value=_mock_feature_dispatch_summary(),
+        ), \
+        patch(
             "src.server.load_pipeline_prompt_properties",
             return_value=PipelinePromptProperties(use_registered_prompts=True),
         ), \
@@ -300,13 +335,29 @@ def test_report_stage_uses_registered_prompt_when_enabled(db_session, db_engine)
         stage=PipelineStage.report.value,
         number="ASMTP90013",
     )
+    feature = Feature(
+        assessment_id=asmt.id,
+        name="Prompt Report Feature",
+        description="Finalized feature for report prompt integration test",
+        name_status="final",
+    )
+    db_session.add(feature)
+    db_session.flush()
+    result = ScanResult(
+        scan_id=scan.id,
+        sys_id="prompt_report_sr_1",
+        table_name="sys_script_include",
+        name="Report Artifact",
+        origin_type=OriginType.modified_ootb,
+    )
+    db_session.add(result)
+    db_session.flush()
     db_session.add(
-        ScanResult(
-            scan_id=scan.id,
-            sys_id="prompt_report_sr_1",
-            table_name="sys_script_include",
-            name="Report Artifact",
-            origin_type=OriginType.modified_ootb,
+        FeatureScanResult(
+            feature_id=feature.id,
+            scan_result_id=result.id,
+            assignment_source="ai",
+            is_primary=True,
         )
     )
     db_session.commit()

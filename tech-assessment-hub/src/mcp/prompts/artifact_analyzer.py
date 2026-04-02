@@ -42,6 +42,12 @@ Make a quick scope determination:
 the assessment and may be grouped into features — they just interact with the \
 assessed app indirectly rather than sitting directly on its tables/forms.
 
+**Important adjacency rule:** `adjacent` is for table-bound artifacts that sit \
+outside the direct target tables/forms but still support them. Tableless artifacts \
+such as `sys_script_include` are **not** adjacent by default. Judge them by what \
+they do: if they materially implement the target application's behavior, they are \
+`in_scope`; if they do not, they are `out_of_scope`.
+
 Scope decisions are preliminary — they may be revised in later stages as
 more context is uncovered. Set ``review_status`` to ``review_in_progress``.
 
@@ -127,9 +133,20 @@ property:
 Check the property before querying. Use live queries sparingly — they are for \
 filling specific gaps, not routine analysis.
 
+## ServiceNow Product Context (when needed)
+
+If scope is ambiguous because the artifact sits on an adjacent table or uses
+product-specific terminology, you may use ``search_servicenow_docs`` and then
+``fetch_web_document`` to confirm how the target ServiceNow application works.
+Use this only to contextualize scope. The assessment's configured target
+application/tables remain the scope anchor.
+
 ## Rules
 
 - **Scope first** — decide scope before writing the functional summary.
+- **Use adjacency narrowly** — reserve `adjacent` for in-scope artifacts on other \
+  tables/forms that interact with the target app. Do not mark tableless artifacts \
+  like script includes as adjacent just because they support the target app.
 - **Describe function, not metadata** — what it does, not where it came from.
 - **Call out connections** — name other customized artifacts in this assessment
   that this artifact references, calls, or is related to.
@@ -140,7 +157,15 @@ filling specific gaps, not routine analysis.
 - **Do NOT set severity or category** — just describe function.
 - Set ``review_status`` to ``review_in_progress`` (never ``reviewed``).
 - Use ``update_scan_result`` to write back scope flags (``is_out_of_scope``,
-  ``is_adjacent``) and the functional observation.
+  ``is_adjacent``), the functional observation, and a structured
+  ``ai_observations`` JSON object with:
+  - ``analysis_stage`` = ``ai_analysis``
+  - ``scope_decision`` = ``in_scope`` | ``adjacent`` | ``out_of_scope`` | ``needs_review``
+  - ``scope_rationale`` = brief explanation
+  - ``directly_related_result_ids`` = customized ScanResult IDs that are
+    functionally tied to this artifact and should inform feature grouping
+  - ``directly_related_artifacts`` = optional list of objects with ``result_id``,
+    ``name``, and ``relationship``
 """
 
 

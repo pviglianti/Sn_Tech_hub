@@ -8,18 +8,14 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
 
-from sqlmodel import Session, select, func
+from sqlmodel import Session, select
 
 from ...registry import ToolSpec
 from ....models import (
     Assessment,
-    Feature,
     FeatureGroupingRun,
-    FeatureScanResult,
-    OriginType,
-    Scan,
-    ScanResult,
 )
+from ....services.feature_governance import build_feature_assignment_summary
 
 
 INPUT_SCHEMA: Dict[str, Any] = {
@@ -37,13 +33,6 @@ INPUT_SCHEMA: Dict[str, Any] = {
     },
 }
 
-
-_CUSTOMIZED_ORIGIN_VALUES = {
-    OriginType.modified_ootb.value,
-    OriginType.net_new_customer.value,
-}
-
-
 def _parse_summary(value: Optional[str]) -> Dict[str, Any]:
     if not value:
         return {}
@@ -52,51 +41,6 @@ def _parse_summary(value: Optional[str]) -> Dict[str, Any]:
         return parsed if isinstance(parsed, dict) else {}
     except Exception:
         return {}
-
-
-def _coverage_summary(session: Session, assessment_id: int) -> Dict[str, Any]:
-    customized_total = int(
-        session.exec(
-            select(func.count())
-            .select_from(ScanResult)
-            .join(Scan, ScanResult.scan_id == Scan.id)
-            .where(Scan.assessment_id == assessment_id)
-            .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
-        ).one()
-        or 0
-    )
-
-    feature_ids = session.exec(
-        select(Feature.id).where(Feature.assessment_id == assessment_id)
-    ).all()
-    feature_ids = [fid for fid in feature_ids if fid is not None]
-    if not feature_ids:
-        return {
-            "customized_total": customized_total,
-            "assigned_customized": 0,
-            "coverage_ratio": 0.0 if customized_total else 1.0,
-            "feature_count": 0,
-        }
-
-    assigned_customized = int(
-        session.exec(
-            select(func.count(func.distinct(FeatureScanResult.scan_result_id)))
-            .select_from(FeatureScanResult)
-            .join(ScanResult, FeatureScanResult.scan_result_id == ScanResult.id)
-            .where(FeatureScanResult.feature_id.in_(feature_ids))
-            .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
-        ).one()
-        or 0
-    )
-
-    coverage_ratio = assigned_customized / max(1, customized_total) if customized_total else 1.0
-    return {
-        "customized_total": customized_total,
-        "assigned_customized": assigned_customized,
-        "coverage_ratio": round(coverage_ratio, 6),
-        "feature_count": len(feature_ids),
-    }
-
 
 def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
     run_id = params.get("run_id")
@@ -121,7 +65,26 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
             .limit(1)
         ).first()
 
-    coverage = _coverage_summary(session, int(assessment_id))
+    assignment_summary = build_feature_assignment_summary(session, assessment_id=int(assessment_id))
+    resolved_total = int(assignment_summary.get("resolved_count") or 0)
+    in_scope_total = int(assignment_summary.get("in_scope_customized_total") or 0)
+    coverage_ratio = resolved_total / max(1, in_scope_total) if in_scope_total else 1.0
+    coverage = {
+        "customized_total": in_scope_total,
+        "assigned_customized": int(assignment_summary.get("assigned_count") or 0),
+        "resolved_customized": resolved_total,
+        "human_standalone_count": int(assignment_summary.get("human_standalone_count") or 0),
+        "coverage_ratio": round(coverage_ratio, 6),
+        "feature_count": int(assignment_summary.get("feature_count") or 0),
+        "bucket_feature_count": int(assignment_summary.get("bucket_feature_count") or 0),
+        "provisional_feature_count": int(assignment_summary.get("provisional_feature_count") or 0),
+        "all_in_scope_assigned": bool(assignment_summary.get("all_in_scope_assigned")),
+        "manual_override_ready": bool(assignment_summary.get("manual_override_ready")),
+        "unassigned_result_ids": list(assignment_summary.get("unassigned_result_ids") or []),
+        "unassigned_results": list(assignment_summary.get("unassigned_results") or []),
+        "blocking_reason": assignment_summary.get("blocking_reason"),
+        "composition_counts": dict(assignment_summary.get("composition_counts") or {}),
+    }
     if not run:
         return {
             "success": True,
@@ -158,4 +121,3 @@ TOOL_SPEC = ToolSpec(
     handler=handle,
     permission="read",
 )
-

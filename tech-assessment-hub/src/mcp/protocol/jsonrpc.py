@@ -52,6 +52,11 @@ def _handle_tools_call(
     except Exception as exc:
         return make_error(request_id, -32000, "Tool execution failed", {"error": str(exc)})
 
+    if execution.success and isinstance(execution.content, dict):
+        content_items = execution.content.get("content")
+        if isinstance(content_items, list):
+            return make_result(request_id, execution.content)
+
     json_payload = execution.content if execution.success else {
         **execution.content,
         "success": False,

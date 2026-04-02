@@ -59,7 +59,7 @@ def _code_ref_criticality(reference_type: str) -> str:
 
 
 def _structural_criticality(relationship_type: str) -> str:
-    if relationship_type in ("ui_policy_action", "dictionary_entry"):
+    if relationship_type in ("ui_policy_action", "ui_policy_field", "dictionary_entry"):
         return "high"
     if relationship_type == "dictionary_override":
         return "low"

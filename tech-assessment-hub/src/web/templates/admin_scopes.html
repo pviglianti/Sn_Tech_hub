@@ -1,0 +1,330 @@
+{% extends "base.html" %}
+
+{% block title %}Scan Scopes - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Scan Scopes</h1>
+    <div class="button-group">
+        <button type="button" class="btn btn-secondary" id="scReloadBtn" title="Reload scopes from the server">Reload</button>
+        <button type="button" class="btn btn-primary" id="scNewBtn" title="Start a new scope entry">New Scope</button>
+    </div>
+</div>
+
+<div class="card">
+    <p class="text-muted-plain mb-0">
+        Define global application scopes (e.g., Incident Mgmt, Change Mgmt) for assessment targeting.
+        Each scope maps to core tables, keywords, and table prefixes used to discover customizations.
+    </p>
+</div>
+
+<div class="sc-layout mt-1">
+    <div class="card">
+        <h2>Scopes</h2>
+        <p class="text-muted-plain mb-1">
+            Check one row to edit. Use column picker to show any stored field.
+        </p>
+        <div id="scopeTableContainer"></div>
+    </div>
+    <div class="card">
+        <h2 id="scEditorTitle">New Scope</h2>
+        <form id="scEditorForm">
+            <input type="hidden" id="scId" value="">
+            <div class="form-group">
+                <label for="scName">Name</label>
+                <input type="text" id="scName" placeholder="e.g. incident" required>
+                <small>Unique identifier for this scope.</small>
+            </div>
+            <div class="form-group">
+                <label for="scLabel">Label</label>
+                <input type="text" id="scLabel" placeholder="e.g. Incident Management" required>
+            </div>
+            <div class="form-group">
+                <label for="scDescription">Description</label>
+                <textarea id="scDescription" rows="2" placeholder="What this scope covers"></textarea>
+            </div>
+            <div class="form-group">
+                <label for="scCoreTables">Core Tables</label>
+                <textarea id="scCoreTables" rows="3" placeholder="One per line, e.g. incident"></textarea>
+                <small>Tables central to this scope.</small>
+            </div>
+            <div class="form-group">
+                <label for="scKeywords">Keywords</label>
+                <textarea id="scKeywords" rows="3" placeholder="One per line, e.g. incident, inc"></textarea>
+                <small>Terms used to match artifacts to this scope.</small>
+            </div>
+            <div class="form-group">
+                <label for="scTablePrefixes">Table Prefixes</label>
+                <textarea id="scTablePrefixes" rows="2" placeholder="One per line, e.g. cmdb_"></textarea>
+                <small>Prefixes that indicate tables belong to this scope.</small>
+            </div>
+            <div class="form-group">
+                <label for="scPlugins">Plugins</label>
+                <textarea id="scPlugins" rows="2" placeholder="One per line"></textarea>
+                <small>ServiceNow plugins associated with this scope.</small>
+            </div>
+            <div class="form-group">
+                <label for="scParentTable">Parent Table</label>
+                <input type="text" id="scParentTable" placeholder="e.g. task">
+            </div>
+            <div class="form-group">
+                <label for="scDisplayOrder">Display Order</label>
+                <input type="number" id="scDisplayOrder" value="100">
+            </div>
+            <div class="form-group mb-0">
+                <label>
+                    <input type="checkbox" id="scIsActive" checked>
+                    Active
+                </label>
+            </div>
+            <div class="button-group mt-1">
+                <button type="submit" class="btn btn-primary" id="scSaveBtn">Save</button>
+                <button type="button" class="btn btn-secondary" id="scToggleActiveBtn">Deactivate</button>
+                <button type="button" class="btn btn-secondary" id="scClearFormBtn">Clear</button>
+            </div>
+        </form>
+        <pre id="scEditorStatus" class="code-block mt-1">Ready.</pre>
+    </div>
+</div>
+
+<style>
+.sc-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(360px, 1fr);
+    gap: 1rem;
+    align-items: start;
+}
+
+@media (max-width: 1280px) {
+    .sc-layout {
+        grid-template-columns: 1fr;
+    }
+}
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/ConditionBuilder.js?v={{ static_version }}"></script>
+<script src="/static/js/ColumnPicker.js?v={{ static_version }}"></script>
+<script src="/static/js/DataTable.js?v={{ static_version }}"></script>
+<script>
+(function () {
+    var container = document.getElementById('scopeTableContainer');
+    if (!container || !window.DataTable) {
+        return;
+    }
+
+    var editorForm = document.getElementById('scEditorForm');
+    var editorStatus = document.getElementById('scEditorStatus');
+    var editorTitle = document.getElementById('scEditorTitle');
+
+    function setStatus(text, isError) {
+        if (!editorStatus) return;
+        editorStatus.textContent = String(text || '');
+        editorStatus.style.color = isError ? 'var(--danger-color)' : 'var(--text-color)';
+    }
+
+    function jsonArrayToLines(jsonStr) {
+        if (!jsonStr) return '';
+        try {
+            var arr = JSON.parse(jsonStr);
+            if (Array.isArray(arr)) {
+                return arr.join('\n');
+            }
+        } catch (e) {
+            // fall through
+        }
+        return String(jsonStr);
+    }
+
+    function linesToJsonArray(text) {
+        var raw = String(text || '');
+        var items = raw.split('\n')
+            .map(function (line) { return line.trim(); })
+            .filter(function (line) { return line.length > 0; });
+        if (items.length === 0) return null;
+        return JSON.stringify(items);
+    }
+
+    function resetForm() {
+        document.getElementById('scId').value = '';
+        document.getElementById('scName').value = '';
+        document.getElementById('scName').disabled = false;
+        document.getElementById('scLabel').value = '';
+        document.getElementById('scDescription').value = '';
+        document.getElementById('scCoreTables').value = '';
+        document.getElementById('scKeywords').value = '';
+        document.getElementById('scTablePrefixes').value = '';
+        document.getElementById('scPlugins').value = '';
+        document.getElementById('scParentTable').value = '';
+        document.getElementById('scDisplayOrder').value = '100';
+        document.getElementById('scIsActive').checked = true;
+        editorTitle.textContent = 'New Scope';
+        document.getElementById('scSaveBtn').textContent = 'Create';
+        document.getElementById('scToggleActiveBtn').disabled = true;
+    }
+
+    function loadRowIntoForm(row) {
+        if (!row) return;
+        document.getElementById('scId').value = row.id || '';
+        document.getElementById('scName').value = row.name || '';
+        document.getElementById('scName').disabled = true;
+        document.getElementById('scLabel').value = row.label || '';
+        document.getElementById('scDescription').value = row.description || '';
+        document.getElementById('scCoreTables').value = jsonArrayToLines(row.core_tables);
+        document.getElementById('scKeywords').value = jsonArrayToLines(row.keywords);
+        document.getElementById('scTablePrefixes').value = jsonArrayToLines(row.table_prefixes);
+        document.getElementById('scPlugins').value = jsonArrayToLines(row.plugins);
+        document.getElementById('scParentTable').value = row.parent_table || '';
+        document.getElementById('scDisplayOrder').value = row.display_order != null ? row.display_order : '100';
+        document.getElementById('scIsActive').checked = !!row.is_active;
+        editorTitle.textContent = 'Edit: ' + (row.name || row.id);
+        document.getElementById('scSaveBtn').textContent = 'Save';
+        document.getElementById('scToggleActiveBtn').disabled = false;
+        document.getElementById('scToggleActiveBtn').textContent = row.is_active ? 'Deactivate' : 'Activate';
+    }
+
+    function payloadFromForm() {
+        return {
+            name: String(document.getElementById('scName').value || '').trim(),
+            label: String(document.getElementById('scLabel').value || '').trim(),
+            description: String(document.getElementById('scDescription').value || '').trim() || null,
+            core_tables: linesToJsonArray(document.getElementById('scCoreTables').value),
+            keywords: linesToJsonArray(document.getElementById('scKeywords').value),
+            table_prefixes: linesToJsonArray(document.getElementById('scTablePrefixes').value),
+            plugins: linesToJsonArray(document.getElementById('scPlugins').value),
+            parent_table: String(document.getElementById('scParentTable').value || '').trim() || null,
+            display_order: parseInt(document.getElementById('scDisplayOrder').value || '100', 10),
+            is_active: !!document.getElementById('scIsActive').checked,
+        };
+    }
+
+    resetForm();
+
+    var dt = new window.DataTable(container, {
+        dataUrl: '/api/scan-config/scopes/records',
+        schemaUrl: '/api/scan-config/scopes/field-schema',
+        instanceId: 0,
+        tableName: 'global_app',
+        pageSize: 50,
+        storageKey: 'dt_scope_admin_v1',
+        includeTableAndInstanceParams: false,
+        selectable: true,
+        rowIdField: 'id',
+        onSelectionChange: function (selectedRows) {
+            if (selectedRows.length === 1) {
+                loadRowIntoForm(selectedRows[0]);
+                setStatus('Loaded selected scope for editing.', false);
+                return;
+            }
+            if (selectedRows.length > 1) {
+                setStatus('Multiple rows selected. Select one row to edit.', true);
+                return;
+            }
+            resetForm();
+            setStatus('Ready.', false);
+        },
+        customRenderers: {
+            is_active: function (value, row, td) {
+                var span = document.createElement('span');
+                span.className = 'status-badge ' + (value ? 'status-connected' : 'status-draft');
+                span.textContent = value ? 'active' : 'inactive';
+                td.appendChild(span);
+            }
+        }
+    });
+
+    document.getElementById('scReloadBtn').addEventListener('click', function () {
+        dt.refresh().catch(function (err) {
+            setStatus(err.message, true);
+        });
+    });
+
+    document.getElementById('scNewBtn').addEventListener('click', function () {
+        dt.clearSelection();
+        resetForm();
+        setStatus('New scope form ready.', false);
+    });
+
+    document.getElementById('scClearFormBtn').addEventListener('click', function () {
+        dt.clearSelection();
+        resetForm();
+        setStatus('Form cleared.', false);
+    });
+
+    document.getElementById('scToggleActiveBtn').addEventListener('click', async function () {
+        var idValue = parseInt(document.getElementById('scId').value || '0', 10);
+        if (!idValue) {
+            setStatus('Select an existing scope before toggling active state.', true);
+            return;
+        }
+        var nextActive = !document.getElementById('scIsActive').checked;
+        try {
+            var res = await fetch('/api/scan-config/scopes/' + encodeURIComponent(idValue), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ is_active: nextActive }),
+            });
+            if (!res.ok) {
+                throw new Error('Toggle failed: ' + res.status);
+            }
+            document.getElementById('scIsActive').checked = nextActive;
+            setStatus('Scope active state updated.', false);
+            await dt.refresh();
+        } catch (err) {
+            setStatus(err.message, true);
+        }
+    });
+
+    editorForm.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        var idValue = parseInt(document.getElementById('scId').value || '0', 10);
+        var payload = payloadFromForm();
+
+        if (!payload.name) {
+            setStatus('Name is required.', true);
+            return;
+        }
+        if (!payload.label) {
+            setStatus('Label is required.', true);
+            return;
+        }
+
+        var url = '/api/scan-config/scopes';
+        var method = 'POST';
+        if (idValue) {
+            method = 'PUT';
+            url = '/api/scan-config/scopes/' + encodeURIComponent(idValue);
+            delete payload.name;
+        }
+
+        try {
+            setStatus('Saving...', false);
+            var res = await fetch(url, {
+                method: method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+                throw new Error('Save failed: ' + res.status);
+            }
+            var saved = await res.json();
+            loadRowIntoForm(saved);
+            await dt.refresh();
+            setStatus('Saved ' + (saved.name || ('ID ' + saved.id)) + '.', false);
+        } catch (err) {
+            setStatus(err.message, true);
+        }
+    });
+
+    dt.init()
+        .then(function () {
+            // table loaded
+        })
+        .catch(function (err) {
+            container.innerHTML = '<div class="empty-state"><h2>Error</h2><p>' + err.message + '</p></div>';
+            setStatus('Failed to initialize table: ' + err.message, true);
+        });
+})();
+</script>
+{% endblock %}

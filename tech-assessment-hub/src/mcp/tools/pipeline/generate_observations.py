@@ -277,7 +277,9 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
         .where(Scan.assessment_id == assessment_id)
         .order_by(ScanResult.id.asc())
     ).all()
-    all_customized_results = [row for row in rows if _is_customized(row)]
+    all_customized_results = [
+        row for row in rows if _is_customized(row) and not bool(row.is_out_of_scope)
+    ]
     if max_results > 0:
         all_customized_results = all_customized_results[:max_results]
     total_customized = len(all_customized_results)
@@ -349,18 +351,29 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
                 usage_responses=usage_responses,
             )
 
-            result.observations = observation_text
-            result.ai_observations = json.dumps(
-                {
-                    "generated_at": datetime.utcnow().isoformat(),
-                    "generator": "deterministic_pipeline_v1",
-                    "usage_responses": usage_responses,
-                    "structural_signal_count": structural_count,
-                    "update_set_signal_count": update_set_count,
-                },
-                sort_keys=True,
-            )
-            result.review_status = ReviewStatus.pending_review
+            if not (result.observations or "").strip():
+                result.observations = observation_text
+
+            existing_ai_observations: Dict[str, Any] = {}
+            if result.ai_observations:
+                try:
+                    loaded = json.loads(result.ai_observations)
+                    if isinstance(loaded, dict):
+                        existing_ai_observations = loaded
+                except Exception:
+                    existing_ai_observations = {
+                        "raw_ai_observations": result.ai_observations
+                    }
+            existing_ai_observations["deterministic_observation_baseline"] = {
+                "generated_at": datetime.utcnow().isoformat(),
+                "generator": "deterministic_pipeline_v1",
+                "usage_responses": usage_responses,
+                "structural_signal_count": structural_count,
+                "update_set_signal_count": update_set_count,
+            }
+            result.ai_observations = json.dumps(existing_ai_observations, sort_keys=True)
+            if result.review_status == ReviewStatus.pending_review:
+                result.review_status = ReviewStatus.review_in_progress
             result.ai_pass_count = int(result.ai_pass_count or 0) + 1
             session.add(result)
             sync_single_result(session, result, commit=False)

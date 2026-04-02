@@ -100,6 +100,14 @@ def test_expert_prompt_covers_tool_usage():
     assert "get_assessment_results" in text or "tool" in text.lower()
 
 
+def test_expert_prompt_clarifies_tableless_artifacts_are_not_adjacent_by_default():
+    result = PROMPT_REGISTRY.get_prompt("tech_assessment_expert")
+    text = result["messages"][0]["content"]["text"].lower()
+
+    assert "script includes" in text or "script include" in text
+    assert "not adjacent by default" in text
+
+
 def test_expert_prompt_covers_token_efficiency():
     """Expert prompt must include token efficiency guidance."""
     result = PROMPT_REGISTRY.get_prompt("tech_assessment_expert")
@@ -165,41 +173,41 @@ def test_orchestrator_prompt_includes_assessment_id_context():
 
 
 def test_orchestrator_prompt_references_pipeline_tools():
-    """Orchestrator prompt must reference the four key pipeline tools."""
+    """Orchestrator prompt must reference the current AI-owned feature pipeline tools."""
     result = PROMPT_REGISTRY.get_prompt(
         "feature_reasoning_orchestrator", {"assessment_id": "1"}
     )
     text = result["messages"][0]["content"]["text"]
 
     for tool_name in (
-        "seed_feature_groups",
-        "run_feature_reasoning",
+        "get_suggested_groupings",
         "feature_grouping_status",
+        "create_feature",
         "upsert_feature_recommendation",
     ):
         assert tool_name in text, f"Missing tool reference: {tool_name}"
 
 
 def test_orchestrator_prompt_covers_convergence_logic():
-    """Orchestrator prompt must explain convergence criteria and decision logic."""
+    """Orchestrator prompt must explain coverage/finalization gates and blocking."""
     result = PROMPT_REGISTRY.get_prompt(
         "feature_reasoning_orchestrator", {"assessment_id": "1"}
     )
     text = result["messages"][0]["content"]["text"]
 
-    assert "converged" in text.lower()
-    assert "should_continue" in text
-    assert "delta" in text
+    assert "coverage" in text.lower()
+    assert "provisional" in text.lower()
+    assert "block" in text.lower()
 
 
 def test_orchestrator_prompt_covers_pass_types():
-    """Orchestrator prompt must explain all four pass types."""
+    """Orchestrator prompt must explain the staged pass plan."""
     result = PROMPT_REGISTRY.get_prompt(
         "feature_reasoning_orchestrator", {"assessment_id": "1"}
     )
     text = result["messages"][0]["content"]["text"]
 
-    for pass_type in ("auto", "observe", "group_refine", "verify"):
+    for pass_type in ("structure", "coverage", "refine", "final_name"):
         assert pass_type in text, f"Missing pass type: {pass_type}"
 
 
@@ -226,12 +234,22 @@ def test_orchestrator_prompt_covers_non_negotiable_rules():
     assert "human" in text.lower()
 
 
+def test_orchestrator_prompt_clarifies_script_includes_are_not_adjacent():
+    result = PROMPT_REGISTRY.get_prompt(
+        "feature_reasoning_orchestrator", {"assessment_id": "1"}
+    )
+    text = result["messages"][0]["content"]["text"].lower()
+
+    assert "script includes" in text or "script include" in text
+    assert "not be marked adjacent" in text or "not be marked `adjacent`" in text
+
+
 def test_expert_prompt_now_references_pipeline_tools():
-    """Expert prompt (Phase 2) should now also reference Phase 3+ pipeline tools."""
+    """Expert prompt should reference the AI-owned feature pipeline tools."""
     result = PROMPT_REGISTRY.get_prompt("tech_assessment_expert")
     text = result["messages"][0]["content"]["text"]
 
-    assert "seed_feature_groups" in text
-    assert "run_feature_reasoning" in text
+    assert "get_suggested_groupings" in text
     assert "feature_grouping_status" in text
+    assert "create_feature" in text
     assert "upsert_feature_recommendation" in text

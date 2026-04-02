@@ -1268,31 +1268,10 @@ def recover_interrupted_jobs() -> int:
             jl.error_message = "Server restarted while job was running."
             session.add(jl)
 
-        # 3. Backfill total_rows_in_db on ALL states from actual mirror
-        #    table counts.  This fixes states where the count was never
-        #    written (e.g. old bug or interrupted finalization).
-        all_states = session.exec(select(SnIngestionState)).all()
-        for state in all_states:
-            registry = session.exec(
-                select(SnTableRegistry)
-                .where(
-                    SnTableRegistry.instance_id == state.instance_id,
-                    SnTableRegistry.sn_table_name == state.sn_table_name,
-                )
-            ).first()
-            if registry:
-                real_count = get_mirror_table_row_count(
-                    registry.local_table_name, state.instance_id,
-                )
-                if real_count != state.total_rows_in_db:
-                    state.total_rows_in_db = real_count
-                    session.add(state)
-                # Also sync the registry
-                if real_count != registry.row_count:
-                    registry.row_count = real_count
-                    session.add(registry)
-
         session.commit()
+
+        # Note: mirror row-count backfill skipped during startup — full-table
+        # scans block the event loop on large DBs.  Counts refresh on next pull.
 
     if count:
         logger.info("Recovered %d interrupted CSDM ingestion states", count)

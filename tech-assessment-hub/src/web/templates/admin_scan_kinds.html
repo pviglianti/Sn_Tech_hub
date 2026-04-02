@@ -1,0 +1,269 @@
+{% extends "base.html" %}
+
+{% block title %}Scan Kinds - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Scan Kinds</h1>
+    <div class="button-group">
+        <button type="button" class="btn btn-secondary" id="skReloadBtn" title="Reload scan kinds from the server">Reload</button>
+        <button type="button" class="btn btn-primary" id="skNewBtn" title="Start a new scan kind entry">New Kind</button>
+    </div>
+</div>
+
+<div class="card">
+    <p class="text-muted-plain mb-0">
+        Define the types of scans available (e.g., metadata_index, update_xml). Each maps to a ServiceNow table used as the scan target.
+    </p>
+</div>
+
+<div class="sk-layout mt-1">
+    <div class="card">
+        <h2>Scan Kinds</h2>
+        <p class="text-muted-plain mb-1">
+            Check one row to edit. Use column picker to show any stored field.
+        </p>
+        <div id="scanKindTableContainer"></div>
+    </div>
+    <div class="card">
+        <h2 id="skEditorTitle">New Kind</h2>
+        <form id="skEditorForm">
+            <input type="hidden" id="skId" value="">
+            <div class="form-group">
+                <label for="skName">Name</label>
+                <input type="text" id="skName" placeholder="e.g. metadata_index" required>
+                <small>Unique identifier for this scan kind.</small>
+            </div>
+            <div class="form-group">
+                <label for="skTargetTable">Target Table</label>
+                <input type="text" id="skTargetTable" placeholder="e.g. sys_metadata" required>
+                <small>ServiceNow table used as the scan target.</small>
+            </div>
+            <div class="form-group">
+                <label for="skDescription">Description</label>
+                <textarea id="skDescription" rows="3" placeholder="What this scan kind covers"></textarea>
+            </div>
+            <div class="form-group">
+                <label for="skDisplayOrder">Display Order</label>
+                <input type="number" id="skDisplayOrder" placeholder="0" min="0">
+            </div>
+            <div class="form-group mb-0">
+                <label>
+                    <input type="checkbox" id="skIsActive" checked>
+                    Active
+                </label>
+            </div>
+            <div class="button-group mt-1">
+                <button type="submit" class="btn btn-primary" id="skSaveBtn">Save</button>
+                <button type="button" class="btn btn-secondary" id="skToggleActiveBtn" disabled>Deactivate</button>
+                <button type="button" class="btn btn-secondary" id="skClearFormBtn">Clear</button>
+            </div>
+        </form>
+        <pre id="skEditorStatus" class="code-block mt-1">Ready.</pre>
+    </div>
+</div>
+
+<style>
+.sk-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(360px, 1fr);
+    gap: 1rem;
+    align-items: start;
+}
+
+@media (max-width: 1280px) {
+    .sk-layout {
+        grid-template-columns: 1fr;
+    }
+}
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/ConditionBuilder.js?v={{ static_version }}"></script>
+<script src="/static/js/ColumnPicker.js?v={{ static_version }}"></script>
+<script src="/static/js/DataTable.js?v={{ static_version }}"></script>
+<script>
+(function () {
+    var container = document.getElementById('scanKindTableContainer');
+    if (!container || !window.DataTable) {
+        return;
+    }
+
+    var editorForm = document.getElementById('skEditorForm');
+    var editorStatus = document.getElementById('skEditorStatus');
+    var editorTitle = document.getElementById('skEditorTitle');
+
+    function setStatus(text, isError) {
+        if (!editorStatus) return;
+        editorStatus.textContent = String(text || '');
+        editorStatus.style.color = isError ? 'var(--danger-color)' : 'var(--text-color)';
+    }
+
+    function resetForm() {
+        document.getElementById('skId').value = '';
+        document.getElementById('skName').value = '';
+        document.getElementById('skName').disabled = false;
+        document.getElementById('skTargetTable').value = '';
+        document.getElementById('skDescription').value = '';
+        document.getElementById('skDisplayOrder').value = '';
+        document.getElementById('skIsActive').checked = true;
+        editorTitle.textContent = 'New Kind';
+        document.getElementById('skSaveBtn').textContent = 'Create';
+        document.getElementById('skToggleActiveBtn').disabled = true;
+    }
+
+    function loadRowIntoForm(row) {
+        if (!row) return;
+        document.getElementById('skId').value = row.id || '';
+        document.getElementById('skName').value = row.name || '';
+        document.getElementById('skName').disabled = true;
+        document.getElementById('skTargetTable').value = row.target_table || '';
+        document.getElementById('skDescription').value = row.description || '';
+        document.getElementById('skDisplayOrder').value = (row.display_order != null) ? row.display_order : '';
+        document.getElementById('skIsActive').checked = !!row.is_active;
+        editorTitle.textContent = 'Edit: ' + (row.name || row.id);
+        document.getElementById('skSaveBtn').textContent = 'Save';
+        document.getElementById('skToggleActiveBtn').disabled = false;
+        document.getElementById('skToggleActiveBtn').textContent = row.is_active ? 'Deactivate' : 'Activate';
+    }
+
+    function payloadFromForm() {
+        var orderVal = document.getElementById('skDisplayOrder').value;
+        return {
+            name: String(document.getElementById('skName').value || '').trim(),
+            target_table: String(document.getElementById('skTargetTable').value || '').trim(),
+            description: String(document.getElementById('skDescription').value || '').trim() || null,
+            display_order: orderVal !== '' ? parseInt(orderVal, 10) : 0,
+            is_active: !!document.getElementById('skIsActive').checked,
+        };
+    }
+
+    resetForm();
+
+    var dt = new window.DataTable(container, {
+        dataUrl: '/api/scan-config/scan-kinds/records',
+        schemaUrl: '/api/scan-config/scan-kinds/field-schema',
+        instanceId: 0,
+        tableName: 'scan_kind_config',
+        pageSize: 50,
+        storageKey: 'dt_scan_kind_admin_v1',
+        includeTableAndInstanceParams: false,
+        selectable: true,
+        rowIdField: 'id',
+        onDataLoaded: function (_data, table) {},
+        onSelectionChange: function (selectedRows) {
+            if (selectedRows.length === 1) {
+                loadRowIntoForm(selectedRows[0]);
+                setStatus('Loaded selected scan kind for editing.', false);
+                return;
+            }
+            if (selectedRows.length > 1) {
+                setStatus('Multiple rows selected. Select one row to edit.', true);
+                return;
+            }
+            resetForm();
+            setStatus('Ready.', false);
+        },
+        customRenderers: {
+            is_active: function (value, row, td) {
+                var span = document.createElement('span');
+                span.className = 'status-badge ' + (value ? 'status-connected' : 'status-draft');
+                span.textContent = value ? 'active' : 'inactive';
+                td.appendChild(span);
+            }
+        }
+    });
+
+    document.getElementById('skReloadBtn').addEventListener('click', function () {
+        dt.refresh().catch(function (err) {
+            setStatus(err.message, true);
+        });
+    });
+
+    document.getElementById('skNewBtn').addEventListener('click', function () {
+        dt.clearSelection();
+        resetForm();
+        setStatus('New scan kind form ready.', false);
+    });
+
+    document.getElementById('skClearFormBtn').addEventListener('click', function () {
+        dt.clearSelection();
+        resetForm();
+        setStatus('Form cleared.', false);
+    });
+
+    document.getElementById('skToggleActiveBtn').addEventListener('click', async function () {
+        var idValue = parseInt(document.getElementById('skId').value || '0', 10);
+        if (!idValue) {
+            setStatus('Select an existing scan kind before toggling active state.', true);
+            return;
+        }
+        var nextActive = !document.getElementById('skIsActive').checked;
+        try {
+            var res = await fetch('/api/scan-config/scan-kinds/' + encodeURIComponent(idValue), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ is_active: nextActive }),
+            });
+            if (!res.ok) {
+                throw new Error('Toggle failed: ' + res.status);
+            }
+            document.getElementById('skIsActive').checked = nextActive;
+            setStatus('Scan kind active state updated.', false);
+            await dt.refresh();
+        } catch (err) {
+            setStatus(err.message, true);
+        }
+    });
+
+    editorForm.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        var idValue = parseInt(document.getElementById('skId').value || '0', 10);
+        var payload = payloadFromForm();
+
+        if (!payload.name) {
+            setStatus('Name is required.', true);
+            return;
+        }
+        if (!payload.target_table) {
+            setStatus('Target Table is required.', true);
+            return;
+        }
+
+        var url = '/api/scan-config/scan-kinds';
+        var method = 'POST';
+        if (idValue) {
+            method = 'PUT';
+            url = '/api/scan-config/scan-kinds/' + encodeURIComponent(idValue);
+            delete payload.name;
+        }
+
+        try {
+            setStatus('Saving...', false);
+            var res = await fetch(url, {
+                method: method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+                throw new Error('Save failed: ' + res.status);
+            }
+            var saved = await res.json();
+            loadRowIntoForm(saved);
+            await dt.refresh();
+            setStatus('Saved ' + (saved.name || ('ID ' + saved.id)) + '.', false);
+        } catch (err) {
+            setStatus(err.message, true);
+        }
+    });
+
+    dt.init()
+        .then(function () {})
+        .catch(function (err) {
+            container.innerHTML = '<div class="empty-state"><h2>Error</h2><p>' + err.message + '</p></div>';
+            setStatus('Failed to initialize table: ' + err.message, true);
+        });
+})();
+</script>
+{% endblock %}

@@ -135,14 +135,15 @@ def test_generate_observations_writes_customized_results_and_landscape_summary(d
 
     assert refreshed_a.observations
     assert refreshed_b.observations
-    assert refreshed_a.review_status == ReviewStatus.pending_review
-    assert refreshed_b.review_status == ReviewStatus.pending_review
+    assert refreshed_a.review_status == ReviewStatus.review_in_progress
+    assert refreshed_b.review_status == ReviewStatus.review_in_progress
     assert refreshed_a.ai_pass_count >= 1
     assert refreshed_b.ai_pass_count >= 1
 
     ai_payload = json.loads(refreshed_a.ai_observations or "{}")
-    assert ai_payload.get("generator") == "deterministic_pipeline_v1"
-    assert "update_set_signal_count" in ai_payload
+    baseline = ai_payload.get("deterministic_observation_baseline") or {}
+    assert baseline.get("generator") == "deterministic_pipeline_v1"
+    assert "update_set_signal_count" in baseline
 
     assert refreshed_c.observations is None
 
@@ -153,8 +154,8 @@ def test_generate_observations_writes_customized_results_and_landscape_summary(d
     by_result_id = {row.scan_result_id: row for row in customization_rows}
     assert by_result_id[refreshed_a.id].observations == refreshed_a.observations
     assert by_result_id[refreshed_b.id].observations == refreshed_b.observations
-    assert by_result_id[refreshed_a.id].review_status == ReviewStatus.pending_review
-    assert by_result_id[refreshed_b.id].review_status == ReviewStatus.pending_review
+    assert by_result_id[refreshed_a.id].review_status == ReviewStatus.review_in_progress
+    assert by_result_id[refreshed_b.id].review_status == ReviewStatus.review_in_progress
 
     summary_rows = db_session.exec(
         select(GeneralRecommendation)
@@ -180,3 +181,45 @@ def test_generate_observations_respects_max_results(db_session):
     assert result["success"] is True
     assert result["processed_count"] == 1
     assert result["total_customized"] == 1
+
+
+def test_generate_observations_preserves_ai_analysis_outputs_and_skips_out_of_scope(db_session):
+    from src.mcp.tools.pipeline.generate_observations import handle
+
+    asmt, customized_a, customized_b, _ = _seed_observation_assessment(db_session)
+    customized_a.observations = "AI wrote the functional summary first."
+    customized_a.review_status = ReviewStatus.review_in_progress
+    customized_a.ai_observations = json.dumps(
+        {
+            "analysis_stage": "ai_analysis",
+            "scope_decision": "in_scope",
+            "directly_related_result_ids": [customized_b.id],
+        }
+    )
+    customized_b.is_out_of_scope = True
+    db_session.add(customized_a)
+    db_session.add(customized_b)
+    db_session.commit()
+
+    result = handle(
+        {
+            "assessment_id": asmt.id,
+            "batch_size": 10,
+            "include_usage_queries": "never",
+        },
+        db_session,
+    )
+
+    assert result["success"] is True
+    assert result["processed_count"] == 1
+    assert result["total_customized"] == 1
+
+    refreshed_a = db_session.get(ScanResult, customized_a.id)
+    refreshed_b = db_session.get(ScanResult, customized_b.id)
+    assert refreshed_a is not None
+    assert refreshed_b is not None
+    assert refreshed_a.observations == "AI wrote the functional summary first."
+    ai_payload = json.loads(refreshed_a.ai_observations or "{}")
+    assert ai_payload.get("scope_decision") == "in_scope"
+    assert "deterministic_observation_baseline" in ai_payload
+    assert refreshed_b.observations is None

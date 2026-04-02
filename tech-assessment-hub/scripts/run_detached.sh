@@ -81,7 +81,8 @@ fi
 
 # Prefer Python-based daemonization to survive IDE task terminals and avoid stale pidfiles.
 if [[ -x "./venv/bin/python" ]]; then
-  exec ./venv/bin/python ./scripts/daemon_start.py
+  ./venv/bin/python ./scripts/daemon_start.py
+  exit $?
 fi
 
 echo "Missing venv Python at ./venv/bin/python. Create the venv first (see README.md)."

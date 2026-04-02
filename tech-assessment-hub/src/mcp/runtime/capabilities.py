@@ -8,6 +8,7 @@ from sqlmodel import Session
 
 from ..bridge import BRIDGE_MANAGER, load_bridge_config
 from .registry import UNIFIED_REGISTRY, load_runtime_config
+from ..registry import _tool_annotations
 
 
 def _fetch_remote_tools(session: Session) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -45,6 +46,7 @@ def get_capability_snapshot(session: Session, include_admin: bool = False) -> Di
                 "name": row["name"],
                 "description": row["description"],
                 "inputSchema": row["input_schema"],
+                "annotations": _tool_annotations(row["permission"]),
             }
         )
 
@@ -57,6 +59,7 @@ def get_capability_snapshot(session: Session, include_admin: bool = False) -> Di
                     "name": row["name"],
                     "description": row["description"],
                     "inputSchema": row["input_schema"],
+                    "annotations": _tool_annotations(row["permission"]),
                     "permission": row["permission"],
                     "fallback_policy": row["fallback_policy"],
                     "selected_route": {

@@ -5,6 +5,7 @@
 
     function RelationshipGraph(opts) {
         this.apiUrl = opts.apiUrl;
+        this.graphKind = opts.graphKind || 'relationship';
         this.initialSeed = opts.initialSeed || {};
 
         this.canvasId = opts.canvasId;
@@ -24,6 +25,13 @@
         this.showNotCustomId = opts.showNotCustomId;
         this.showModifiedId = opts.showModifiedId;
         this.showNetNewId = opts.showNetNewId;
+        this.scopeSectionId = opts.scopeSectionId;
+        this.showDirectScopeId = opts.showDirectScopeId;
+        this.showAdjacentScopeId = opts.showAdjacentScopeId;
+        this.showOutOfScopeId = opts.showOutOfScopeId;
+        this.showScopeUnknownId = opts.showScopeUnknownId;
+        this.artifactTypeSectionId = opts.artifactTypeSectionId;
+        this.artifactTypeFiltersId = opts.artifactTypeFiltersId;
         this.zoomOutButtonId = opts.zoomOutButtonId;
         this.zoomInButtonId = opts.zoomInButtonId;
         this.layoutButtonId = opts.layoutButtonId;
@@ -42,10 +50,13 @@
         this.panRightButtonId = opts.panRightButtonId;
         this.panUpButtonId = opts.panUpButtonId;
         this.panDownButtonId = opts.panDownButtonId;
+        this.nodeViewSelectId = opts.nodeViewSelectId;
 
         this.cy = null;
         this.showLabels = true;
+        this.nodePresentation = 'artifact';
         this.activeEdgeTypes = new Set();
+        this.activeArtifactTypes = new Set();
         this.loadedResultIds = new Set();
         this.expandedResultIds = new Set();
         this.breadcrumbs = [];
@@ -58,6 +69,7 @@
         this.edgeTypeColors = {
             code_reference: '#f97316',
             structural: '#22c55e',
+            shared_dependency: '#ef4444',
             reference_field: '#38bdf8',
             dictionary_binding: '#a855f7',
             target_table: '#facc15',
@@ -68,6 +80,37 @@
             feature_context: '#0ea5e9',
             table_member: '#94a3b8',
             dev_chain: '#f59e0b',
+        };
+
+        this.artifactTypeColorMap = {
+            sys_script: '#3b82f6',
+            sys_script_include: '#f97316',
+            sys_script_client: '#22c55e',
+            sys_ui_policy: '#eab308',
+            sys_ui_policy_action: '#14b8a6',
+            sys_ui_action: '#ec4899',
+            sys_dictionary: '#8b5cf6',
+            sys_dictionary_override: '#a855f7',
+            sys_choice: '#06b6d4',
+            sys_db_object: '#64748b',
+            sys_security_acl: '#ef4444',
+            sys_data_policy2: '#84cc16',
+            sysauto_script: '#f59e0b',
+            sysevent_email_action: '#f43f5e',
+            sysevent_script_action: '#fb7185',
+            sys_hub_flow: '#10b981',
+            wf_workflow: '#6366f1',
+            sp_widget: '#0ea5e9',
+            sp_page: '#0891b2',
+            sys_ui_page: '#2563eb',
+            sys_ui_macro: '#7c3aed',
+            sys_transform_map: '#ca8a04',
+            sys_web_service: '#0f766e',
+            sys_ui_form: '#4f46e5',
+            sys_ui_list: '#9333ea',
+            sys_ui_related_list: '#7e22ce',
+            sys_report: '#0d9488',
+            sys_update_set: '#78716c',
         };
     }
 
@@ -213,6 +256,7 @@
         this.isExpandedView = this._shellHasClass('rg-expanded');
         this._bindUi();
         this._updateLayoutClasses();
+        this._syncNodeViewSelect();
         this._loadInitial();
     };
 
@@ -321,6 +365,10 @@
             this.showNotCustomId,
             this.showModifiedId,
             this.showNetNewId,
+            this.showDirectScopeId,
+            this.showAdjacentScopeId,
+            this.showOutOfScopeId,
+            this.showScopeUnknownId,
         ].forEach(function (toggleId) {
             var input = document.getElementById(toggleId);
             if (!input) return;
@@ -395,6 +443,14 @@
                     .style('label', self.showLabels ? 'data(render_label)' : '')
                     .update();
                 labelsBtn.classList.toggle('active', self.showLabels);
+            });
+        }
+
+        var nodeViewSelect = document.getElementById(this.nodeViewSelectId);
+        if (nodeViewSelect) {
+            nodeViewSelect.addEventListener('change', function () {
+                self.nodePresentation = (nodeViewSelect.value === 'result') ? 'result' : 'artifact';
+                self._applyNodePresentation();
             });
         }
     };
@@ -493,6 +549,12 @@
             });
     };
 
+    RelationshipGraph.prototype._syncNodeViewSelect = function () {
+        var select = document.getElementById(this.nodeViewSelectId);
+        if (!select) return;
+        select.value = this.nodePresentation;
+    };
+
     RelationshipGraph.prototype._replaceGraphWithPayload = function (payload) {
         if (!payload) return;
         this.cy.elements().remove();
@@ -501,6 +563,9 @@
         this.currentPayload = payload;
         this.currentMode = payload.mode || 'artifact';
         this.currentCenterNodeId = (payload.center_node && payload.center_node.id) ? payload.center_node.id : null;
+        if (payload.graph_kind === 'dependency' && this.graphKind !== 'dependency') {
+            this.graphKind = 'dependency';
+        }
         this._syncCustomizationFilters();
         this._mergePayload(payload, true);
 
@@ -590,6 +655,8 @@
         }
 
         this._applyTableModeGrouping();
+        this._applyNodePresentation();
+        this._rebuildArtifactTypeFilters();
         this._rebuildEdgeFilters();
         this._applyFilters();
         this._renderTableArtifactPicker();
@@ -600,6 +667,18 @@
         } else if (nodes.length || edges.length) {
             this._runLayout();
         }
+    };
+
+    RelationshipGraph.prototype._applyNodePresentation = function () {
+        if (!this.cy) return;
+        var mode = this.nodePresentation === 'result' ? 'result' : 'artifact';
+        this.cy.nodes().forEach(function (node) {
+            if (node.data('node_type') !== 'artifact') return;
+            var nextLabel = mode === 'result'
+                ? (node.data('result_view_label') || node.data('render_label'))
+                : (node.data('artifact_view_label') || node.data('render_label'));
+            node.data('render_label', nextLabel);
+        });
     };
 
     RelationshipGraph.prototype._upsertNode = function (node) {
@@ -650,6 +729,8 @@
         var nodeType = node.node_type || 'artifact';
         var baseLabel = node.label || node.name || node.id;
         var renderLabel = baseLabel;
+        var resultViewLabel = baseLabel;
+        var artifactViewLabel = baseLabel;
         var bgColor = '#475569';
         var borderColor = '#cbd5e1';
         var labelDx = 0;
@@ -712,23 +793,33 @@
             zIndex = 1100;
         } else {
             var origin = String(node.origin_type || '').toLowerCase();
+            var originPrefix = '[OOTB] ';
+            var artifactTypeKey = String(node.artifact_type_key || node.table_name || '').trim();
+            var artifactTypeColor = this._artifactTypeColor(artifactTypeKey);
+            bgColor = artifactTypeColor;
             if (origin === 'modified_ootb') {
-                bgColor = '#b45309';
                 borderColor = '#fde68a';
-                renderLabel = '[OOTB*] ' + baseLabel;
+                originPrefix = '[OOTB*] ';
             } else if (origin === 'net_new_customer') {
-                bgColor = '#1d4ed8';
                 borderColor = '#bfdbfe';
-                renderLabel = '[New] ' + baseLabel;
+                originPrefix = '[New] ';
             } else if (node.is_customized) {
-                bgColor = '#166534';
                 borderColor = '#bbf7d0';
-                renderLabel = '[Custom] ' + baseLabel;
+                originPrefix = '[Custom] ';
             } else {
-                bgColor = '#334155';
                 borderColor = '#cbd5e1';
-                renderLabel = '[OOTB] ' + baseLabel;
             }
+
+            if (node.is_out_of_scope) {
+                borderColor = '#fb7185';
+            } else if (node.is_adjacent) {
+                borderColor = '#67e8f9';
+            }
+
+            resultViewLabel = originPrefix + 'Result #' + (node.result_id || '?') + ' • ' + baseLabel;
+            var artifactTypeLabel = String(node.artifact_type_label || node.table_name || '').trim();
+            artifactViewLabel = originPrefix + (artifactTypeLabel ? (artifactTypeLabel + ' • ') : '') + baseLabel;
+            renderLabel = this.nodePresentation === 'result' ? resultViewLabel : artifactViewLabel;
         }
 
         return {
@@ -737,6 +828,8 @@
             result_id: node.result_id || null,
             feature_id: node.feature_id || null,
             table_name: node.table_name || null,
+            artifact_type_key: node.artifact_type_key || node.table_name || null,
+            artifact_type_label: node.artifact_type_label || node.table_name || null,
             assessment_id: node.assessment_id || null,
             instance_id: node.instance_id || null,
             scan_id: node.scan_id || null,
@@ -744,6 +837,9 @@
             name: node.name || null,
             origin_type: node.origin_type || null,
             is_customized: !!node.is_customized,
+            is_adjacent: !!node.is_adjacent,
+            is_out_of_scope: !!node.is_out_of_scope,
+            scope_state: node.scope_state || null,
             sys_id: node.sys_id || null,
             feature_names: node.feature_names || [],
             description: node.description || null,
@@ -760,6 +856,8 @@
             state: node.state || null,
             hidden_count: node.hidden_count || null,
             total_count: node.total_count || null,
+            result_view_label: resultViewLabel,
+            artifact_view_label: artifactViewLabel,
             render_label: renderLabel,
             bg_color: bgColor,
             border_color: borderColor,
@@ -1000,7 +1098,12 @@
     RelationshipGraph.prototype._syncCustomizationFilters = function () {
         var section = document.getElementById(this.customSectionId);
         if (section) {
-            section.style.display = this.currentMode === 'artifact' ? 'block' : 'none';
+            section.style.display = 'block';
+        }
+
+        var scopeSection = document.getElementById(this.scopeSectionId);
+        if (scopeSection) {
+            scopeSection.style.display = 'block';
         }
 
         var tableSection = document.getElementById(this.tablePickerSectionId);
@@ -1009,29 +1112,113 @@
         }
     };
 
+    RelationshipGraph.prototype._artifactTypeColor = function (artifactTypeKey) {
+        var key = String(artifactTypeKey || '').trim();
+        if (!key) return '#475569';
+        if (this.artifactTypeColorMap[key]) {
+            return this.artifactTypeColorMap[key];
+        }
+
+        var hash = 0;
+        for (var i = 0; i < key.length; i++) {
+            hash = ((hash << 5) - hash) + key.charCodeAt(i);
+            hash |= 0;
+        }
+        var hue = Math.abs(hash) % 360;
+        return 'hsl(' + hue + ', 68%, 46%)';
+    };
+
+    RelationshipGraph.prototype._rebuildArtifactTypeFilters = function () {
+        var section = document.getElementById(this.artifactTypeSectionId);
+        var container = document.getElementById(this.artifactTypeFiltersId);
+        if (!section || !container || !this.cy) return;
+
+        var counts = {};
+        var labels = {};
+        var self = this;
+        this.cy.nodes('[node_type = "artifact"]').forEach(function (node) {
+            var key = String(node.data('artifact_type_key') || node.data('table_name') || '').trim();
+            if (!key) return;
+            counts[key] = (counts[key] || 0) + 1;
+            labels[key] = String(node.data('artifact_type_label') || key);
+        });
+
+        var typeKeys = Object.keys(counts).sort(function (left, right) {
+            return String(labels[left] || left).localeCompare(String(labels[right] || right));
+        });
+        section.style.display = typeKeys.length ? 'block' : 'none';
+        if (!typeKeys.length) {
+            container.innerHTML = '<p class="text-muted-sm">No artifact types loaded.</p>';
+            return;
+        }
+
+        var nextActive = new Set();
+        for (var i = 0; i < typeKeys.length; i++) {
+            var typeKey = typeKeys[i];
+            if (this.activeArtifactTypes.size === 0 || this.activeArtifactTypes.has(typeKey)) {
+                nextActive.add(typeKey);
+            }
+        }
+        this.activeArtifactTypes = nextActive;
+
+        var html = '';
+        for (var j = 0; j < typeKeys.length; j++) {
+            var artifactTypeKey = typeKeys[j];
+            var checked = this.activeArtifactTypes.has(artifactTypeKey) ? 'checked' : '';
+            html += '' +
+                '<label class="rg-type-filter">' +
+                '<input type="checkbox" data-artifact-type-filter="' + this._esc(artifactTypeKey) + '" ' + checked + ' />' +
+                '<span class="rg-type-swatch" style="background:' + this._esc(this._artifactTypeColor(artifactTypeKey)) + ';"></span>' +
+                '<span>' + this._esc(labels[artifactTypeKey] || artifactTypeKey) + ' (' + counts[artifactTypeKey] + ')</span>' +
+                '</label>';
+        }
+        container.innerHTML = html;
+
+        container.querySelectorAll('[data-artifact-type-filter]').forEach(function (input) {
+            input.addEventListener('change', function () {
+                var artifactTypeKey = input.getAttribute('data-artifact-type-filter');
+                if (input.checked) {
+                    self.activeArtifactTypes.add(artifactTypeKey);
+                } else {
+                    self.activeArtifactTypes.delete(artifactTypeKey);
+                }
+                self._applyFilters();
+            });
+        });
+    };
+
     RelationshipGraph.prototype._applyFilters = function () {
         var showCustom = document.getElementById(this.showCustomId);
         var showNotCustom = document.getElementById(this.showNotCustomId);
         var showModified = document.getElementById(this.showModifiedId);
         var showNetNew = document.getElementById(this.showNetNewId);
+        var showDirectScope = document.getElementById(this.showDirectScopeId);
+        var showAdjacentScope = document.getElementById(this.showAdjacentScopeId);
+        var showOutOfScope = document.getElementById(this.showOutOfScopeId);
+        var showScopeUnknown = document.getElementById(this.showScopeUnknownId);
 
-        var isArtifactMode = this.currentMode === 'artifact';
         var allowCustom = !(showCustom && !showCustom.checked);
         var allowNotCustom = !(showNotCustom && !showNotCustom.checked);
         var allowModified = !(showModified && !showModified.checked);
         var allowNetNew = !(showNetNew && !showNetNew.checked);
+        var allowDirectScope = !(showDirectScope && !showDirectScope.checked);
+        var allowAdjacentScope = !(showAdjacentScope && !showAdjacentScope.checked);
+        var allowOutOfScope = !(showOutOfScope && !showOutOfScope.checked);
+        var allowScopeUnknown = !(showScopeUnknown && !showScopeUnknown.checked);
         if (showModified) showModified.disabled = !allowCustom;
         if (showNetNew) showNetNew.disabled = !allowCustom;
 
         this.cy.nodes().forEach(function (node) {
             var isArtifact = node.data('node_type') === 'artifact';
-            if (!isArtifact || !isArtifactMode) {
+            if (!isArtifact) {
                 node.removeClass('hidden-node');
                 return;
             }
 
             var isCustomized = !!node.data('is_customized');
             var origin = String(node.data('origin_type') || '').toLowerCase();
+            var scopeState = String(node.data('scope_state') || 'unknown').toLowerCase();
+            var artifactTypeKey = String(node.data('artifact_type_key') || node.data('table_name') || '').trim();
             var hideNode = false;
 
             if (isCustomized) {
@@ -1046,8 +1233,24 @@
                 hideNode = true;
             }
 
+            if (!hideNode) {
+                if (scopeState === 'direct' && !allowDirectScope) {
+                    hideNode = true;
+                } else if (scopeState === 'adjacent' && !allowAdjacentScope) {
+                    hideNode = true;
+                } else if (scopeState === 'out_of_scope' && !allowOutOfScope) {
+                    hideNode = true;
+                } else if (scopeState === 'unknown' && !allowScopeUnknown) {
+                    hideNode = true;
+                }
+            }
+
+            if (!hideNode && artifactTypeKey && this.activeArtifactTypes.size > 0 && !this.activeArtifactTypes.has(artifactTypeKey)) {
+                hideNode = true;
+            }
+
             node.toggleClass('hidden-node', hideNode);
-        });
+        }.bind(this));
 
         var activeEdgeTypes = this.activeEdgeTypes;
         this.cy.edges().forEach(function (edge) {
@@ -1291,7 +1494,19 @@
             if (node.origin_type === 'net_new_customer') {
                 badges += '<span class="rg-badge rg-badge-netnew">Customer Created</span>';
             }
+            if (node.is_out_of_scope) {
+                badges += '<span class="rg-badge">Out Of Scope</span>';
+            } else if (node.is_adjacent) {
+                badges += '<span class="rg-badge">Adjacent</span>';
+            } else if (node.scope_state === 'direct') {
+                badges += '<span class="rg-badge">Direct In Scope</span>';
+            } else if (node.scope_state === 'unknown') {
+                badges += '<span class="rg-badge">Scope Unknown</span>';
+            }
             html += '<div class="rg-meta-row">' + badges + '</div>';
+            if (node.artifact_type_label) {
+                html += '<div class="rg-meta-row"><strong>Artifact Type:</strong> ' + this._esc(node.artifact_type_label) + '</div>';
+            }
             html += '<div class="rg-meta-row"><strong>App File Class:</strong> <code>' + this._esc(node.table_name || '-') + '</code></div>';
             html += '<div class="rg-meta-row"><strong>Sys ID:</strong> <code>' + this._esc(node.sys_id || '-') + '</code></div>';
             if (node.result_id != null) {
@@ -1352,7 +1567,8 @@
         var labelMap = {
             result: 'Result',
             assessment: 'Assessment',
-            graph: 'Graph View',
+            graph: 'Relationship Graph',
+            dependency_map: 'Dependency Map',
             artifact_record: 'Artifact Record',
             artifact_table: 'Artifact Table',
             record: 'Record',

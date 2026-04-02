@@ -133,15 +133,15 @@
             <div class="pipeline-step-status" data-step-status></div>
             <div class="pipeline-step-action" data-step-action></div>
         </div>
-        <div class="pipeline-step" data-pipeline-step="ai_analysis">
+        <div class="pipeline-step" data-pipeline-step="engines">
             <div class="pipeline-step-circle" data-step-circle>2</div>
-            <div class="pipeline-step-label">AI Analysis</div>
+            <div class="pipeline-step-label">Engines</div>
             <div class="pipeline-step-status" data-step-status></div>
             <div class="pipeline-step-action" data-step-action></div>
         </div>
-        <div class="pipeline-step" data-pipeline-step="engines">
+        <div class="pipeline-step" data-pipeline-step="ai_analysis">
             <div class="pipeline-step-circle" data-step-circle>3</div>
-            <div class="pipeline-step-label">Engines</div>
+            <div class="pipeline-step-label">AI Analysis</div>
             <div class="pipeline-step-status" data-step-status></div>
             <div class="pipeline-step-action" data-step-action></div>
         </div>
@@ -197,6 +197,7 @@
             </div>
         </div>
     </div>
+    <div id="pipelineFeatureStatus" style="margin-top: 0.75rem; font-size: 0.9em; color: var(--text-secondary);"></div>
     <div id="llm-config-display" style="margin-top: 0.5rem; font-size: 0.9em; color: var(--text-secondary);"></div>
 </div>
 {% endif %}
@@ -1579,17 +1580,17 @@ document.addEventListener('tab:activated', function(e) {
 
 // ── Pipeline Flow Bar ───────────────────────────────────────────────
 
-const _PIPELINE_STAGES = ['scans', 'ai_analysis', 'engines', 'observations', 'review', 'grouping', 'ai_refinement', 'recommendations', 'report', 'complete'];
+const _PIPELINE_STAGES = ['scans', 'engines', 'ai_analysis', 'observations', 'review', 'grouping', 'ai_refinement', 'recommendations', 'report', 'complete'];
 const _PIPELINE_LABELS = {
-    scans: 'Scans', ai_analysis: 'AI Analysis', engines: 'Engines',
+    scans: 'Scans', engines: 'Engines', ai_analysis: 'AI Analysis',
     observations: 'Observations', review: 'Review', grouping: 'Grouping',
     ai_refinement: 'AI Refinement', recommendations: 'Recommendations',
     report: 'Report', complete: 'Complete',
 };
 // Which stages have action buttons and what target_stage to send
 const _PIPELINE_ACTIONS = {
-    ai_analysis: { label: 'Run AI Analysis', target: 'ai_analysis' },
     engines: { label: 'Run Engines', target: 'engines' },
+    ai_analysis: { label: 'Run AI Analysis', target: 'ai_analysis' },
     observations: { label: 'Generate Observations', target: 'observations' },
     review: { label: 'Enter Review', target: 'review' },
     grouping: { label: 'Run Grouping', target: 'grouping' },
@@ -1611,8 +1612,10 @@ function updatePipelineFlowBar(pipeline) {
     const activeRun = pipeline.active_run || null;
     const isRunning = activeRun && activeRun.status === 'running';
     const reviewGate = pipeline.review_gate || {};
+    const featureStatus = pipeline.feature_status || {};
 
     _lastPipelineStage = currentStage;
+    _renderPipelineFeatureStatus(activeRun, featureStatus);
 
     _PIPELINE_STAGES.forEach((stage, idx) => {
         const stepEl = flowBar.querySelector(`[data-pipeline-step="${stage}"]`);
@@ -1652,7 +1655,7 @@ function updatePipelineFlowBar(pipeline) {
             }
 
             // Action buttons for current stage
-            _renderStepActions(stage, actionEl, currentStage, isRunning, reviewGate);
+            _renderStepActions(stage, actionEl, currentStage, isRunning, reviewGate, featureStatus, activeRun);
         } else {
             // Future step
             stepEl.classList.add('step-pending');
@@ -1681,7 +1684,25 @@ function updatePipelineFlowBar(pipeline) {
     });
 }
 
-function _renderStepActions(stage, actionEl, currentStage, isRunning, reviewGate) {
+function _renderPipelineFeatureStatus(activeRun, featureStatus) {
+    const el = document.getElementById('pipelineFeatureStatus');
+    if (!el) return;
+
+    const unresolved = featureStatus.unassigned_count || 0;
+    const provisional = featureStatus.provisional_feature_count || 0;
+    const buckets = featureStatus.bucket_feature_count || 0;
+    const blockingReason = featureStatus.blocking_reason || '';
+    const isBlocked = activeRun && activeRun.status === 'failed' && (activeRun.target_stage === 'grouping' || activeRun.target_stage === 'ai_refinement');
+
+    let text = `${featureStatus.feature_count || 0} features, ${featureStatus.assigned_count || 0} assigned, ${unresolved} unresolved, ${buckets} buckets`;
+    if (provisional > 0) text += `, ${provisional} provisional`;
+    if (isBlocked && blockingReason) {
+        text += `. Blocked: ${blockingReason}`;
+    }
+    el.textContent = text;
+}
+
+function _renderStepActions(stage, actionEl, currentStage, isRunning, reviewGate, featureStatus, activeRun) {
     actionEl.innerHTML = '';
     if (isRunning) return; // No buttons while running
 
@@ -1705,6 +1726,8 @@ function _renderStepActions(stage, actionEl, currentStage, isRunning, reviewGate
 
     const actionDef = _PIPELINE_ACTIONS[nextStage];
     if (!actionDef) return;
+    const failedFeatureStage = activeRun && activeRun.status === 'failed' &&
+        (activeRun.target_stage === 'grouping' || activeRun.target_stage === 'ai_refinement');
 
     // Special handling for review → grouping (need review gate check)
     if (currentStage === 'review') {
@@ -1726,6 +1749,15 @@ function _renderStepActions(stage, actionEl, currentStage, isRunning, reviewGate
         return;
     }
 
+    if (failedFeatureStage && featureStatus && featureStatus.manual_override_ready) {
+        const overrideBtn = document.createElement('button');
+        overrideBtn.className = 'btn-pipeline btn-pipeline-skip';
+        overrideBtn.textContent = 'Proceed via Human Review';
+        overrideBtn.disabled = _pipelineAdvancing;
+        overrideBtn.addEventListener('click', () => advancePipelineStage(actionDef.target, false, true));
+        actionEl.appendChild(overrideBtn);
+    }
+
     const btn = document.createElement('button');
     btn.className = 'btn-pipeline';
     btn.textContent = actionDef.label;
@@ -1734,13 +1766,14 @@ function _renderStepActions(stage, actionEl, currentStage, isRunning, reviewGate
     actionEl.appendChild(btn);
 }
 
-async function advancePipelineStage(targetStage, skipReview) {
+async function advancePipelineStage(targetStage, skipReview, manualOverride) {
     if (_pipelineAdvancing) return;
     _pipelineAdvancing = true;
 
     try {
         const body = { target_stage: targetStage };
         if (skipReview) body.skip_review = true;
+        if (manualOverride) body.manual_override = true;
 
         const res = await fetch(`/api/assessments/${assessmentId}/advance-pipeline`, {
             method: 'POST',

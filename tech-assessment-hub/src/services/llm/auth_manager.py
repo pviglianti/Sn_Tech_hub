@@ -65,12 +65,23 @@ class AuthManager:
         if not cli_name:
             raise ValueError(f"Unknown provider_kind: {provider_kind}")
 
+        # Each CLI has its own login subcommand structure:
+        #   claude auth login --claudeai   (Claude Code v2+)
+        #   gemini                         (first interactive launch triggers login)
+        #   codex login                    (OpenAI Codex)
+        login_commands = {
+            "claude": "claude auth login --claudeai",
+            "gemini": "gemini",
+            "codex": "codex login",
+        }
+        login_cmd = login_commands.get(cli_name, f"{cli_name} login")
+
         import platform
         if platform.system() == "Darwin":
             import subprocess as sp
             sp.Popen([
                 "osascript", "-e",
-                f'tell application "Terminal" to do script "{cli_name} login"',
+                f'tell application "Terminal" to do script "{login_cmd}"',
             ])
         else:
             logger.warning("CLI login trigger only supported on macOS")

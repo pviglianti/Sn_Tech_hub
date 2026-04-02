@@ -2,6 +2,7 @@
 
 from sqlmodel import SQLModel, Session, create_engine
 from sqlalchemy import text, event
+from sqlalchemy.pool import NullPool
 from pathlib import Path
 import logging
 import os
@@ -19,10 +20,13 @@ DATA_DIR = Path(__file__).parent.parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 DATABASE_URL = f"sqlite:///{DATA_DIR}/tech_assessment.db"
 
-# Create engine with connection settings
+# Create engine with connection settings.
+# NullPool prevents connection reuse across threads, avoiding SQLite lock
+# contention when pipeline stages run concurrently in background threads.
 engine = create_engine(
     DATABASE_URL,
     echo=False,  # Set to True to see SQL queries in console
+    poolclass=NullPool,
     connect_args={"check_same_thread": False, "timeout": 30}  # Needed for SQLite with FastAPI
 )
 
@@ -31,11 +35,13 @@ engine = create_engine(
 def _set_sqlite_pragmas(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     try:
+        cursor.execute("PRAGMA busy_timeout=30000;")
         cursor.execute("PRAGMA journal_mode=WAL;")
         cursor.execute("PRAGMA synchronous=NORMAL;")
-        cursor.execute("PRAGMA busy_timeout=30000;")
-        # Auto-checkpoint WAL after 1000 pages (~4 MB) to prevent unbounded growth.
         cursor.execute("PRAGMA wal_autocheckpoint=1000;")
+    except Exception:
+        # On network mounts, WAL/pragma calls may fail — continue with defaults.
+        pass
     finally:
         cursor.close()
 
@@ -50,9 +56,13 @@ def create_db_and_tables():
     )
     from .services.llm import models as llm_models  # noqa: F401
     SQLModel.metadata.create_all(engine)
+    engine.dispose()
     _ensure_instance_columns()
+    engine.dispose()
     _ensure_app_config_instance_scope()
+    engine.dispose()
     _ensure_model_table_columns([
+        "instance",
         "assessment",
         "scan",
         "scan_result",
@@ -95,6 +105,12 @@ def create_db_and_tables():
         "llm_provider",
         "llm_model",
         "llm_auth_slot",
+        # Scan configuration admin tables
+        "global_app",
+        "app_file_class",
+        "app_file_class_query",
+        "assessment_type_config",
+        "scan_kind_config",
     ])
     _ensure_assessment_pipeline_defaults()
     _ensure_instance_app_file_type_defaults()
@@ -274,6 +290,19 @@ def _ensure_indexes() -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_package_instance_sn_sys_id ON package (instance_id, sn_sys_id)",
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_application_instance_sn_sys_id ON application (instance_id, sn_sys_id)",
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_table_definition_instance_sn_sys_id ON table_definition (instance_id, sn_sys_id)",
+        # Classification hot-path: per-record lookups during classify_scan_results.
+        "CREATE INDEX IF NOT EXISTS ix_customer_update_xml_instance_update_guid ON customer_update_xml (instance_id, update_guid)",
+        "CREATE INDEX IF NOT EXISTS ix_customer_update_xml_instance_name ON customer_update_xml (instance_id, name)",
+        "CREATE INDEX IF NOT EXISTS ix_version_history_instance_state_sys_update_name ON version_history (instance_id, state, sys_update_name)",
+        "CREATE INDEX IF NOT EXISTS ix_version_history_instance_customer_update_sys_id ON version_history (instance_id, customer_update_sys_id)",
+        # Covering indexes for classify_scan_results ORDER BY patterns — without
+        # these SQLite picks the wrong index and does full scans.
+        "CREATE INDEX IF NOT EXISTS ix_vh_classify_by_name ON version_history (instance_id, state, sys_update_name, sys_recorded_at DESC, id DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_vh_classify_by_custsysid ON version_history (instance_id, customer_update_sys_id, sys_recorded_at DESC, id DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_vh_earliest_by_name ON version_history (instance_id, sys_update_name, sys_recorded_at ASC, id ASC)",
+        "CREATE INDEX IF NOT EXISTS ix_vh_earliest_by_custsysid ON version_history (instance_id, customer_update_sys_id, sys_recorded_at ASC, id ASC)",
+        "CREATE INDEX IF NOT EXISTS ix_metadata_customization_instance_sys_metadata ON metadata_customization (instance_id, sys_metadata_sys_id)",
+        "CREATE INDEX IF NOT EXISTS ix_metadata_customization_instance_sys_update_name ON metadata_customization (instance_id, sys_update_name)",
         # Durable integration run-state tables.
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_job_run_run_uid ON job_run (run_uid)",
         "CREATE INDEX IF NOT EXISTS ix_job_run_instance_module_type_status ON job_run (instance_id, module, job_type, status)",

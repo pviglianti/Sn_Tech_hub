@@ -91,7 +91,8 @@
                 self._setMeta(
                     (summary.feature_count || 0) + ' features, ' +
                     (summary.customized_member_count || 0) + ' grouped, ' +
-                    (summary.ungrouped_customized_count || 0) + ' ungrouped'
+                    (summary.ungrouped_customized_count || 0) + ' unresolved, ' +
+                    (summary.bucket_feature_count || 0) + ' buckets'
                 );
             })
             .catch(function (err) {
@@ -173,6 +174,18 @@
             ? '<span class="fht-badge fht-disposition-' + feature.disposition + '">' +
               feature.disposition.replace(/_/g, ' ') + '</span>'
             : '';
+        var kindBadge = feature.feature_kind
+            ? '<span class="fht-badge fht-kind-' + feature.feature_kind + '">' +
+              this._esc(feature.feature_kind) + '</span>'
+            : '';
+        var compositionBadge = feature.composition_type
+            ? '<span class="fht-badge fht-composition-' + feature.composition_type + '">' +
+              this._esc(feature.composition_type) + '</span>'
+            : '';
+        var nameStatusBadge = feature.name_status
+            ? '<span class="fht-badge fht-name-status-' + feature.name_status + '">' +
+              this._esc(feature.name_status.replace(/_/g, ' ')) + '</span>'
+            : '';
 
         var confidenceBadge = feature.confidence_score != null
             ? '<span class="fht-badge fht-confidence">' +
@@ -189,6 +202,9 @@
         html += this._esc(feature.name) + '</a>';
         html += ' <a href="' + this._esc(this._buildGraphHref({ featureId: feature.id })) + '" onclick="event.stopPropagation()" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem;">Graph</a>';
         html += ' <span class="fht-count">(' + memberCount + ')</span>';
+        html += kindBadge;
+        html += compositionBadge;
+        html += nameStatusBadge;
         html += dispositionBadge;
         html += confidenceBadge;
         if (feature.pass_number) {
@@ -260,6 +276,7 @@
     FeatureHierarchyTree.prototype._renderMemberRow = function (member) {
         var sr = member.scan_result || {};
         var graphHref = sr.id ? this._buildGraphHref({ resultId: sr.id }) : '#';
+        var dependencyHref = sr.id ? this._buildDependencyHref({ resultId: sr.id }) : '#';
         var originClass = sr.origin_type ? 'origin-' + sr.origin_type : '';
         var origin = sr.origin_type
             ? '<span class="origin-badge ' + originClass + '">' +
@@ -269,6 +286,9 @@
             ? '<span class="fht-badge fht-source-' + member.assignment_source + '">' +
               member.assignment_source + '</span>'
             : '-';
+        var adjacencyBadge = sr.is_adjacent
+            ? ' <span class="fht-badge fht-composition-adjacent">adjacent</span>'
+            : '';
         var confidence = member.assignment_confidence != null
             ? Math.round(member.assignment_confidence * 100) + '%'
             : '-';
@@ -276,7 +296,9 @@
         return '<tr>' +
             '<td><a href="/results/' + (sr.id || '') + '">' +
             this._esc(sr.name || '-') + '</a>' +
-            ' <a href="' + this._esc(graphHref) + '" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem;">Graph</a></td>' +
+            adjacencyBadge +
+            ' <a href="' + this._esc(graphHref) + '" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem;">Graph</a>' +
+            ' <a href="' + this._esc(dependencyHref) + '" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem;">Dependency</a></td>' +
             '<td><code>' + this._esc(sr.table_name || '-') + '</code></td>' +
             '<td>' + origin + '</td>' +
             '<td>' + sourceBadge + '</td>' +
@@ -287,13 +309,15 @@
     FeatureHierarchyTree.prototype._renderContextRow = function (ctx) {
         var sr = ctx.scan_result || {};
         var graphHref = sr.id ? this._buildGraphHref({ resultId: sr.id }) : '#';
+        var dependencyHref = sr.id ? this._buildDependencyHref({ resultId: sr.id }) : '#';
         var confidence = ctx.confidence != null
             ? Math.round(ctx.confidence * 100) + '%'
             : '-';
         return '<tr class="fht-context-row">' +
             '<td><a href="/results/' + (sr.id || '') + '">' +
             this._esc(sr.name || '-') + '</a>' +
-            ' <a href="' + this._esc(graphHref) + '" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem;">Graph</a></td>' +
+            ' <a href="' + this._esc(graphHref) + '" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem;">Graph</a>' +
+            ' <a href="' + this._esc(dependencyHref) + '" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem;">Dependency</a></td>' +
             '<td><code>' + this._esc(sr.table_name || '-') + '</code></td>' +
             '<td>' + this._esc((ctx.context_type || '').replace(/_/g, ' ')) + '</td>' +
             '<td>' + confidence + '</td>' +
@@ -373,6 +397,7 @@
                 for (var it = 0; it < results.length; it++) {
                     var item = results[it];
                     var graphHref = item.id ? this._buildGraphHref({ resultId: item.id }) : '#';
+                    var dependencyHref = item.id ? this._buildDependencyHref({ resultId: item.id }) : '#';
                     var originClass = item.origin_type ? 'origin-' + item.origin_type : '';
                     var origin = item.origin_type
                         ? '<span class="origin-badge ' + originClass + '">' +
@@ -381,7 +406,8 @@
                     html += '<tr>' +
                         '<td><a href="/results/' + (item.id || '') + '">' +
                         this._esc(item.name || '-') + '</a>' +
-                        ' <a href="' + this._esc(graphHref) + '" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem;">Graph</a></td>' +
+                        ' <a href="' + this._esc(graphHref) + '" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem;">Graph</a>' +
+                        ' <a href="' + this._esc(dependencyHref) + '" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem;">Dependency</a></td>' +
                         '<td><code>' + this._esc(item.table_name || '-') + '</code></td>' +
                         '<td>' + origin + '</td>' +
                         '</tr>';
@@ -479,6 +505,15 @@
         if (this.scopeAssessmentId) params.set('assessment_id', String(this.scopeAssessmentId));
         if (this.scopeScanId) params.set('scan_id', String(this.scopeScanId));
         return '/relationship-graph?' + params.toString();
+    };
+
+    FeatureHierarchyTree.prototype._buildDependencyHref = function (opts) {
+        var params = new URLSearchParams();
+        if (opts && opts.resultId) params.set('result_id', String(opts.resultId));
+        if (opts && opts.tableName) params.set('table_name', String(opts.tableName));
+        if (this.scopeAssessmentId) params.set('assessment_id', String(this.scopeAssessmentId));
+        if (this.scopeScanId) params.set('scan_id', String(this.scopeScanId));
+        return '/dependency-map?' + params.toString();
     };
 
     FeatureHierarchyTree.prototype._esc = function (str) {

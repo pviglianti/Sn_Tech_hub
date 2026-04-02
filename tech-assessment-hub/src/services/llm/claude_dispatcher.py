@@ -83,11 +83,21 @@ class ClaudeDispatcher(BaseDispatcher):
             return False, "Claude CLI not found on PATH"
         try:
             result = subprocess.run(
-                [claude_bin, "-p", "--max-turns", "0", "respond with ok"],
-                capture_output=True, text=True, timeout=30,
+                [claude_bin, "auth", "status"],
+                capture_output=True, text=True, timeout=15,
             )
             if result.returncode == 0:
-                return True, "ok"
+                # Parse JSON status: {"loggedIn": true, "email": "...", ...}
+                try:
+                    status = json.loads(result.stdout)
+                    if status.get("loggedIn"):
+                        email = status.get("email", "")
+                        sub = status.get("subscriptionType", "")
+                        return True, f"ok — {email} ({sub})" if email else "ok"
+                    return False, "Not logged in — run: claude auth login"
+                except json.JSONDecodeError:
+                    # Non-JSON but exit 0 means likely ok
+                    return True, "ok"
             return False, f"error: exit {result.returncode} — {result.stderr[:200]}"
         except Exception as exc:
             return False, f"error: {exc}"

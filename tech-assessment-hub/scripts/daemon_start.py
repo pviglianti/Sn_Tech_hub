@@ -163,23 +163,31 @@ def main() -> int:
                 start_new_session=True,
             )
 
-        # Poll for reachability.
-        for _ in range(80):
+        # Poll for reachability (up to ~120 s for large DBs).
+        for attempt in range(120):
             if proc.poll() is not None:
                 print("Server exited during startup. Last logs:")
                 tail = _tail_lines(logfile, 80)
                 if tail:
                     print(tail)
                 return 1
-            if _url_reachable(probe_url, timeout_s=0.35):
+            if _url_reachable(probe_url, timeout_s=1.0):
                 pidfile.write_text(str(proc.pid))
                 urlfile.write_text(url)
                 print(f"Started (pid={proc.pid}) at {url}")
                 print(f"Logs: {logfile}")
                 return 0
-            time.sleep(0.1)
+            time.sleep(1)
 
-        print(f"Started (pid={proc.pid}) but did not become reachable at {url} yet.")
+        # Server is still starting — write pidfile so stop/restart can manage it.
+        if proc.poll() is None:
+            pidfile.write_text(str(proc.pid))
+            urlfile.write_text(url)
+            print(f"Started (pid={proc.pid}) but still warming up at {url}")
+            print(f"Check logs: {logfile}")
+            return 0
+
+        print(f"Server process exited before becoming reachable.")
         print(f"Check logs: {logfile}")
         return 1
     finally:

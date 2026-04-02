@@ -6,130 +6,221 @@ from sqlmodel import Session
 from .database import engine
 from sqlmodel import select
 
-from .models import GlobalApp, AppFileClass, NumberSequence, BestPractice, BestPracticeCategory
+from .models import (
+    GlobalApp, AppFileClass, NumberSequence, BestPractice, BestPracticeCategory,
+    AppFileClassQuery, AssessmentTypeConfig, ScanKindConfig,
+)
 from .app_file_class_catalog import app_file_class_seed_rows
 
 
+def _dedupe_list(items):
+    """Return deduplicated list preserving order."""
+    seen = set()
+    result = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+# YAML global_app_overrides merged into seed data so GlobalApp is the single
+# source of truth.  Keys must match the ``name`` field in the apps list below.
+_GLOBAL_APP_OVERRIDES = {
+    "incident": {
+        "tables": ["incident_task", "incident"],
+        "keywords": ["incident", "inc", "major incident"],
+    },
+    "change": {
+        "tables": ["change_request", "change_task"],
+        "keywords": ["change", "change_request", "change_task", "chg"],
+    },
+    "problem": {
+        "tables": ["problem", "problem_task"],
+        "keywords": ["problem", "prb"],
+    },
+    "request": {
+        "tables": ["sc_request", "sc_req_item", "sc_task", "sc_cat_item"],
+        "keywords": ["request", "catalog", "ritm", "req"],
+    },
+    "knowledge": {
+        "tables": ["kb_knowledge", "kb_category"],
+        "keywords": ["knowledge", "kb"],
+    },
+    "cmdb": {
+        "tables": ["cmdb_ci", "cmdb_rel_ci"],
+        "table_prefixes": ["cmdb_"],
+        "keywords": ["cmdb", "ci", "configuration"],
+    },
+    "asset": {
+        "tables": ["alm_asset", "alm_hardware", "alm_consumable"],
+        "table_prefixes": ["alm_"],
+        "keywords": ["asset", "alm"],
+    },
+    "sla": {
+        "tables": ["contract_sla", "task_sla"],
+        "keywords": ["sla", "service level"],
+    },
+    "service_portal": {
+        "tables": ["sp_portal", "sp_page", "sp_widget"],
+        "table_prefixes": ["sp_"],
+        "keywords": ["portal", "widget", "sp_"],
+    },
+    "hr_case": {
+        "tables": ["sn_hr_core_case", "sn_hr_core_task"],
+        "table_prefixes": ["sn_hr_"],
+        "keywords": ["hr", "hr_case"],
+    },
+    "csm_case": {
+        "tables": ["sn_customerservice_case"],
+        "table_prefixes": ["sn_customerservice_"],
+        "keywords": ["csm", "customer"],
+    },
+}
+
+
 def seed_global_apps(session: Session):
-    """Seed the GlobalApp table with known ITSM applications"""
+    """Seed the GlobalApp table with known ITSM applications.
+
+    Merges YAML ``global_app_overrides`` into the seed data so that
+    ``core_tables_json``, ``keywords_json``, and ``table_prefixes_json``
+    are the single source of truth.
+    """
 
     apps = [
         {
             "name": "incident",
             "label": "Incident Management",
             "description": "IT Incident Management application",
-            "core_tables_json": json.dumps(["incident"]),
+            "core_tables_json": ["incident"],
             "parent_table": "task",
-            "plugins_json": json.dumps(["com.snc.incident.mgt"]),
-            "keywords_json": json.dumps(["incident", "inc"]),
+            "plugins_json": ["com.snc.incident.mgt"],
+            "keywords_json": ["incident", "inc"],
             "display_order": 10,
         },
         {
             "name": "change",
             "label": "Change Management",
             "description": "IT Change Management application",
-            "core_tables_json": json.dumps(["change_request", "change_task"]),
+            "core_tables_json": ["change_request", "change_task"],
             "parent_table": "task",
-            "plugins_json": json.dumps(["com.snc.change.mgt"]),
-            "keywords_json": json.dumps(["change", "chg"]),
+            "plugins_json": ["com.snc.change.mgt"],
+            "keywords_json": ["change", "chg"],
             "display_order": 20,
         },
         {
             "name": "problem",
             "label": "Problem Management",
             "description": "IT Problem Management application",
-            "core_tables_json": json.dumps(["problem", "problem_task"]),
+            "core_tables_json": ["problem", "problem_task"],
             "parent_table": "task",
-            "plugins_json": json.dumps(["com.snc.problem.mgt"]),
-            "keywords_json": json.dumps(["problem", "prb"]),
+            "plugins_json": ["com.snc.problem.mgt"],
+            "keywords_json": ["problem", "prb"],
             "display_order": 30,
         },
         {
             "name": "request",
             "label": "Service Request / Catalog",
             "description": "Service Request and Catalog applications",
-            "core_tables_json": json.dumps(["sc_request", "sc_req_item", "sc_task", "sc_cat_item"]),
+            "core_tables_json": ["sc_request", "sc_req_item", "sc_task", "sc_cat_item"],
             "parent_table": "task",
-            "plugins_json": json.dumps(["com.snc.service_catalog"]),
-            "keywords_json": json.dumps(["request", "catalog", "ritm", "req"]),
+            "plugins_json": ["com.snc.service_catalog"],
+            "keywords_json": ["request", "catalog", "ritm", "req"],
             "display_order": 40,
         },
         {
             "name": "knowledge",
             "label": "Knowledge Management",
             "description": "Knowledge Base application",
-            "core_tables_json": json.dumps(["kb_knowledge", "kb_category"]),
+            "core_tables_json": ["kb_knowledge", "kb_category"],
             "parent_table": None,
-            "plugins_json": json.dumps(["com.snc.knowledge"]),
-            "keywords_json": json.dumps(["knowledge", "kb"]),
+            "plugins_json": ["com.snc.knowledge"],
+            "keywords_json": ["knowledge", "kb"],
             "display_order": 50,
         },
         {
             "name": "cmdb",
             "label": "CMDB / Configuration Management",
             "description": "Configuration Management Database",
-            "core_tables_json": json.dumps(["cmdb_ci", "cmdb_rel_ci"]),
+            "core_tables_json": ["cmdb_ci", "cmdb_rel_ci"],
             "parent_table": None,
-            "plugins_json": json.dumps(["com.snc.cmdb"]),
-            "keywords_json": json.dumps(["cmdb", "ci", "configuration"]),
+            "plugins_json": ["com.snc.cmdb"],
+            "keywords_json": ["cmdb", "ci", "configuration"],
             "display_order": 60,
         },
         {
             "name": "asset",
             "label": "Asset Management",
             "description": "IT Asset Management application",
-            "core_tables_json": json.dumps(["alm_asset", "alm_hardware", "alm_consumable"]),
+            "core_tables_json": ["alm_asset", "alm_hardware", "alm_consumable"],
             "parent_table": None,
-            "plugins_json": json.dumps(["com.snc.asset_management"]),
-            "keywords_json": json.dumps(["asset", "alm"]),
+            "plugins_json": ["com.snc.asset_management"],
+            "keywords_json": ["asset", "alm"],
             "display_order": 70,
         },
         {
             "name": "sla",
             "label": "SLA Management",
             "description": "Service Level Agreement management",
-            "core_tables_json": json.dumps(["contract_sla", "task_sla"]),
+            "core_tables_json": ["contract_sla", "task_sla"],
             "parent_table": None,
-            "plugins_json": json.dumps(["com.snc.sla"]),
-            "keywords_json": json.dumps(["sla", "service level"]),
+            "plugins_json": ["com.snc.sla"],
+            "keywords_json": ["sla", "service level"],
             "display_order": 80,
         },
         {
             "name": "service_portal",
             "label": "Service Portal",
             "description": "Service Portal customizations",
-            "core_tables_json": json.dumps(["sp_portal", "sp_page", "sp_widget"]),
+            "core_tables_json": ["sp_portal", "sp_page", "sp_widget"],
             "parent_table": None,
-            "plugins_json": json.dumps(["com.glide.service-portal.core"]),
-            "keywords_json": json.dumps(["portal", "widget", "sp_"]),
+            "plugins_json": ["com.glide.service-portal.core"],
+            "keywords_json": ["portal", "widget", "sp_"],
             "display_order": 90,
         },
         {
             "name": "hr_case",
             "label": "HR Case Management",
             "description": "HR Service Delivery - Case Management",
-            "core_tables_json": json.dumps(["sn_hr_core_case", "sn_hr_core_task"]),
+            "core_tables_json": ["sn_hr_core_case", "sn_hr_core_task"],
             "parent_table": "task",
-            "plugins_json": json.dumps(["com.sn_hr_core"]),
-            "keywords_json": json.dumps(["hr", "hr_case"]),
+            "plugins_json": ["com.sn_hr_core"],
+            "keywords_json": ["hr", "hr_case"],
             "display_order": 100,
         },
         {
             "name": "csm_case",
             "label": "Customer Service Management",
             "description": "Customer Service Management cases",
-            "core_tables_json": json.dumps(["sn_customerservice_case"]),
+            "core_tables_json": ["sn_customerservice_case"],
             "parent_table": "task",
-            "plugins_json": json.dumps(["com.sn_csm"]),
-            "keywords_json": json.dumps(["csm", "customer"]),
+            "plugins_json": ["com.sn_csm"],
+            "keywords_json": ["csm", "customer"],
             "display_order": 110,
         },
     ]
 
     for app_data in apps:
-        # Check if already exists
-        existing = session.query(GlobalApp).filter(GlobalApp.name == app_data["name"]).first()
-        if not existing:
+        name = app_data["name"]
+        overrides = _GLOBAL_APP_OVERRIDES.get(name, {})
+
+        # Merge override tables/keywords into seed data (deduplicated)
+        merged_tables = _dedupe_list(app_data["core_tables_json"] + overrides.get("tables", []))
+        merged_keywords = _dedupe_list(app_data["keywords_json"] + overrides.get("keywords", []))
+        table_prefixes = overrides.get("table_prefixes", [])
+
+        app_data["core_tables_json"] = json.dumps(merged_tables)
+        app_data["keywords_json"] = json.dumps(merged_keywords)
+        app_data["plugins_json"] = json.dumps(app_data["plugins_json"])
+        app_data["table_prefixes_json"] = json.dumps(table_prefixes) if table_prefixes else None
+
+        existing = session.query(GlobalApp).filter(GlobalApp.name == name).first()
+        if existing:
+            # Update existing records to backfill merged data
+            existing.core_tables_json = app_data["core_tables_json"]
+            existing.keywords_json = app_data["keywords_json"]
+            existing.table_prefixes_json = app_data["table_prefixes_json"]
+        else:
             app = GlobalApp(**app_data)
             session.add(app)
 
@@ -604,6 +695,178 @@ def seed_best_practices(session: Session):
     print(f"Seeded {len(new_records)} best practices ({len(checks)} total defined)")
 
 
+def seed_app_file_class_queries(session: Session):
+    """Seed the AppFileClassQuery table from scan_rules.yaml app_file_class_queries.
+
+    Each YAML entry may produce 1 or 2 rows (table_pattern and/or keyword_pattern).
+    Idempotent — skips rows where (app_file_class_id, query_type, pattern) already exists.
+    """
+
+    # Map from YAML app_file_class_queries section
+    query_defs = [
+        # (sys_class_name, query_type, pattern, target_table_field, display_order)
+        ("sys_script", "table_pattern", "ref_sys_script.collectionLIKE{table}", "ref_sys_script.collection", 10),
+        ("sys_script_client", "table_pattern", "ref_sys_script_client.tableLIKE{table}", "ref_sys_script_client.table", 10),
+        ("sys_ui_policy", "table_pattern", "ref_sys_ui_policy.tableLIKE{table}", "ref_sys_ui_policy.table", 10),
+        ("sys_ui_action", "table_pattern", "ref_sys_ui_action.tableLIKE{table}", "ref_sys_ui_action.table", 10),
+        ("sys_ui_policy_action", "table_pattern", "ref_sys_ui_policy_action.ui_policy.tableLIKE{table}", "ref_sys_ui_policy_action.ui_policy.table", 10),
+        ("sys_data_policy2", "table_pattern", "ref_sys_data_policy2.tableLIKE{table}", "ref_sys_data_policy2.table", 10),
+        ("wf_workflow", "table_pattern", "ref_wf_workflow.tableLIKE{table}", "ref_wf_workflow.table", 10),
+        ("sys_report", "table_pattern", "ref_sys_report.tableLIKE{table}", "ref_sys_report.table", 10),
+        ("sys_dictionary", "keyword_pattern", "123TEXTQUERY321={keyword}", None, 10),
+        ("sys_choice", "table_pattern", "ref_sys_choice.nameSTARTSWITH{table}.", "ref_sys_choice.name", 10),
+        ("sys_script_include", "keyword_pattern", "{base}^nameLIKE{keyword}^OR{base}^scriptLIKE{keyword}", None, 10),
+        ("sp_widget", "keyword_pattern", "123TEXTQUERY321={keyword}", None, 10),
+        ("sp_page", "keyword_pattern", "123TEXTQUERY321={keyword}", None, 10),
+    ]
+
+    # Build lookup of sys_class_name → AppFileClass.id
+    all_classes = session.exec(select(AppFileClass)).all()
+    class_id_map = {c.sys_class_name: c.id for c in all_classes}
+
+    # Build set of existing queries for idempotency
+    existing_queries = session.exec(select(AppFileClassQuery)).all()
+    existing_keys = {
+        (q.app_file_class_id, q.query_type, q.pattern)
+        for q in existing_queries
+    }
+
+    created = 0
+    for sys_class_name, query_type, pattern, target_table_field, display_order in query_defs:
+        class_id = class_id_map.get(sys_class_name)
+        if class_id is None:
+            print(f"  WARN: AppFileClass '{sys_class_name}' not found, skipping query seed")
+            continue
+
+        key = (class_id, query_type, pattern)
+        if key in existing_keys:
+            continue
+
+        query = AppFileClassQuery(
+            app_file_class_id=class_id,
+            query_type=query_type,
+            pattern=pattern,
+            target_table_field=target_table_field,
+            description=f"{query_type} for {sys_class_name}",
+            display_order=display_order,
+        )
+        session.add(query)
+        created += 1
+
+    session.commit()
+    print(f"Seeded {created} app file class queries ({len(query_defs)} total defined)")
+
+
+def seed_assessment_type_configs(session: Session):
+    """Seed the AssessmentTypeConfig table from scan_rules.yaml assessment_types.
+
+    Idempotent — skips rows where name already exists.
+    """
+
+    configs = [
+        {
+            "name": "global_app",
+            "label": "Global Application",
+            "description": "Scan customizations for a global ITSM application",
+            "required_fields_json": json.dumps(["target_app_id", "app_file_classes_json"]),
+            "default_scans_json": json.dumps(["metadata_index"]),
+            "scope_options_json": json.dumps(["all", "global"]),
+            "drivers_json": json.dumps(["core_tables", "keywords"]),
+            "display_order": 10,
+        },
+        {
+            "name": "table",
+            "label": "Table Assessment",
+            "description": "Scan customizations for specific tables",
+            "required_fields_json": json.dumps(["target_tables_json", "app_file_classes_json"]),
+            "default_scans_json": json.dumps(["metadata_index"]),
+            "scope_options_json": json.dumps(["all", "global"]),
+            "drivers_json": json.dumps(["target_tables", "keywords"]),
+            "display_order": 20,
+        },
+        {
+            "name": "plugin",
+            "label": "Plugin Assessment",
+            "description": "Scan customizations for specific plugins",
+            "required_fields_json": json.dumps(["target_plugins_json", "app_file_classes_json"]),
+            "default_scans_json": json.dumps(["metadata_index"]),
+            "scope_options_json": json.dumps(["all", "global"]),
+            "drivers_json": json.dumps(["plugins"]),
+            "display_order": 30,
+        },
+        {
+            "name": "platform_global",
+            "label": "Platform Global",
+            "description": "Scan across entire platform",
+            "required_fields_json": json.dumps(["app_file_classes_json"]),
+            "default_scans_json": json.dumps(["metadata_index"]),
+            "scope_options_json": json.dumps(["all", "global"]),
+            "drivers_json": json.dumps([]),
+            "display_order": 40,
+        },
+    ]
+
+    for cfg_data in configs:
+        existing = session.query(AssessmentTypeConfig).filter(
+            AssessmentTypeConfig.name == cfg_data["name"]
+        ).first()
+        if not existing:
+            session.add(AssessmentTypeConfig(**cfg_data))
+
+    session.commit()
+    print(f"Seeded {len(configs)} assessment type configs")
+
+
+def seed_scan_kind_configs(session: Session):
+    """Seed the ScanKindConfig table from scan_rules.yaml scan_kinds.
+
+    Idempotent — skips rows where name already exists.
+    """
+
+    kinds = [
+        {
+            "name": "metadata_index",
+            "target_table": "sys_metadata",
+            "description": "Base index of config records in scope",
+            "display_order": 10,
+        },
+        {
+            "name": "update_xml",
+            "target_table": "sys_update_xml",
+            "description": "Customer update XML records matching app/table",
+            "display_order": 20,
+        },
+        {
+            "name": "metadata_customization",
+            "target_table": "sys_metadata_customization",
+            "description": "OOTB customization signals",
+            "display_order": 30,
+        },
+        {
+            "name": "version_history",
+            "target_table": "sys_update_version",
+            "description": "Version history for origin classification",
+            "display_order": 40,
+        },
+        {
+            "name": "artifact_detail",
+            "target_table": "varies",
+            "description": "Optional per-table detail fetch",
+            "display_order": 50,
+        },
+    ]
+
+    for kind_data in kinds:
+        existing = session.query(ScanKindConfig).filter(
+            ScanKindConfig.name == kind_data["name"]
+        ).first()
+        if not existing:
+            session.add(ScanKindConfig(**kind_data))
+
+    session.commit()
+    print(f"Seeded {len(kinds)} scan kind configs")
+
+
 def run_seed():
     """Run all seed operations"""
     with Session(engine) as session:
@@ -612,6 +875,9 @@ def run_seed():
         seed_app_file_classes(session)
         seed_number_sequences(session)
         seed_best_practices(session)
+        seed_app_file_class_queries(session)
+        seed_assessment_type_configs(session)
+        seed_scan_kind_configs(session)
         print("Seed complete!")
 
 

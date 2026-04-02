@@ -11,7 +11,10 @@ from sqlmodel import Session, select
 
 from ...registry import ToolSpec
 from ....models import Feature, FeatureScanResult, ScanResult
-from ....services.customization_sync import is_customized
+from ....services.feature_governance import (
+    refresh_feature_metadata,
+    replace_result_feature_membership,
+)
 
 # ── Add tool ────────────────────────────────────────────────────────
 
@@ -46,14 +49,6 @@ def handle_add(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
     if not scan_result:
         raise ValueError(f"ScanResult not found: {scan_result_id}")
 
-    # Validate scan result is customized
-    if not is_customized(scan_result.origin_type):
-        raise ValueError(
-            f"ScanResult {scan_result_id} is not a customized record "
-            f"(origin_type={scan_result.origin_type!r}). "
-            f"Only modified_ootb and net_new_customer results can be feature members."
-        )
-
     # Idempotent: check if link already exists
     existing = session.exec(
         select(FeatureScanResult).where(
@@ -72,16 +67,23 @@ def handle_add(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
             ),
         }
 
-    # Create link
-    link = FeatureScanResult(
+    existing_feature_ids = session.exec(
+        select(FeatureScanResult.feature_id).where(FeatureScanResult.scan_result_id == scan_result_id)
+    ).all()
+    link = replace_result_feature_membership(
+        session,
         feature_id=feature_id,
-        scan_result_id=scan_result_id,
+        scan_result=scan_result,
         assignment_source="ai",
         assignment_confidence=1.0,
         is_primary=True,
         membership_type="primary",
     )
-    session.add(link)
+    refresh_feature_metadata(
+        session,
+        feature_ids=[feature_id, *existing_feature_ids],
+        commit=False,
+    )
     session.commit()
     session.refresh(link)
 
@@ -137,7 +139,13 @@ def handle_remove(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
             ),
         }
 
+    affected_feature_ids = [feature_id]
     session.delete(existing)
+    refresh_feature_metadata(
+        session,
+        feature_ids=affected_feature_ids,
+        commit=False,
+    )
     session.commit()
 
     return {

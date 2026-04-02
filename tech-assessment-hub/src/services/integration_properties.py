@@ -6,6 +6,7 @@ an Admin UI (via ``app_config``) without touching execution code.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -84,6 +85,8 @@ AI_ANALYSIS_CONTEXT_ENRICHMENT = "ai_analysis.context_enrichment"
 AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH = "ai_analysis.max_rabbit_hole_depth"
 AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP = "ai_analysis.max_neighbors_per_hop"
 AI_ANALYSIS_MIN_EDGE_WEIGHT = "ai_analysis.min_edge_weight_for_traversal"
+AI_FEATURE_PASS_PLAN_JSON = "ai.feature.pass_plan_json"
+AI_FEATURE_BUCKET_TAXONOMY_JSON = "ai.feature.bucket_taxonomy_json"
 
 # Pipeline prompt integration keys
 PIPELINE_USE_REGISTERED_PROMPTS = "pipeline.use_registered_prompts"
@@ -156,12 +159,19 @@ class ObservationProperties:
 @dataclass(frozen=True)
 class AIAnalysisProperties:
     """Typed AI analysis stage properties loaded from app_config."""
-    batch_size: int = 0  # 0 = all at once, 50+ for batching
+    batch_size: int = 1  # Default to one artifact per connected AI dispatch
     enable_depth_first: bool = True
     context_enrichment: str = "auto"  # "auto", "always", "never"
     max_rabbit_hole_depth: int = 10
     max_neighbors_per_hop: int = 20
     min_edge_weight_for_traversal: float = 2.0
+
+
+@dataclass(frozen=True)
+class AIFeatureProperties:
+    """Typed AI-owned feature-stage orchestration properties."""
+    pass_plan: List[Dict[str, Any]] = field(default_factory=list)
+    bucket_taxonomy: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -219,6 +229,53 @@ BOOL_OPTIONS: List[Tuple[str, str]] = [
     ("false", "No"),
 ]
 
+DEFAULT_AI_FEATURE_PASS_PLAN: List[Dict[str, Any]] = [
+    {"stage": "grouping", "pass_key": "structure", "label": "Structure"},
+    {"stage": "grouping", "pass_key": "coverage", "label": "Coverage"},
+    {"stage": "ai_refinement", "pass_key": "refine", "label": "Refine"},
+    {"stage": "ai_refinement", "pass_key": "final_name", "label": "Final Naming"},
+]
+
+DEFAULT_AI_FEATURE_BUCKET_TAXONOMY: List[Dict[str, Any]] = [
+    {
+        "key": "form_fields",
+        "label": "Form & Fields",
+        "description": (
+            "Leftover in-scope fields, dictionary entries, dictionary overrides, "
+            "views, UI policies, and UI policy actions that do not clearly belong "
+            "to an obvious solution feature."
+        ),
+    },
+    {
+        "key": "acl",
+        "label": "ACL",
+        "description": (
+            "Remaining in-scope ACLs, roles, and security rules that are not part "
+            "of a clearer functional feature."
+        ),
+    },
+    {
+        "key": "notifications",
+        "label": "Notifications",
+        "description": "Email actions, notifications, and related messaging artifacts.",
+    },
+    {
+        "key": "scheduled_jobs",
+        "label": "Scheduled Jobs",
+        "description": "Scheduled scripts, jobs, and recurring maintenance automations.",
+    },
+    {
+        "key": "integration_artifacts",
+        "label": "Integration Artifacts",
+        "description": "REST, SOAP, import, MID, and other integration-supporting artifacts.",
+    },
+    {
+        "key": "data_policies_validations",
+        "label": "Data Policies & Validations",
+        "description": "Data policies, validations, and guardrail logic left after solution grouping.",
+    },
+]
+
 AI_RUNTIME_MODE_OPTIONS: List[Tuple[str, str]] = [
     ("local_subscription", "Local Subscription (Recommended)"),
     ("api_key", "API Key"),
@@ -270,12 +327,14 @@ PROPERTY_DEFAULTS: Dict[str, str] = {
     OBSERVATIONS_INCLUDE_USAGE_QUERIES: "auto",
     OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT: "2",
     # AI Analysis pipeline defaults
-    AI_ANALYSIS_BATCH_SIZE: "0",
+    AI_ANALYSIS_BATCH_SIZE: "1",
     AI_ANALYSIS_ENABLE_DEPTH_FIRST: "true",
     AI_ANALYSIS_CONTEXT_ENRICHMENT: "auto",
     AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH: "10",
     AI_ANALYSIS_MAX_NEIGHBORS_PER_HOP: "20",
     AI_ANALYSIS_MIN_EDGE_WEIGHT: "2.0",
+    AI_FEATURE_PASS_PLAN_JSON: json.dumps(DEFAULT_AI_FEATURE_PASS_PLAN, sort_keys=True),
+    AI_FEATURE_BUCKET_TAXONOMY_JSON: json.dumps(DEFAULT_AI_FEATURE_BUCKET_TAXONOMY, sort_keys=True),
     # Pipeline prompt integration defaults
     PIPELINE_USE_REGISTERED_PROMPTS: "false",
     # AI runtime + budget defaults
@@ -683,8 +742,9 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         key=AI_ANALYSIS_BATCH_SIZE,
         label="AI Analysis Batch Size",
         description=(
-            "Number of artifacts to process per AI analysis batch. "
-            "0 = all at once. Set to 50+ for large assessments."
+            "Number of artifacts to process per connected AI analysis dispatch. "
+            "Use 1 for strict artifact-by-artifact review; raise this only when "
+            "you intentionally want broader batches."
         ),
         value_type="int",
         default=PROPERTY_DEFAULTS[AI_ANALYSIS_BATCH_SIZE],
@@ -773,6 +833,33 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         section=SECTION_AI_ANALYSIS,
         min_value=0.0,
         max_value=10.0,
+    ),
+    AI_FEATURE_PASS_PLAN_JSON: IntegrationPropertyDefinition(
+        key=AI_FEATURE_PASS_PLAN_JSON,
+        label="AI Feature Pass Plan (JSON)",
+        description=(
+            "Ordered pass plan for AI-owned feature grouping and refinement. "
+            "Each item should declare stage and pass_key, with optional provider, model, "
+            "and effort overrides for staged multi-LLM execution."
+        ),
+        value_type="string",
+        default=PROPERTY_DEFAULTS[AI_FEATURE_PASS_PLAN_JSON],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_feature_pipeline",
+        section=SECTION_AI_ANALYSIS,
+    ),
+    AI_FEATURE_BUCKET_TAXONOMY_JSON: IntegrationPropertyDefinition(
+        key=AI_FEATURE_BUCKET_TAXONOMY_JSON,
+        label="AI Bucket Taxonomy (JSON)",
+        description=(
+            "Bucket feature definitions used only after solution-first grouping. "
+            "These define leftover in-scope categories such as Form & Fields or ACL."
+        ),
+        value_type="string",
+        default=PROPERTY_DEFAULTS[AI_FEATURE_BUCKET_TAXONOMY_JSON],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_feature_pipeline",
+        section=SECTION_AI_ANALYSIS,
     ),
     # ----- Pipeline prompt integration -----
     PIPELINE_USE_REGISTERED_PROMPTS: IntegrationPropertyDefinition(
@@ -1413,6 +1500,79 @@ def load_ai_analysis_properties(
             defaults.min_edge_weight_for_traversal,
             instance_id=instance_id,
         ),
+    )
+
+
+def load_ai_feature_properties(
+    session: Session,
+    instance_id: Optional[int] = None,
+) -> AIFeatureProperties:
+    """Load AI-owned feature-stage orchestration properties from app_config."""
+    pass_plan_raw = (
+        _read_property(session, AI_FEATURE_PASS_PLAN_JSON, instance_id=instance_id)
+        or PROPERTY_DEFAULTS[AI_FEATURE_PASS_PLAN_JSON]
+    ).strip()
+    bucket_taxonomy_raw = (
+        _read_property(session, AI_FEATURE_BUCKET_TAXONOMY_JSON, instance_id=instance_id)
+        or PROPERTY_DEFAULTS[AI_FEATURE_BUCKET_TAXONOMY_JSON]
+    ).strip()
+
+    try:
+        pass_plan = json.loads(pass_plan_raw)
+        if not isinstance(pass_plan, list):
+            raise ValueError("pass plan must be a list")
+    except Exception:
+        pass_plan = list(DEFAULT_AI_FEATURE_PASS_PLAN)
+
+    try:
+        bucket_taxonomy = json.loads(bucket_taxonomy_raw)
+        if not isinstance(bucket_taxonomy, list):
+            raise ValueError("bucket taxonomy must be a list")
+    except Exception:
+        bucket_taxonomy = list(DEFAULT_AI_FEATURE_BUCKET_TAXONOMY)
+
+    normalized_pass_plan: List[Dict[str, Any]] = []
+    for item in pass_plan:
+        if not isinstance(item, dict):
+            continue
+        stage = str(item.get("stage") or "").strip().lower()
+        pass_key = str(item.get("pass_key") or "").strip().lower()
+        if not stage or not pass_key:
+            continue
+        normalized_pass_plan.append(
+            {
+                "stage": stage,
+                "pass_key": pass_key,
+                "label": str(item.get("label") or pass_key.replace("_", " ").title()).strip(),
+                "provider": str(item.get("provider") or "").strip().lower() or None,
+                "model": str(item.get("model") or "").strip() or None,
+                "effort": str(item.get("effort") or "").strip().lower() or None,
+            }
+        )
+    if not normalized_pass_plan:
+        normalized_pass_plan = list(DEFAULT_AI_FEATURE_PASS_PLAN)
+
+    normalized_bucket_taxonomy: List[Dict[str, Any]] = []
+    for item in bucket_taxonomy:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip().lower()
+        label = str(item.get("label") or "").strip()
+        if not key or not label:
+            continue
+        normalized_bucket_taxonomy.append(
+            {
+                "key": key,
+                "label": label,
+                "description": str(item.get("description") or "").strip(),
+            }
+        )
+    if not normalized_bucket_taxonomy:
+        normalized_bucket_taxonomy = list(DEFAULT_AI_FEATURE_BUCKET_TAXONOMY)
+
+    return AIFeatureProperties(
+        pass_plan=normalized_pass_plan,
+        bucket_taxonomy=normalized_bucket_taxonomy,
     )
 
 

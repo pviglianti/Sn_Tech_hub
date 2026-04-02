@@ -223,9 +223,9 @@ def test_engine_run_populates_code_references(db_session, db_engine):
             text(
                 """
                 CREATE TABLE IF NOT EXISTS asmt_business_rule (
-                    id INTEGER PRIMARY KEY,
-                    scan_result_id INTEGER,
-                    sn_sys_id TEXT,
+                    _row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    _instance_id INTEGER NOT NULL,
+                    sys_id TEXT NOT NULL,
                     name TEXT,
                     script TEXT
                 )
@@ -235,12 +235,12 @@ def test_engine_run_populates_code_references(db_session, db_engine):
         conn.execute(
             text(
                 """
-                INSERT INTO asmt_business_rule (scan_result_id, sn_sys_id, name, script)
-                VALUES (:sr_id, :sys_id, :name, :script)
+                INSERT INTO asmt_business_rule (_instance_id, sys_id, name, script)
+                VALUES (:inst_id, :sys_id, :name, :script)
                 """
             ),
             {
-                "sr_id": sr_br.id,
+                "inst_id": inst.id,
                 "sys_id": "aaa111",
                 "name": "BR - Approval Check",
                 "script": "var helper = new ApprovalHelper();\nvar gr = new GlideRecord('sc_req_item');\ngr.query();",
@@ -311,9 +311,9 @@ def test_engine_run_resolves_target_scan_result(db_session, db_engine):
             text(
                 """
                 CREATE TABLE IF NOT EXISTS asmt_business_rule (
-                    id INTEGER PRIMARY KEY,
-                    scan_result_id INTEGER,
-                    sn_sys_id TEXT,
+                    _row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    _instance_id INTEGER NOT NULL,
+                    sys_id TEXT NOT NULL,
                     name TEXT,
                     script TEXT
                 )
@@ -323,12 +323,12 @@ def test_engine_run_resolves_target_scan_result(db_session, db_engine):
         conn.execute(
             text(
                 """
-                INSERT INTO asmt_business_rule (scan_result_id, sn_sys_id, name, script)
-                VALUES (:sr_id, :sys_id, :name, :script)
+                INSERT INTO asmt_business_rule (_instance_id, sys_id, name, script)
+                VALUES (:inst_id, :sys_id, :name, :script)
                 """
             ),
             {
-                "sr_id": sr_br.id,
+                "inst_id": inst.id,
                 "sys_id": "aaa111",
                 "name": "BR - Approval Check",
                 "script": "var helper = new ApprovalHelper();",
@@ -348,3 +348,698 @@ def test_engine_run_resolves_target_scan_result(db_session, db_engine):
 
     assert len(refs) == 1
     assert refs[0].target_scan_result_id == sr_si.id
+
+
+def test_engine_run_resolves_all_matching_script_include_results(db_session, db_engine):
+    from src.engines.code_reference_parser import run
+
+    inst = Instance(
+        name="test",
+        url="https://test.service-now.com",
+        username="admin",
+        password_encrypted="x",
+    )
+    db_session.add(inst)
+    db_session.flush()
+
+    asmt = Assessment(
+        instance_id=inst.id,
+        name="Test",
+        number="ASMT0001A",
+        assessment_type=AssessmentType.global_app,
+        state=AssessmentState.pending,
+    )
+    db_session.add(asmt)
+    db_session.flush()
+
+    scan = Scan(
+        assessment_id=asmt.id,
+        scan_type=ScanType.metadata,
+        name="test scan",
+        status=ScanStatus.completed,
+    )
+    db_session.add(scan)
+    db_session.flush()
+
+    sr_br = ScanResult(
+        scan_id=scan.id,
+        sys_id="aaa111-multi",
+        table_name="sys_script",
+        name="BR - Shared Helper Check",
+        sys_scope="global",
+    )
+    sr_si_a = ScanResult(
+        scan_id=scan.id,
+        sys_id="bbb222-multi-a",
+        table_name="sys_script_include",
+        name="SharedHelper",
+        sys_scope="global",
+    )
+    sr_si_b = ScanResult(
+        scan_id=scan.id,
+        sys_id="bbb222-multi-b",
+        table_name="sys_script_include",
+        name="SharedHelper",
+        sys_scope="x_app_scope",
+    )
+    db_session.add_all([sr_br, sr_si_a, sr_si_b])
+    db_session.flush()
+
+    with db_engine.connect() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS asmt_business_rule (
+                    _row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    _instance_id INTEGER NOT NULL,
+                    sys_id TEXT NOT NULL,
+                    name TEXT,
+                    script TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO asmt_business_rule (_instance_id, sys_id, name, script)
+                VALUES (:inst_id, :sys_id, :name, :script)
+                """
+            ),
+            {
+                "inst_id": inst.id,
+                "sys_id": "aaa111-multi",
+                "name": "BR - Shared Helper Check",
+                "script": "var helper = new SharedHelper();",
+            },
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS asmt_script_include (
+                    _row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    _instance_id INTEGER NOT NULL,
+                    sys_id TEXT NOT NULL,
+                    name TEXT,
+                    api_name TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO asmt_script_include (_instance_id, sys_id, name, api_name)
+                VALUES (:inst_id, :sys_id, :name, :api_name)
+                """
+            ),
+            [
+                {
+                    "inst_id": inst.id,
+                    "sys_id": "bbb222-multi-a",
+                    "name": "SharedHelper",
+                    "api_name": "SharedHelper",
+                },
+                {
+                    "inst_id": inst.id,
+                    "sys_id": "bbb222-multi-b",
+                    "name": "SharedHelper",
+                    "api_name": "x_app.SharedHelper",
+                },
+            ],
+        )
+        conn.commit()
+
+    run(asmt.id, db_session)
+
+    refs = db_session.exec(
+        select(CodeReference).where(
+            CodeReference.assessment_id == asmt.id,
+            CodeReference.reference_type == "script_include",
+            CodeReference.target_identifier == "SharedHelper",
+        )
+    ).all()
+
+    assert {ref.target_scan_result_id for ref in refs} == {sr_si_a.id}
+
+
+def test_engine_run_resolves_script_include_by_exact_api_name(db_session, db_engine):
+    from src.engines.code_reference_parser import run
+
+    inst = Instance(
+        name="test",
+        url="https://test.service-now.com",
+        username="admin",
+        password_encrypted="x",
+    )
+    db_session.add(inst)
+    db_session.flush()
+
+    asmt = Assessment(
+        instance_id=inst.id,
+        name="Test",
+        number="ASMT0001B",
+        assessment_type=AssessmentType.global_app,
+        state=AssessmentState.pending,
+    )
+    db_session.add(asmt)
+    db_session.flush()
+
+    scan = Scan(
+        assessment_id=asmt.id,
+        scan_type=ScanType.metadata,
+        name="test scan",
+        status=ScanStatus.completed,
+    )
+    db_session.add(scan)
+    db_session.flush()
+
+    sr_br = ScanResult(
+        scan_id=scan.id,
+        sys_id="aaa111-api",
+        table_name="sys_script",
+        name="BR - Explicit Scoped Helper",
+        sys_scope="global",
+    )
+    sr_si_global = ScanResult(
+        scan_id=scan.id,
+        sys_id="bbb222-api-a",
+        table_name="sys_script_include",
+        name="SharedHelper",
+        sys_scope="global",
+    )
+    sr_si_scoped = ScanResult(
+        scan_id=scan.id,
+        sys_id="bbb222-api-b",
+        table_name="sys_script_include",
+        name="SharedHelper",
+        sys_scope="x_app_scope",
+    )
+    db_session.add_all([sr_br, sr_si_global, sr_si_scoped])
+    db_session.flush()
+
+    with db_engine.connect() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS asmt_business_rule (
+                    _row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    _instance_id INTEGER NOT NULL,
+                    sys_id TEXT NOT NULL,
+                    name TEXT,
+                    script TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS asmt_script_include (
+                    _row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    _instance_id INTEGER NOT NULL,
+                    sys_id TEXT NOT NULL,
+                    name TEXT,
+                    api_name TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO asmt_business_rule (_instance_id, sys_id, name, script)
+                VALUES (:inst_id, :sys_id, :name, :script)
+                """
+            ),
+            {
+                "inst_id": inst.id,
+                "sys_id": "aaa111-api",
+                "name": "BR - Explicit Scoped Helper",
+                "script": "gs.include('x_app.SharedHelper');",
+            },
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO asmt_script_include (_instance_id, sys_id, name, api_name)
+                VALUES (:inst_id, :sys_id, :name, :api_name)
+                """
+            ),
+            [
+                {
+                    "inst_id": inst.id,
+                    "sys_id": "bbb222-api-a",
+                    "name": "SharedHelper",
+                    "api_name": "SharedHelper",
+                },
+                {
+                    "inst_id": inst.id,
+                    "sys_id": "bbb222-api-b",
+                    "name": "SharedHelper",
+                    "api_name": "x_app.SharedHelper",
+                },
+            ],
+        )
+        conn.commit()
+
+    run(asmt.id, db_session)
+
+    refs = db_session.exec(
+        select(CodeReference).where(
+            CodeReference.assessment_id == asmt.id,
+            CodeReference.reference_type == "script_include",
+            CodeReference.target_identifier == "x_app.SharedHelper",
+        )
+    ).all()
+
+    assert {ref.target_scan_result_id for ref in refs} == {sr_si_scoped.id}
+
+
+def test_engine_run_resolves_field_and_reference_qual_dependencies(db_session, db_engine):
+    from src.engines.code_reference_parser import run
+
+    inst = Instance(
+        name="test",
+        url="https://test.service-now.com",
+        username="admin",
+        password_encrypted="x",
+    )
+    db_session.add(inst)
+    db_session.flush()
+
+    asmt = Assessment(
+        instance_id=inst.id,
+        name="Test",
+        number="ASMT0002",
+        assessment_type=AssessmentType.global_app,
+        state=AssessmentState.pending,
+    )
+    db_session.add(asmt)
+    db_session.flush()
+
+    scan = Scan(
+        assessment_id=asmt.id,
+        scan_type=ScanType.metadata,
+        name="test scan",
+        status=ScanStatus.completed,
+    )
+    db_session.add(scan)
+    db_session.flush()
+
+    sr_table = ScanResult(
+        scan_id=scan.id,
+        sys_id="tbl111",
+        table_name="sys_db_object",
+        name="incident",
+    )
+    sr_field = ScanResult(
+        scan_id=scan.id,
+        sys_id="dict111",
+        table_name="sys_dictionary",
+        name="incident.u_custom_field",
+        raw_data_json='{"name":"incident","element":"u_custom_field"}',
+    )
+    sr_ref_qual = ScanResult(
+        scan_id=scan.id,
+        sys_id="dict222",
+        table_name="sys_dictionary",
+        name="incident.u_requester",
+        raw_data_json='{"name":"incident","element":"u_requester"}',
+    )
+    sr_si = ScanResult(
+        scan_id=scan.id,
+        sys_id="si111",
+        table_name="sys_script_include",
+        name="AssignmentHelper",
+    )
+    sr_br = ScanResult(
+        scan_id=scan.id,
+        sys_id="br111",
+        table_name="sys_script",
+        name="BR - Dependency Check",
+        meta_target_table="incident",
+    )
+    db_session.add_all([sr_table, sr_field, sr_ref_qual, sr_si, sr_br])
+    db_session.flush()
+
+    with db_engine.connect() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS asmt_business_rule (
+                    _row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    _instance_id INTEGER NOT NULL,
+                    sys_id TEXT NOT NULL,
+                    name TEXT,
+                    script TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS asmt_dictionary_entry (
+                    _row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    _instance_id INTEGER NOT NULL,
+                    sys_id TEXT NOT NULL,
+                    name TEXT,
+                    element TEXT,
+                    reference_qual TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO asmt_business_rule (_instance_id, sys_id, name, script)
+                VALUES (:inst_id, :sys_id, :name, :script)
+                """
+            ),
+            {
+                "inst_id": inst.id,
+                "sys_id": "br111",
+                "name": "BR - Dependency Check",
+                "script": (
+                    "var helper = new AssignmentHelper();\n"
+                    "current.u_custom_field = 'x';\n"
+                    "var gr = new GlideRecord('incident');\n"
+                    "gr.query();"
+                ),
+            },
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO asmt_dictionary_entry (_instance_id, sys_id, name, element, reference_qual)
+                VALUES (:inst_id, :sys_id, :name, :element, :reference_qual)
+                """
+            ),
+            [
+                {
+                    "inst_id": inst.id,
+                    "sys_id": "dict111",
+                    "name": "incident",
+                    "element": "u_custom_field",
+                    "reference_qual": None,
+                },
+                {
+                    "inst_id": inst.id,
+                    "sys_id": "dict222",
+                    "name": "incident",
+                    "element": "u_requester",
+                    "reference_qual": "javascript:new AssignmentHelper().filter(current.u_custom_field);",
+                },
+            ],
+        )
+        conn.commit()
+
+    run(asmt.id, db_session)
+
+    refs = db_session.exec(
+        select(CodeReference).where(CodeReference.assessment_id == asmt.id)
+    ).all()
+
+    assert any(
+        ref.reference_type == "field_reference"
+        and ref.source_scan_result_id == sr_br.id
+        and ref.target_scan_result_id == sr_field.id
+        for ref in refs
+    )
+    assert any(
+        ref.reference_type == "table_query"
+        and ref.source_scan_result_id == sr_br.id
+        and ref.target_scan_result_id == sr_table.id
+        for ref in refs
+    )
+    assert any(
+        ref.reference_type == "script_include"
+        and ref.source_scan_result_id == sr_ref_qual.id
+        and ref.target_scan_result_id == sr_si.id
+        for ref in refs
+    )
+    assert any(
+        ref.reference_type == "field_reference"
+        and ref.source_scan_result_id == sr_ref_qual.id
+        and ref.target_scan_result_id == sr_field.id
+        for ref in refs
+    )
+
+
+def test_engine_run_resolves_field_dependencies_from_detail_tables(db_session, db_engine):
+    from src.engines.code_reference_parser import run
+
+    inst = Instance(
+        name="test",
+        url="https://test.service-now.com",
+        username="admin",
+        password_encrypted="x",
+    )
+    db_session.add(inst)
+    db_session.flush()
+
+    asmt = Assessment(
+        instance_id=inst.id,
+        name="Test",
+        number="ASMT0003",
+        assessment_type=AssessmentType.global_app,
+        state=AssessmentState.pending,
+    )
+    db_session.add(asmt)
+    db_session.flush()
+
+    scan = Scan(
+        assessment_id=asmt.id,
+        scan_type=ScanType.metadata,
+        name="test scan",
+        status=ScanStatus.completed,
+    )
+    db_session.add(scan)
+    db_session.flush()
+
+    sr_field = ScanResult(
+        scan_id=scan.id,
+        sys_id="dict-entry-1",
+        table_name="sys_dictionary",
+        name="Custom field label",
+        raw_data_json='{"sys_name":"Custom field label"}',
+    )
+    sr_override_target = ScanResult(
+        scan_id=scan.id,
+        sys_id="dict-override-1",
+        table_name="sys_dictionary_override",
+        name="assigned_to",
+        raw_data_json='{"sys_name":"assigned_to"}',
+    )
+    sr_override_source = ScanResult(
+        scan_id=scan.id,
+        sys_id="dict-override-2",
+        table_name="sys_dictionary_override",
+        name="assignment_group",
+        raw_data_json='{"sys_name":"assignment_group"}',
+    )
+    sr_override_source_base = ScanResult(
+        scan_id=scan.id,
+        sys_id="dict-entry-2",
+        table_name="sys_dictionary",
+        name="Assignment group",
+        raw_data_json='{"sys_name":"Assignment group"}',
+    )
+    sr_si = ScanResult(
+        scan_id=scan.id,
+        sys_id="si-dependency-1",
+        table_name="sys_script_include",
+        name="AssignmentHelper",
+    )
+    sr_br = ScanResult(
+        scan_id=scan.id,
+        sys_id="br-dependency-1",
+        table_name="sys_script",
+        name="BR - Incident Dependency Check",
+        meta_target_table="incident",
+    )
+    db_session.add_all([sr_field, sr_override_target, sr_override_source, sr_override_source_base, sr_si, sr_br])
+    db_session.flush()
+
+    with db_engine.connect() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS asmt_business_rule (
+                    _row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    _instance_id INTEGER NOT NULL,
+                    sys_id TEXT NOT NULL,
+                    name TEXT,
+                    script TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS asmt_dictionary_entry (
+                    _row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    _instance_id INTEGER NOT NULL,
+                    sys_id TEXT NOT NULL,
+                    name TEXT,
+                    element TEXT,
+                    reference_qual TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS asmt_dictionary_override (
+                    _row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    _instance_id INTEGER NOT NULL,
+                    sys_id TEXT NOT NULL,
+                    name TEXT,
+                    element TEXT,
+                    reference_qual TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO asmt_business_rule (_instance_id, sys_id, name, script)
+                VALUES (:inst_id, :sys_id, :name, :script)
+                """
+            ),
+            {
+                "inst_id": inst.id,
+                "sys_id": "br-dependency-1",
+                "name": "BR - Incident Dependency Check",
+                "script": "current.u_custom_field = 'x';\ncurrent.assignment_group = 'abc';",
+            },
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO asmt_dictionary_entry (_instance_id, sys_id, name, element, reference_qual)
+                VALUES (:inst_id, :sys_id, :name, :element, :reference_qual)
+                """
+            ),
+            [
+                {
+                    "inst_id": inst.id,
+                    "sys_id": "dict-entry-1",
+                    "name": "incident",
+                    "element": "u_custom_field",
+                    "reference_qual": None,
+                },
+                {
+                    "inst_id": inst.id,
+                    "sys_id": "dict-entry-2",
+                    "name": "incident",
+                    "element": "assignment_group",
+                    "reference_qual": None,
+                },
+            ],
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO asmt_dictionary_override (_instance_id, sys_id, name, element, reference_qual)
+                VALUES (:inst_id, :sys_id, :name, :element, :reference_qual)
+                """
+            ),
+            [
+                {
+                    "inst_id": inst.id,
+                    "sys_id": "dict-override-1",
+                    "name": "incident",
+                    "element": "assigned_to",
+                    "reference_qual": "",
+                },
+                {
+                    "inst_id": inst.id,
+                    "sys_id": "dict-override-2",
+                    "name": "incident",
+                    "element": "assignment_group",
+                    "reference_qual": "javascript:new AssignmentHelper().filter(current.assigned_to);",
+                },
+            ],
+        )
+        conn.commit()
+
+    run(asmt.id, db_session)
+
+    refs = db_session.exec(
+        select(CodeReference).where(CodeReference.assessment_id == asmt.id)
+    ).all()
+
+    assert any(
+        ref.reference_type == "field_reference"
+        and ref.source_scan_result_id == sr_br.id
+        and ref.target_scan_result_id == sr_field.id
+        for ref in refs
+    )
+    assert any(
+        ref.reference_type == "field_reference"
+        and ref.source_scan_result_id == sr_br.id
+        and ref.target_scan_result_id == sr_override_source.id
+        for ref in refs
+    )
+    assert any(
+        ref.reference_type == "field_reference"
+        and ref.source_scan_result_id == sr_br.id
+        and ref.target_scan_result_id == sr_override_source_base.id
+        for ref in refs
+    )
+    assert any(
+        ref.reference_type == "script_include"
+        and ref.source_scan_result_id == sr_override_source.id
+        and ref.target_scan_result_id == sr_si.id
+        for ref in refs
+    )
+    assert any(
+        ref.reference_type == "field_reference"
+        and ref.source_scan_result_id == sr_override_source.id
+        and ref.target_scan_result_id == sr_override_target.id
+        for ref in refs
+    )
+
+
+def test_resolve_targets_returns_all_exact_name_matches_for_untyped_reference():
+    from src.engines.code_reference_parser import _resolve_targets
+
+    event_ref = CodeReference(
+        source_scan_result_id=1,
+        reference_type="event",
+        target_identifier="shared.identifier",
+    )
+    candidate_a = ScanResult(
+        id=10,
+        scan_id=1,
+        sys_id="sr10",
+        table_name="sys_script_include",
+        name="shared.identifier",
+    )
+    candidate_b = ScanResult(
+        id=11,
+        scan_id=1,
+        sys_id="sr11",
+        table_name="sys_ui_policy",
+        name="shared.identifier",
+    )
+
+    resolved = _resolve_targets(
+        event_ref,
+        source_sr=None,
+        sr_by_sys_id={},
+        sr_by_name={"shared.identifier": [candidate_a, candidate_b]},
+        sr_by_table={},
+        table_results_by_name={},
+        field_targets_by_key={},
+        source_table_hints_by_result_id={},
+        script_include_targets_by_api_name={},
+    )
+
+    assert [candidate.id for candidate in resolved] == [candidate_a.id, candidate_b.id]

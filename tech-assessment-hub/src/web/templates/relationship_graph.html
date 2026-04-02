@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 
-{% block title %}Relationship Graph - Tech Assessment Hub{% endblock %}
+{% block title %}{{ graph_title }} - Tech Assessment Hub{% endblock %}
 
 {% block content %}
 <div id="rgShell" class="card rg-shell rg-expanded">
     <div class="rg-header">
         <div>
-            <h1>Relationship Graph</h1>
+            <h1>{{ graph_title }}</h1>
             <p class="text-muted-plain">Seed: <strong>{{ seed_mode | replace('_', ' ') | title }}</strong> — {{ seed_label }}</p>
             <p class="text-muted-sm">Click a node to center and load only its direct neighborhood.</p>
         </div>
@@ -36,6 +36,13 @@
         <button id="rgFitBtn" class="btn btn-sm btn-secondary" type="button">Fit Once</button>
         <label class="rg-checkbox rg-fit-checkbox"><input id="rgFitAllToggle" type="checkbox" /> Fit All</label>
         <button id="rgLabelsBtn" class="btn btn-sm btn-secondary" type="button">Labels</button>
+        <label class="rg-checkbox" style="white-space:nowrap;">
+            Node View
+            <select id="rgNodeViewSelect" class="form-control" style="min-width:140px;height:32px;padding:0.2rem 0.45rem;">
+                <option value="artifact" selected>Artifact</option>
+                <option value="result">Result</option>
+            </select>
+        </label>
         <div class="rg-stats">
             <span id="rgNodeCount">0</span> nodes •
             <span id="rgEdgeCount">0</span> edges
@@ -58,6 +65,17 @@
                     </div>
                     <label class="rg-checkbox"><input id="rgShowNotCustom" type="checkbox" checked /> Show Not Customized</label>
                 </div>
+            </div>
+            <div class="rg-section" id="rgScopeSection">
+                <h3>Scope</h3>
+                <label class="rg-checkbox"><input id="rgShowDirectScope" type="checkbox" checked /> Show Direct In Scope</label>
+                <label class="rg-checkbox"><input id="rgShowAdjacentScope" type="checkbox" checked /> Show Adjacent</label>
+                <label class="rg-checkbox"><input id="rgShowOutOfScope" type="checkbox" checked /> Show Out Of Scope</label>
+                <label class="rg-checkbox"><input id="rgShowScopeUnknown" type="checkbox" checked /> Show Scope Unknown</label>
+            </div>
+            <div class="rg-section" id="rgArtifactTypeSection">
+                <h3>Artifact Types</h3>
+                <div id="rgArtifactTypeFilters" class="text-muted-sm">No artifact types loaded.</div>
             </div>
             <div class="rg-section">
                 <h3>Relationship Types</h3>
@@ -111,6 +129,8 @@
 .rg-subfilter { margin: 0.4rem 0 0.45rem 1.2rem; display: flex; flex-direction: column; gap: 0.25rem; }
 .rg-edge-filter { display: flex; align-items: center; gap: 0.45rem; font-size: 0.82rem; margin-bottom: 0.35rem; }
 .rg-edge-swatch { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
+.rg-type-filter { display: flex; align-items: center; gap: 0.45rem; font-size: 0.82rem; margin-bottom: 0.35rem; }
+.rg-type-swatch { width: 12px; height: 12px; border-radius: 999px; display: inline-block; border: 1px solid rgba(255,255,255,0.25); flex: 0 0 auto; }
 .rg-breadcrumbs { display: flex; flex-wrap: wrap; gap: 0.35rem; }
 .rg-crumb { border: 1px solid var(--border-color); background: var(--surface-color); color: var(--text-color); border-radius: 999px; padding: 0.2rem 0.55rem; font-size: 0.75rem; cursor: pointer; }
 .rg-crumb:hover { border-color: var(--primary-color); }
@@ -158,7 +178,8 @@
         return;
     }
     var graph = new window.RelationshipGraph({
-        apiUrl: '/api/relationship-graph/neighborhood',
+        apiUrl: {{ graph_api_url | tojson }},
+        graphKind: {{ graph_kind | tojson }},
         initialSeed: {{ seed_payload | tojson }},
         canvasId: 'relationshipGraphCanvas',
         detailBodyId: 'rgDetailBody',
@@ -177,6 +198,13 @@
         showNotCustomId: 'rgShowNotCustom',
         showModifiedId: 'rgShowModified',
         showNetNewId: 'rgShowNetNew',
+        scopeSectionId: 'rgScopeSection',
+        showDirectScopeId: 'rgShowDirectScope',
+        showAdjacentScopeId: 'rgShowAdjacentScope',
+        showOutOfScopeId: 'rgShowOutOfScope',
+        showScopeUnknownId: 'rgShowScopeUnknown',
+        artifactTypeSectionId: 'rgArtifactTypeSection',
+        artifactTypeFiltersId: 'rgArtifactTypeFilters',
         zoomOutButtonId: 'rgZoomOutBtn',
         zoomInButtonId: 'rgZoomInBtn',
         layoutButtonId: 'rgLayoutBtn',
@@ -195,6 +223,7 @@
         panRightButtonId: 'rgPanRightBtn',
         panUpButtonId: 'rgPanUpBtn',
         panDownButtonId: 'rgPanDownBtn',
+        nodeViewSelectId: 'rgNodeViewSelect',
     });
     graph.init();
 })();

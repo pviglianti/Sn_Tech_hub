@@ -166,8 +166,21 @@ async function saveDefaults() {
 }
 
 async function triggerCliLogin(kind) {
-    await fetch('/api/llm/cli-login/' + kind, { method: 'POST' });
-    alert('Login command opened in Terminal. Complete sign-in in browser, then click Connect CLI.');
+    var btn = event.target;
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+    try {
+        var res = await fetch('/api/llm/cli-login/' + kind, { method: 'POST' });
+        var data = await res.json();
+        if (data.status === 'already_authenticated') {
+            await loadAll();
+            return;
+        }
+        alert('Login command opened in Terminal. Complete sign-in in browser, then click Connect CLI.');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Sign In';
+    }
 }
 
 async function connectCli(providerId) {

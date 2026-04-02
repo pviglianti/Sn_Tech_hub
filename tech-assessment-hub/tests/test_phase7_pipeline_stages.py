@@ -7,15 +7,28 @@ Also tests pipeline stage configuration dicts and advance-pipeline endpoint.
 
 import pytest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from src.models import (
     Assessment,
     AssessmentState,
     AssessmentType,
+    AssessmentPhaseProgress,
+    Feature,
+    FeatureRecommendation,
+    FeatureScanResult,
+    GeneralRecommendation,
     Instance,
+    OriginType,
     PipelineStage,
+    ReviewStatus,
+    Scan,
+    ScanResult,
+    ScanStatus,
+    ScanType,
 )
+from src.services.integration_properties import AIRuntimeProperties
+from src.services.ai_feature_dispatch import AIFeatureStageSummary
 
 
 def test_pipeline_stage_has_exactly_10_members():
@@ -233,7 +246,7 @@ def test_ai_analysis_batch_size_property_registered():
     assert AI_ANALYSIS_BATCH_SIZE in PROPERTY_DEFINITIONS
     defn = PROPERTY_DEFINITIONS[AI_ANALYSIS_BATCH_SIZE]
     assert defn.section == SECTION_AI_ANALYSIS
-    assert defn.default == "0"
+    assert defn.default == "1"
 
 
 def test_ai_analysis_context_enrichment_property_registered():
@@ -254,8 +267,54 @@ def test_load_ai_analysis_properties_defaults(db_session):
     )
     props = load_ai_analysis_properties(db_session)
     assert isinstance(props, AIAnalysisProperties)
-    assert props.batch_size == 0
+    assert props.batch_size == 1
     assert props.context_enrichment == "auto"
+
+
+@patch("src.server._start_assessment_pipeline_job", return_value=True)
+@patch("src.server._get_assessment_pipeline_job_snapshot", return_value=None)
+def test_advance_pipeline_blocks_observations_without_ai_scope_triage(
+    mock_snapshot, mock_start, client, db_session
+):
+    asmt = _seed_assessment_at_stage(db_session, PipelineStage.ai_analysis.value)
+    scan = Scan(
+        assessment_id=asmt.id,
+        scan_type=ScanType.metadata,
+        name="gate-scan",
+        status=ScanStatus.completed,
+    )
+    db_session.add(scan)
+    db_session.flush()
+    db_session.add(
+        ScanResult(
+            scan_id=scan.id,
+            sys_id="gate-sr-1",
+            table_name="sys_script",
+            name="Gate SR",
+            origin_type=OriginType.modified_ootb,
+        )
+    )
+    db_session.add(
+        AssessmentPhaseProgress(
+            assessment_id=asmt.id,
+            instance_id=asmt.instance_id,
+            phase=PipelineStage.ai_analysis.value,
+            status="completed",
+            total_items=1,
+            completed_items=1,
+            resume_from_index=1,
+            run_attempt=1,
+        )
+    )
+    db_session.commit()
+
+    resp = client.post(
+        f"/api/assessments/{asmt.id}/advance-pipeline",
+        json={"target_stage": "observations"},
+    )
+    assert resp.status_code == 409, resp.text
+    assert "scope triage" in resp.json()["detail"].lower()
+    mock_start.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +449,41 @@ def test_ai_analysis_handler_populates_ai_observations(
         assert "update_sets_count" in parsed
 
     assert mock_gather.call_count == 2, "gather_artifact_context should be called once per customized result"
+
+
+@patch("src.server._set_assessment_pipeline_job_state")
+@patch("src.server._set_assessment_pipeline_stage")
+@patch("src.server.run_ai_analysis_dispatch")
+@patch("src.server.DispatcherRouter")
+@patch("src.server.load_ai_runtime_properties")
+def test_ai_analysis_uses_connected_dispatch_when_llm_is_configured(
+    mock_runtime_props,
+    mock_router_cls,
+    mock_dispatch,
+    mock_set_stage,
+    mock_set_job,
+    db_session,
+    db_engine,
+):
+    asmt, _ = _seed_assessment_with_scan_results(db_session, num_customized=2, num_ootb=0)
+    mock_runtime_props.return_value = AIRuntimeProperties(mode="local_subscription")
+    resolved = MagicMock()
+    resolved.provider_kind = "openai"
+    resolved.model_name = "gpt-5-mini"
+    resolved.auth_slot = MagicMock(slot_kind="cli")
+    resolved.effort_level = "medium"
+    mock_router_cls.return_value.resolve.return_value = resolved
+    mock_dispatch.return_value = MagicMock(processed_count=2)
+
+    from src.server import _run_assessment_pipeline_stage
+
+    with patch("src.server.engine", db_engine):
+        _run_assessment_pipeline_stage(asmt.id, target_stage="ai_analysis")
+
+    mock_dispatch.assert_called_once()
+    call_kwargs = mock_dispatch.call_args.kwargs
+    assert len(call_kwargs["customized_results"]) == 2
+    assert call_kwargs["runtime_props"].mode == "local_subscription"
 
 
 @patch("src.server._set_assessment_pipeline_job_state")
@@ -546,14 +640,7 @@ def test_ai_analysis_handler_progress_updates(
 
 from sqlmodel import select  # noqa: E402 – late import for Task 7 tests
 
-from src.models import (
-    Feature,
-    FeatureScanResult,
-    GeneralRecommendation,
-    Disposition,
-    BestPractice,
-    BestPracticeCategory,
-)
+from src.models import Disposition, BestPractice, BestPracticeCategory
 
 
 def _seed_assessment_with_features(db_session, *, num_features=1, members_per_feature=5, tables=None):
@@ -635,10 +722,32 @@ def _seed_assessment_with_features(db_session, *, num_features=1, members_per_fe
     return asmt, all_features, all_scan_results
 
 
+def _mock_feature_dispatch_summary(
+    *,
+    stage="ai_refinement",
+    pass_count=2,
+    feature_count=1,
+    assigned_count=1,
+    unassigned_count=0,
+    provisional_feature_count=0,
+    run_id=101,
+):
+    return AIFeatureStageSummary(
+        stage=stage,
+        pass_count=pass_count,
+        feature_count=feature_count,
+        assigned_count=assigned_count,
+        unassigned_count=unassigned_count,
+        provisional_feature_count=provisional_feature_count,
+        run_id=run_id,
+    )
+
+
 @patch("src.server._set_assessment_pipeline_job_state")
 @patch("src.server._set_assessment_pipeline_stage")
+@patch("src.server.run_ai_feature_stage_dispatch")
 def test_ai_refinement_handler_analyzes_complex_features(
-    mock_set_stage, mock_set_job, db_session, db_engine
+    mock_dispatch, mock_set_stage, mock_set_job, db_session, db_engine
 ):
     """Features with 5+ members should get ai_summary populated."""
     asmt, features, _ = _seed_assessment_with_features(
@@ -646,6 +755,10 @@ def test_ai_refinement_handler_analyzes_complex_features(
         num_features=1,
         members_per_feature=6,
         tables=["sys_script_include", "sys_ui_policy"],
+    )
+    mock_dispatch.return_value = _mock_feature_dispatch_summary(
+        feature_count=1,
+        assigned_count=6,
     )
 
     from src.server import _run_assessment_pipeline_stage
@@ -666,14 +779,19 @@ def test_ai_refinement_handler_analyzes_complex_features(
 
 @patch("src.server._set_assessment_pipeline_job_state")
 @patch("src.server._set_assessment_pipeline_stage")
+@patch("src.server.run_ai_feature_stage_dispatch")
 def test_ai_refinement_handler_skips_simple_features(
-    mock_set_stage, mock_set_job, db_session, db_engine
+    mock_dispatch, mock_set_stage, mock_set_job, db_session, db_engine
 ):
     """Features with <5 members should NOT get ai_summary populated."""
     asmt, features, _ = _seed_assessment_with_features(
         db_session,
         num_features=1,
         members_per_feature=3,
+    )
+    mock_dispatch.return_value = _mock_feature_dispatch_summary(
+        feature_count=1,
+        assigned_count=3,
     )
 
     from src.server import _run_assessment_pipeline_stage
@@ -687,14 +805,19 @@ def test_ai_refinement_handler_skips_simple_features(
 
 @patch("src.server._set_assessment_pipeline_job_state")
 @patch("src.server._set_assessment_pipeline_stage")
+@patch("src.server.run_ai_feature_stage_dispatch")
 def test_ai_refinement_handler_mode_a_enriches_ai_observations(
-    mock_set_stage, mock_set_job, db_session, db_engine
+    mock_dispatch, mock_set_stage, mock_set_job, db_session, db_engine
 ):
     """Artifacts with ai_observations should get a 'technical_review' key added."""
     asmt, features, scan_results = _seed_assessment_with_features(
         db_session,
         num_features=1,
         members_per_feature=2,
+    )
+    mock_dispatch.return_value = _mock_feature_dispatch_summary(
+        feature_count=1,
+        assigned_count=2,
     )
 
     # Populate ai_observations on one scan result (simulating ai_analysis stage output)
@@ -719,14 +842,19 @@ def test_ai_refinement_handler_mode_a_enriches_ai_observations(
 
 @patch("src.server._set_assessment_pipeline_job_state")
 @patch("src.server._set_assessment_pipeline_stage")
+@patch("src.server.run_ai_feature_stage_dispatch")
 def test_ai_refinement_handler_creates_general_recommendation(
-    mock_set_stage, mock_set_job, db_session, db_engine
+    mock_dispatch, mock_set_stage, mock_set_job, db_session, db_engine
 ):
     """A GeneralRecommendation with category='technical_findings' should be created."""
     asmt, _, _ = _seed_assessment_with_features(
         db_session,
         num_features=2,
         members_per_feature=3,
+    )
+    mock_dispatch.return_value = _mock_feature_dispatch_summary(
+        feature_count=2,
+        assigned_count=6,
     )
 
     from src.server import _run_assessment_pipeline_stage
@@ -747,23 +875,28 @@ def test_ai_refinement_handler_creates_general_recommendation(
 
     rollup = json.loads(rec.description)
     assert "total_customized_artifacts" in rollup
-    assert "customized_by_table" in rollup
     assert "features_created" in rollup
-    assert "disposition_distribution" in rollup
-    assert "active_best_practice_checks" in rollup
+    assert "bucket_feature_count" in rollup
+    assert "provisional_feature_count" in rollup
+    assert "unassigned_count" in rollup
     assert rollup["features_created"] == 2
 
 
 @patch("src.server._set_assessment_pipeline_job_state")
 @patch("src.server._set_assessment_pipeline_stage")
+@patch("src.server.run_ai_feature_stage_dispatch")
 def test_ai_refinement_handler_progress_updates(
-    mock_set_stage, mock_set_job, db_session, db_engine
+    mock_dispatch, mock_set_stage, mock_set_job, db_session, db_engine
 ):
-    """Progress updates should be called at the expected stages."""
+    """AI refinement should emit dispatch start progress and a completion update."""
     asmt, _, _ = _seed_assessment_with_features(
         db_session,
         num_features=1,
         members_per_feature=2,
+    )
+    mock_dispatch.return_value = _mock_feature_dispatch_summary(
+        feature_count=1,
+        assigned_count=2,
     )
 
     from src.server import _run_assessment_pipeline_stage
@@ -771,18 +904,12 @@ def test_ai_refinement_handler_progress_updates(
     with patch("src.server.engine", db_engine):
         _run_assessment_pipeline_stage(asmt.id, target_stage="ai_refinement")
 
-    # Collect all progress calls from the handler (excluding the initial 15% from the wrapper)
     handler_calls = [
         c for c in mock_set_job.call_args_list
         if c.kwargs.get("stage") == "ai_refinement" and c.kwargs.get("status") == "running"
     ]
-    # We expect: 15% (complex features), 45% (artifact review), 75% (roll-up), 95% (committing)
-    # Plus the initial 15% from _run_assessment_pipeline_stage wrapper
     progress_values = [c.kwargs.get("progress_percent") for c in handler_calls]
-    assert 15 in progress_values, f"15% progress not found in {progress_values}"
-    assert 45 in progress_values, f"45% progress not found in {progress_values}"
-    assert 75 in progress_values, f"75% progress not found in {progress_values}"
-    assert 95 in progress_values, f"95% progress not found in {progress_values}"
+    assert 20 in progress_values, f"20% dispatch progress not found in {progress_values}"
 
     # Final completion call
     completion_calls = [
@@ -864,12 +991,26 @@ def _seed_assessment_for_report(db_session, *, num_customized=3, num_ootb=1, num
             assessment_id=asmt.id,
             name=f"ReportFeature_{fi}",
             description=f"Test feature for report {fi}",
+            name_status="final",
             disposition=Disposition.keep_as_is if fi % 2 == 0 else Disposition.remove,
             recommendation="Some recommendation" if fi == 0 else None,
             ai_summary='{"test": true}' if fi == 0 else None,
         )
         db_session.add(feat)
         all_features.append(feat)
+    db_session.flush()
+
+    customized_rows = [row for row in all_scan_results if row.origin_type != OriginType.ootb_untouched]
+    for index, sr in enumerate(customized_rows):
+        feature = all_features[index % max(1, len(all_features))]
+        db_session.add(
+            FeatureScanResult(
+                feature_id=feature.id,
+                scan_result_id=sr.id,
+                assignment_source="ai",
+                is_primary=True,
+            )
+        )
 
     if with_recs:
         gr1 = GeneralRecommendation(
@@ -886,8 +1027,18 @@ def _seed_assessment_for_report(db_session, *, num_customized=3, num_ootb=1, num
             created_by="ai_pipeline",
             description='{"summary": "test"}',
         )
+        fr1 = FeatureRecommendation(
+            instance_id=inst.id,
+            assessment_id=asmt.id,
+            feature_id=all_features[0].id,
+            recommendation_type="keep",
+            fit_confidence=0.85,
+            rationale="Feature is already aligned to current-state delivery.",
+            evidence_json='{"source":"test"}',
+        )
         db_session.add(gr1)
         db_session.add(gr2)
+        db_session.add(fr1)
 
     db_session.commit()
     for sr in all_scan_results:
@@ -988,9 +1139,81 @@ def test_report_handler_includes_feature_data(
     # Features alternate: keep_as_is (0, 2), remove (1)
     assert disp.get("keep_as_is") == 2
     assert disp.get("remove") == 1
-    # Feature 0 has ai_summary and recommendation
+    # Feature 0 has ai_summary and a persisted FeatureRecommendation row
     assert report["features"]["with_ai_summary"] == 1
     assert report["features"]["with_recommendations"] == 1
+
+
+@patch("src.server._get_assessment_pipeline_job_snapshot", return_value=None)
+@patch("src.server._start_assessment_pipeline_job", return_value=True)
+def test_advance_pipeline_blocks_report_when_feature_coverage_incomplete(
+    mock_start, mock_snapshot, client, db_session
+):
+    asmt = _seed_assessment_at_stage(db_session, PipelineStage.recommendations.value)
+    scan = Scan(
+        assessment_id=asmt.id,
+        scan_type=ScanType.metadata,
+        name="coverage-gap-scan",
+        status=ScanStatus.completed,
+    )
+    db_session.add(scan)
+    db_session.flush()
+    db_session.add(
+        ScanResult(
+            scan_id=scan.id,
+            sys_id="coverage_gap_1",
+            table_name="incident",
+            name="Unassigned Incident Field",
+            origin_type=OriginType.modified_ootb,
+        )
+    )
+    db_session.commit()
+
+    resp = client.post(
+        f"/api/assessments/{asmt.id}/advance-pipeline",
+        json={"target_stage": "report"},
+    )
+    assert resp.status_code == 409, resp.text
+    assert "feature coverage gate" in resp.json()["detail"].lower()
+    mock_start.assert_not_called()
+
+
+@patch("src.server._get_assessment_pipeline_job_snapshot", return_value=None)
+@patch("src.server._start_assessment_pipeline_job", return_value=True)
+def test_advance_pipeline_allows_manual_override_after_reviewed_standalone_resolution(
+    mock_start, mock_snapshot, client, db_session
+):
+    asmt = _seed_assessment_at_stage(db_session, PipelineStage.recommendations.value)
+    scan = Scan(
+        assessment_id=asmt.id,
+        scan_type=ScanType.metadata,
+        name="manual-override-scan",
+        status=ScanStatus.completed,
+    )
+    db_session.add(scan)
+    db_session.flush()
+    db_session.add(
+        ScanResult(
+            scan_id=scan.id,
+            sys_id="manual_override_1",
+            table_name="incident",
+            name="Standalone Incident Validation",
+            origin_type=OriginType.modified_ootb,
+            review_status=ReviewStatus.reviewed,
+            observations="Human reviewed. Valid standalone control not tied to a broader feature.",
+        )
+    )
+    db_session.commit()
+
+    resp = client.post(
+        f"/api/assessments/{asmt.id}/advance-pipeline",
+        json={"target_stage": "report", "manual_override": True},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["manual_override"] is True
+    assert data["feature_status"]["manual_override_ready"] is True
+    mock_start.assert_called_once()
 
 
 @patch("src.server._set_assessment_pipeline_job_state")
@@ -1034,8 +1257,8 @@ _TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "src" / "web" / "templ
 
 _EXPECTED_UI_STAGES = [
     "scans",
-    "ai_analysis",
     "engines",
+    "ai_analysis",
     "observations",
     "review",
     "grouping",

@@ -18,6 +18,15 @@
         >
             Relationship Graph
         </a>
+        <a
+            class="btn btn-sm btn-secondary"
+            href="/dependency-map?table_name={{ sn_table_name }}&instance_id={{ instance_id }}{% if assessment_id %}&assessment_id={{ assessment_id }}{% endif %}"
+            title="Open dependency map centered on this app file class."
+            target="_blank"
+            rel="noopener noreferrer"
+        >
+            Dependency Map
+        </a>
     </div>
 </div>
 <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1.25rem;">

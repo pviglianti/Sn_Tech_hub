@@ -4,6 +4,7 @@ Allows the AI to record its disposition, observations, recommendation,
 severity, category, and finding details on a ScanResult.
 """
 
+import json
 from typing import Any, Dict
 
 from sqlmodel import Session
@@ -44,6 +45,13 @@ INPUT_SCHEMA: Dict[str, Any] = {
         "observations": {
             "type": "string",
             "description": "AI observations about the artifact.",
+        },
+        "ai_observations": {
+            "type": ["object", "array", "string", "null"],
+            "description": (
+                "Structured AI analysis metadata for the artifact. Accepts either "
+                "a JSON object/array or a pre-serialized JSON string."
+            ),
         },
         "recommendation": {
             "type": "string",
@@ -99,6 +107,16 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
             setattr(result, text_field, params[text_field])
             updated_fields.append(text_field)
 
+    if "ai_observations" in params:
+        raw_value = params["ai_observations"]
+        if raw_value is None:
+            result.ai_observations = None
+        elif isinstance(raw_value, str):
+            result.ai_observations = raw_value
+        else:
+            result.ai_observations = json.dumps(raw_value, sort_keys=True)
+        updated_fields.append("ai_observations")
+
     for bool_field in ("is_out_of_scope", "is_adjacent"):
         if bool_field in params:
             setattr(result, bool_field, bool(params[bool_field]))
@@ -124,8 +142,8 @@ TOOL_SPEC = ToolSpec(
     name="update_scan_result",
     description=(
         "Update a scan result with AI analysis: disposition, severity, category, "
-        "observations, recommendation, and finding details. Only specified fields "
-        "are updated - omitted fields are left unchanged."
+        "observations, structured ai_observations, recommendation, and finding "
+        "details. Only specified fields are updated - omitted fields are left unchanged."
     ),
     input_schema=INPUT_SCHEMA,
     handler=handle,

@@ -115,6 +115,41 @@ if (document.readyState === 'loading') {
     bootstrapTheme();
 }
 
+// ── Admin Dropdown Menu ──
+(function initAdminMenu() {
+    function setup() {
+        var trigger = document.querySelector('[data-admin-toggle]');
+        var panel = document.querySelector('[data-admin-panel]');
+        if (!trigger || !panel) return;
+
+        trigger.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var isOpen = panel.classList.contains('is-open');
+            if (isOpen) {
+                panel.classList.remove('is-open');
+                trigger.classList.remove('is-open');
+            } else {
+                panel.classList.add('is-open');
+                trigger.classList.add('is-open');
+            }
+        });
+
+        document.addEventListener('click', function (e) {
+            if (!panel.classList.contains('is-open')) return;
+            if (!trigger.contains(e.target) && !panel.contains(e.target)) {
+                panel.classList.remove('is-open');
+                trigger.classList.remove('is-open');
+            }
+        });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', setup, { once: true });
+    } else {
+        setup();
+    }
+})();
+
 // Utility function to make API calls
 async function apiCall(url, method = 'GET', data = null) {
     const options = {

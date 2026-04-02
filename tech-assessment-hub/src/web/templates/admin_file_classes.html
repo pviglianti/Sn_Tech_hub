@@ -1,0 +1,632 @@
+{% extends "base.html" %}
+
+{% block title %}File Classes - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>App File Classes &amp; Query Patterns</h1>
+    <div class="button-group">
+        <button type="button" class="btn btn-secondary" id="fcReloadBtn" title="Reload file classes from the server">Reload</button>
+    </div>
+</div>
+
+<div class="card">
+    <p class="text-muted-plain mb-0">
+        Manage application file types (e.g., Business Rules, Client Scripts) and their query patterns used for scanning ServiceNow instances. Each class can have multiple query patterns.
+    </p>
+</div>
+
+<div class="fc-layout mt-1">
+    <div class="card">
+        <h2>File Classes</h2>
+        <p class="text-muted-plain mb-1">
+            Check one row to edit. Use column picker to show any stored field.
+        </p>
+        <div id="fileClassTableContainer"></div>
+    </div>
+    <div class="card">
+        <h2 id="fcEditorTitle">File Class Detail</h2>
+        <form id="fcEditorForm">
+            <input type="hidden" id="fcId" value="">
+            <div class="form-group">
+                <label for="fcSysClassName">Sys Class Name</label>
+                <input type="text" id="fcSysClassName" placeholder="e.g. sys_script">
+                <small>ServiceNow sys_class_name. Read-only when editing an existing record.</small>
+            </div>
+            <div class="form-group">
+                <label for="fcLabel">Label</label>
+                <input type="text" id="fcLabel" placeholder="e.g. Business Rule" required>
+            </div>
+            <div class="form-group">
+                <label for="fcDescription">Description</label>
+                <textarea id="fcDescription" rows="2" placeholder="What this file class represents"></textarea>
+            </div>
+            <div class="form-group">
+                <label for="fcTargetTableField">Target Table Field</label>
+                <input type="text" id="fcTargetTableField" placeholder="e.g. collection">
+                <small>The field on the class table that identifies the target table.</small>
+            </div>
+            <div class="form-group mb-0">
+                <label>
+                    <input type="checkbox" id="fcHasScript">
+                    Has Script
+                </label>
+            </div>
+            <div class="form-group mb-0">
+                <label>
+                    <input type="checkbox" id="fcIsImportant">
+                    Is Important
+                </label>
+            </div>
+            <div class="form-group">
+                <label for="fcDisplayOrder">Display Order</label>
+                <input type="number" id="fcDisplayOrder" value="100" min="0">
+            </div>
+            <div class="form-group mb-0">
+                <label>
+                    <input type="checkbox" id="fcIsActive" checked>
+                    Active
+                </label>
+            </div>
+            <div class="button-group mt-1">
+                <button type="submit" class="btn btn-primary" id="fcSaveBtn">Save</button>
+                <button type="button" class="btn btn-secondary" id="fcClearFormBtn">Clear</button>
+            </div>
+        </form>
+        <pre id="fcEditorStatus" class="code-block mt-1">Ready.</pre>
+
+        <hr class="mt-1 mb-1">
+
+        <div id="queryPatternSection">
+            <div class="fc-query-header">
+                <h2>Query Patterns</h2>
+                <button type="button" class="btn btn-primary btn-sm" id="qAddBtn" disabled title="Select a file class first">Add Query</button>
+            </div>
+            <div id="queryListContainer">
+                <p class="text-muted-plain" id="queryFallbackNotice">
+                    No queries defined &mdash; default metadata fallback will be used:
+                    <code>sys_class_name={class}^123TEXTQUERY321={keyword}</code>
+                </p>
+            </div>
+
+            <form id="queryEditorForm" style="display:none;" class="mt-1">
+                <h3 id="qEditorTitle">Add Query</h3>
+                <input type="hidden" id="qId" value="">
+                <div class="form-group">
+                    <label for="qQueryType">Query Type</label>
+                    <select id="qQueryType">
+                        <option value="table_pattern">table_pattern</option>
+                        <option value="keyword_pattern">keyword_pattern</option>
+                        <option value="text_search">text_search</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="qPattern">Pattern</label>
+                    <textarea id="qPattern" rows="3" placeholder="Encoded query template" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="qTargetTableField">Target Table Field</label>
+                    <input type="text" id="qTargetTableField" placeholder="e.g. ref_sys_script.collection">
+                </div>
+                <div class="form-group">
+                    <label for="qDescription">Description</label>
+                    <input type="text" id="qDescription" placeholder="Short description of this query">
+                </div>
+                <div class="form-group">
+                    <label for="qDisplayOrder">Display Order</label>
+                    <input type="number" id="qDisplayOrder" value="100" min="0">
+                </div>
+                <div class="form-group mb-0">
+                    <label>
+                        <input type="checkbox" id="qIsActive" checked>
+                        Active
+                    </label>
+                </div>
+                <div class="button-group mt-1">
+                    <button type="submit" class="btn btn-primary" id="qSaveBtn">Save Query</button>
+                    <button type="button" class="btn btn-secondary" id="qCancelBtn">Cancel</button>
+                </div>
+                <pre id="queryEditorStatus" class="code-block mt-1">Ready.</pre>
+            </form>
+        </div>
+    </div>
+</div>
+
+<style>
+.fc-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(380px, 1fr);
+    gap: 1rem;
+    align-items: start;
+}
+
+@media (max-width: 1280px) {
+    .fc-layout {
+        grid-template-columns: 1fr;
+    }
+}
+
+.fc-query-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.fc-query-header h2 {
+    margin: 0;
+}
+
+.fc-query-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.5rem;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 0.85rem;
+}
+
+.fc-query-row:last-child {
+    border-bottom: none;
+}
+
+.fc-query-type-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.15rem 0.4rem;
+    border-radius: 999px;
+    background: rgba(37, 99, 235, 0.1);
+    color: #1d4ed8;
+    font-size: 0.72rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.fc-query-pattern {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+}
+
+.fc-query-actions {
+    display: flex;
+    gap: 0.35rem;
+    flex-shrink: 0;
+}
+
+.fc-query-actions button {
+    padding: 0.15rem 0.4rem;
+    font-size: 0.75rem;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--border-color);
+}
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/ConditionBuilder.js?v={{ static_version }}"></script>
+<script src="/static/js/ColumnPicker.js?v={{ static_version }}"></script>
+<script src="/static/js/DataTable.js?v={{ static_version }}"></script>
+<script>
+(function () {
+    var container = document.getElementById('fileClassTableContainer');
+    if (!container || !window.DataTable) {
+        return;
+    }
+
+    var editorForm = document.getElementById('fcEditorForm');
+    var editorStatus = document.getElementById('fcEditorStatus');
+    var editorTitle = document.getElementById('fcEditorTitle');
+    var queryListContainer = document.getElementById('queryListContainer');
+    var queryEditorForm = document.getElementById('queryEditorForm');
+    var queryEditorStatus = document.getElementById('queryEditorStatus');
+    var queryEditorTitle = document.getElementById('qEditorTitle');
+    var qAddBtn = document.getElementById('qAddBtn');
+    var queryFallbackNotice = document.getElementById('queryFallbackNotice');
+
+    var selectedClassId = null;
+    var selectedClassName = '';
+
+    /* ── Status helpers ─────────────────────────────── */
+
+    function setStatus(text, isError) {
+        if (!editorStatus) return;
+        editorStatus.textContent = String(text || '');
+        editorStatus.style.color = isError ? 'var(--danger-color)' : 'var(--text-color)';
+    }
+
+    function setQueryStatus(text, isError) {
+        if (!queryEditorStatus) return;
+        queryEditorStatus.textContent = String(text || '');
+        queryEditorStatus.style.color = isError ? 'var(--danger-color)' : 'var(--text-color)';
+    }
+
+    /* ── File Class form helpers ────────────────────── */
+
+    function resetForm() {
+        document.getElementById('fcId').value = '';
+        document.getElementById('fcSysClassName').value = '';
+        document.getElementById('fcSysClassName').readOnly = false;
+        document.getElementById('fcLabel').value = '';
+        document.getElementById('fcDescription').value = '';
+        document.getElementById('fcTargetTableField').value = '';
+        document.getElementById('fcHasScript').checked = false;
+        document.getElementById('fcIsImportant').checked = false;
+        document.getElementById('fcDisplayOrder').value = '100';
+        document.getElementById('fcIsActive').checked = true;
+        editorTitle.textContent = 'File Class Detail';
+        document.getElementById('fcSaveBtn').textContent = 'Create';
+        selectedClassId = null;
+        selectedClassName = '';
+        qAddBtn.disabled = true;
+        hideQueryEditor();
+        queryListContainer.innerHTML = '';
+        queryFallbackNotice = null;
+        showFallbackNotice();
+    }
+
+    function showFallbackNotice() {
+        queryListContainer.innerHTML =
+            '<p class="text-muted-plain" id="queryFallbackNotice">' +
+            'No queries defined &mdash; default metadata fallback will be used: ' +
+            '<code>sys_class_name={class}^123TEXTQUERY321={keyword}</code>' +
+            '</p>';
+        queryFallbackNotice = document.getElementById('queryFallbackNotice');
+    }
+
+    function loadRowIntoForm(row) {
+        if (!row) return;
+        document.getElementById('fcId').value = row.id || '';
+        document.getElementById('fcSysClassName').value = row.sys_class_name || '';
+        document.getElementById('fcSysClassName').readOnly = true;
+        document.getElementById('fcLabel').value = row.label || '';
+        document.getElementById('fcDescription').value = row.description || '';
+        document.getElementById('fcTargetTableField').value = row.target_table_field || '';
+        document.getElementById('fcHasScript').checked = !!row.has_script;
+        document.getElementById('fcIsImportant').checked = !!row.is_important;
+        document.getElementById('fcDisplayOrder').value = row.display_order != null ? row.display_order : '100';
+        document.getElementById('fcIsActive').checked = !!row.is_active;
+        editorTitle.textContent = 'Edit: ' + (row.label || row.sys_class_name || row.id);
+        document.getElementById('fcSaveBtn').textContent = 'Save';
+        selectedClassId = row.id;
+        selectedClassName = row.sys_class_name || '';
+        qAddBtn.disabled = false;
+        hideQueryEditor();
+        loadQueries(row.id);
+    }
+
+    function payloadFromForm() {
+        return {
+            sys_class_name: String(document.getElementById('fcSysClassName').value || '').trim(),
+            label: String(document.getElementById('fcLabel').value || '').trim(),
+            description: String(document.getElementById('fcDescription').value || '').trim() || null,
+            target_table_field: String(document.getElementById('fcTargetTableField').value || '').trim() || null,
+            has_script: !!document.getElementById('fcHasScript').checked,
+            is_important: !!document.getElementById('fcIsImportant').checked,
+            display_order: parseInt(document.getElementById('fcDisplayOrder').value || '100', 10),
+            is_active: !!document.getElementById('fcIsActive').checked,
+        };
+    }
+
+    /* ── Query Pattern helpers ──────────────────────── */
+
+    function hideQueryEditor() {
+        queryEditorForm.style.display = 'none';
+        resetQueryForm();
+    }
+
+    function showQueryEditor() {
+        queryEditorForm.style.display = 'block';
+    }
+
+    function resetQueryForm() {
+        document.getElementById('qId').value = '';
+        document.getElementById('qQueryType').value = 'table_pattern';
+        document.getElementById('qPattern').value = '';
+        document.getElementById('qTargetTableField').value = '';
+        document.getElementById('qDescription').value = '';
+        document.getElementById('qDisplayOrder').value = '100';
+        document.getElementById('qIsActive').checked = true;
+        queryEditorTitle.textContent = 'Add Query';
+        document.getElementById('qSaveBtn').textContent = 'Save Query';
+        setQueryStatus('Ready.', false);
+    }
+
+    function loadQueryIntoForm(query) {
+        if (!query) return;
+        document.getElementById('qId').value = query.id || '';
+        document.getElementById('qQueryType').value = query.query_type || 'table_pattern';
+        document.getElementById('qPattern').value = query.pattern || '';
+        document.getElementById('qTargetTableField').value = query.target_table_field || '';
+        document.getElementById('qDescription').value = query.description || '';
+        document.getElementById('qDisplayOrder').value = query.display_order != null ? query.display_order : '100';
+        document.getElementById('qIsActive').checked = !!query.is_active;
+        queryEditorTitle.textContent = 'Edit Query';
+        document.getElementById('qSaveBtn').textContent = 'Save Query';
+        showQueryEditor();
+    }
+
+    function queryPayloadFromForm() {
+        return {
+            query_type: String(document.getElementById('qQueryType').value || '').trim(),
+            pattern: String(document.getElementById('qPattern').value || '').trim(),
+            target_table_field: String(document.getElementById('qTargetTableField').value || '').trim() || null,
+            description: String(document.getElementById('qDescription').value || '').trim() || null,
+            display_order: parseInt(document.getElementById('qDisplayOrder').value || '100', 10),
+            is_active: !!document.getElementById('qIsActive').checked,
+        };
+    }
+
+    function loadQueries(classId) {
+        if (!classId) {
+            showFallbackNotice();
+            return;
+        }
+        fetch('/api/scan-config/file-classes/' + encodeURIComponent(classId) + '/queries')
+            .then(function (res) {
+                if (!res.ok) throw new Error('Failed to load queries: ' + res.status);
+                return res.json();
+            })
+            .then(function (queries) {
+                renderQueryList(queries, selectedClassName);
+            })
+            .catch(function (err) {
+                queryListContainer.innerHTML =
+                    '<p class="text-muted-plain" style="color:var(--danger-color);">Error loading queries: ' +
+                    err.message + '</p>';
+            });
+    }
+
+    function renderQueryList(queries, sysClassName) {
+        queryListContainer.innerHTML = '';
+
+        if (!queries || !queries.length) {
+            showFallbackNotice();
+            return;
+        }
+
+        queries.forEach(function (q) {
+            var row = document.createElement('div');
+            row.className = 'fc-query-row';
+
+            var badge = document.createElement('span');
+            badge.className = 'fc-query-type-badge';
+            badge.textContent = q.query_type || 'unknown';
+            row.appendChild(badge);
+
+            var pattern = document.createElement('span');
+            pattern.className = 'fc-query-pattern';
+            var patternText = q.pattern || '';
+            pattern.textContent = patternText.length > 80 ? patternText.substring(0, 80) + '...' : patternText;
+            pattern.title = patternText;
+            row.appendChild(pattern);
+
+            if (q.target_table_field) {
+                var ttf = document.createElement('span');
+                ttf.className = 'text-muted-plain';
+                ttf.style.fontSize = '0.78rem';
+                ttf.textContent = q.target_table_field;
+                row.appendChild(ttf);
+            }
+
+            var statusSpan = document.createElement('span');
+            statusSpan.className = 'status-badge ' + (q.is_active ? 'status-connected' : 'status-draft');
+            statusSpan.textContent = q.is_active ? 'active' : 'inactive';
+            statusSpan.style.fontSize = '0.72rem';
+            row.appendChild(statusSpan);
+
+            var actions = document.createElement('span');
+            actions.className = 'fc-query-actions';
+
+            var editBtn = document.createElement('button');
+            editBtn.type = 'button';
+            editBtn.className = 'btn btn-secondary btn-sm';
+            editBtn.textContent = 'Edit';
+            editBtn.addEventListener('click', function () {
+                loadQueryIntoForm(q);
+            });
+            actions.appendChild(editBtn);
+
+            var deleteBtn = document.createElement('button');
+            deleteBtn.type = 'button';
+            deleteBtn.className = 'btn btn-secondary btn-sm';
+            deleteBtn.textContent = 'Delete';
+            deleteBtn.addEventListener('click', function () {
+                if (!confirm('Delete this query pattern?')) return;
+                fetch('/api/scan-config/queries/' + encodeURIComponent(q.id), {
+                    method: 'DELETE',
+                })
+                    .then(function (res) {
+                        if (!res.ok) throw new Error('Delete failed: ' + res.status);
+                        setStatus('Query deleted.', false);
+                        loadQueries(selectedClassId);
+                    })
+                    .catch(function (err) {
+                        setStatus(err.message, true);
+                    });
+            });
+            actions.appendChild(deleteBtn);
+
+            row.appendChild(actions);
+            queryListContainer.appendChild(row);
+        });
+    }
+
+    /* ── Initialize form ────────────────────────────── */
+
+    resetForm();
+
+    /* ── DataTable ──────────────────────────────────── */
+
+    var dt = new window.DataTable(container, {
+        dataUrl: '/api/scan-config/file-classes/records',
+        schemaUrl: '/api/scan-config/file-classes/field-schema',
+        instanceId: 0,
+        tableName: 'app_file_class',
+        pageSize: 50,
+        storageKey: 'dt_file_class_admin_v1',
+        includeTableAndInstanceParams: false,
+        selectable: true,
+        rowIdField: 'id',
+        onSelectionChange: function (selectedRows) {
+            if (selectedRows.length === 1) {
+                loadRowIntoForm(selectedRows[0]);
+                setStatus('Loaded file class for editing.', false);
+                return;
+            }
+            if (selectedRows.length > 1) {
+                setStatus('Multiple rows selected. Select one row to edit.', true);
+                return;
+            }
+            resetForm();
+            setStatus('Ready.', false);
+        },
+        customRenderers: {
+            is_active: function (value, row, td) {
+                var span = document.createElement('span');
+                span.className = 'status-badge ' + (value ? 'status-connected' : 'status-draft');
+                span.textContent = value ? 'active' : 'inactive';
+                td.appendChild(span);
+            },
+            has_script: function (value, row, td) {
+                td.textContent = value ? 'Yes' : 'No';
+            }
+        }
+    });
+
+    /* ── File Class event handlers ──────────────────── */
+
+    document.getElementById('fcReloadBtn').addEventListener('click', function () {
+        dt.refresh().catch(function (err) {
+            setStatus('Failed to reload: ' + err.message, true);
+        });
+    });
+
+    document.getElementById('fcClearFormBtn').addEventListener('click', function () {
+        dt.clearSelection();
+        resetForm();
+        setStatus('Form cleared.', false);
+    });
+
+    editorForm.addEventListener('submit', function (event) {
+        event.preventDefault();
+        var idValue = parseInt(document.getElementById('fcId').value || '0', 10);
+        var payload = payloadFromForm();
+
+        if (!payload.label) {
+            setStatus('Label is required.', true);
+            return;
+        }
+        if (!idValue && !payload.sys_class_name) {
+            setStatus('Sys Class Name is required for new file classes.', true);
+            return;
+        }
+
+        var url = '/api/scan-config/file-classes';
+        var method = 'POST';
+        if (idValue) {
+            method = 'PUT';
+            url = '/api/scan-config/file-classes/' + encodeURIComponent(idValue);
+            delete payload.sys_class_name;
+        }
+
+        setStatus('Saving...', false);
+        fetch(url, {
+            method: method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        })
+            .then(function (res) {
+                if (!res.ok) throw new Error('Save failed: ' + res.status);
+                return res.json();
+            })
+            .then(function (saved) {
+                loadRowIntoForm(saved);
+                setStatus('Saved ' + (saved.label || saved.sys_class_name || ('ID ' + saved.id)) + '.', false);
+                return dt.refresh();
+            })
+            .catch(function (err) {
+                setStatus(err.message, true);
+            });
+    });
+
+    /* ── Query Pattern event handlers ───────────────── */
+
+    qAddBtn.addEventListener('click', function () {
+        if (!selectedClassId) {
+            setStatus('Select a file class first.', true);
+            return;
+        }
+        resetQueryForm();
+        queryEditorTitle.textContent = 'Add Query';
+        showQueryEditor();
+    });
+
+    document.getElementById('qCancelBtn').addEventListener('click', function () {
+        hideQueryEditor();
+    });
+
+    queryEditorForm.addEventListener('submit', function (event) {
+        event.preventDefault();
+        if (!selectedClassId) {
+            setQueryStatus('No file class selected.', true);
+            return;
+        }
+        var qIdValue = parseInt(document.getElementById('qId').value || '0', 10);
+        var payload = queryPayloadFromForm();
+
+        if (!payload.pattern) {
+            setQueryStatus('Pattern is required.', true);
+            return;
+        }
+
+        var url, method;
+        if (qIdValue) {
+            method = 'PUT';
+            url = '/api/scan-config/queries/' + encodeURIComponent(qIdValue);
+        } else {
+            method = 'POST';
+            url = '/api/scan-config/file-classes/' + encodeURIComponent(selectedClassId) + '/queries';
+        }
+
+        setQueryStatus('Saving query...', false);
+        fetch(url, {
+            method: method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        })
+            .then(function (res) {
+                if (!res.ok) throw new Error('Query save failed: ' + res.status);
+                return res.json();
+            })
+            .then(function (saved) {
+                setQueryStatus('Query saved.', false);
+                hideQueryEditor();
+                setStatus('Query saved.', false);
+                loadQueries(selectedClassId);
+            })
+            .catch(function (err) {
+                setQueryStatus(err.message, true);
+            });
+    });
+
+    /* ── Init ───────────────────────────────────────── */
+
+    dt.init()
+        .then(function () {
+            /* table ready */
+        })
+        .catch(function (err) {
+            container.innerHTML = '<div class="empty-state"><h2>Error</h2><p>' + err.message + '</p></div>';
+            setStatus('Failed to initialize table: ' + err.message, true);
+        });
+})();
+</script>
+{% endblock %}

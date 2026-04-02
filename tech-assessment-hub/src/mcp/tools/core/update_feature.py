@@ -42,6 +42,25 @@ INPUT_SCHEMA: Dict[str, Any] = {
             "type": "string",
             "description": "AI-generated summary of the feature analysis.",
         },
+        "feature_kind": {
+            "type": "string",
+            "enum": ["functional", "bucket"],
+            "description": "Feature kind.",
+        },
+        "composition_type": {
+            "type": "string",
+            "enum": ["direct", "adjacent", "mixed"],
+            "description": "Feature composition based on member adjacency.",
+        },
+        "name_status": {
+            "type": "string",
+            "enum": ["provisional", "final", "human_locked"],
+            "description": "Naming lifecycle state for the feature.",
+        },
+        "bucket_key": {
+            "type": "string",
+            "description": "Optional bucket taxonomy key such as form_fields or acl.",
+        },
     },
     "required": ["feature_id"],
 }
@@ -63,6 +82,31 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
         if text_field in params:
             setattr(feature, text_field, params[text_field])
             updated_fields.append(text_field)
+
+    for enum_like_field, allowed_values in (
+        ("feature_kind", {"functional", "bucket"}),
+        ("composition_type", {"direct", "adjacent", "mixed"}),
+        ("name_status", {"provisional", "final", "human_locked"}),
+    ):
+        if enum_like_field not in params:
+            continue
+        value = params.get(enum_like_field)
+        normalized = None if value is None else str(value).strip().lower()
+        if normalized is None:
+            setattr(feature, enum_like_field, None)
+            updated_fields.append(enum_like_field)
+            continue
+        if normalized not in allowed_values:
+            raise ValueError(
+                f"{enum_like_field} must be one of: {', '.join(sorted(allowed_values))}"
+            )
+        setattr(feature, enum_like_field, normalized)
+        updated_fields.append(enum_like_field)
+
+    if "bucket_key" in params:
+        bucket_key = params.get("bucket_key")
+        feature.bucket_key = None if bucket_key is None else str(bucket_key).strip().lower() or None
+        updated_fields.append("bucket_key")
 
     if not updated_fields:
         return {"success": True, "message": "No fields to update.", "feature_id": feature_id}

@@ -18,7 +18,7 @@ from src.models import (
     ScanType,
     StructuralRelationship,
 )
-from src.server import _build_relationship_graph_payload
+from src.server import _build_dependency_map_payload, _build_relationship_graph_payload
 
 
 @pytest.fixture()
@@ -48,7 +48,14 @@ def graph_ctx(db_session):
         name="Graph Scan",
         status=ScanStatus.completed,
     )
+    aux_scan = Scan(
+        assessment_id=assessment.id,
+        scan_type=ScanType.metadata,
+        name="Aux Graph Scan",
+        status=ScanStatus.completed,
+    )
     db_session.add(scan)
+    db_session.add(aux_scan)
     db_session.flush()
 
     now = datetime.utcnow()
@@ -78,6 +85,7 @@ def graph_ctx(db_session):
         table_name="sys_ui_policy_action",
         name="Set VIP Mandatory",
         origin_type=OriginType.modified_ootb,
+        is_adjacent=True,
         meta_target_table="incident",
         raw_data_json=json.dumps({
             "ui_policy": {"value": "00000000000000000000000000000022"},
@@ -120,6 +128,15 @@ def graph_ctx(db_session):
         raw_data_json=json.dumps({"table": "incident"}),
         sys_updated_on=now,
     )
+    cross_scan_dictionary = ScanResult(
+        scan_id=aux_scan.id,
+        sys_id="00000000000000000000000000000088",
+        table_name="sys_dictionary",
+        name="incident.u_cross_scan",
+        origin_type=OriginType.net_new_customer,
+        raw_data_json=json.dumps({"name": "incident", "element": "u_cross_scan"}),
+        sys_updated_on=now,
+    )
 
     db_session.add_all([
         table_result,
@@ -129,6 +146,7 @@ def graph_ctx(db_session):
         choice_result,
         script_include,
         business_rule,
+        cross_scan_dictionary,
     ])
     db_session.flush()
 
@@ -157,6 +175,22 @@ def graph_ctx(db_session):
             confidence=0.93,
         )
     )
+    db_session.add(
+        CodeReference(
+            instance_id=instance.id,
+            assessment_id=assessment.id,
+            source_scan_result_id=business_rule.id,
+            source_table="sys_script",
+            source_field="script",
+            source_name=business_rule.name,
+            reference_type="field_reference",
+            target_identifier="u_cross_scan",
+            target_scan_result_id=cross_scan_dictionary.id,
+            line_number=3,
+            code_snippet="current.u_cross_scan = true;",
+            confidence=0.82,
+        )
+    )
 
     feature = Feature(assessment_id=assessment.id, name="VIP Routing")
     db_session.add(feature)
@@ -180,6 +214,8 @@ def graph_ctx(db_session):
     ctx.choice_result = choice_result
     ctx.script_include = script_include
     ctx.business_rule = business_rule
+    ctx.aux_scan = aux_scan
+    ctx.cross_scan_dictionary = cross_scan_dictionary
     ctx.feature = feature
     return ctx
 
@@ -208,6 +244,15 @@ def test_relationship_graph_artifact_mode_infers_reference_and_target_table(grap
     assert "reference_field" in edge_types
     assert "target_table" in edge_types
 
+    nodes_by_result = {
+        int(node["result_id"]): node
+        for node in payload.get("nodes", [])
+        if node.get("node_type") == "artifact" and node.get("result_id") is not None
+    }
+    assert nodes_by_result[graph_ctx.ui_policy_action.id]["scope_state"] == "adjacent"
+    assert nodes_by_result[graph_ctx.ui_policy_action.id]["is_adjacent"] is True
+    assert nodes_by_result[graph_ctx.ui_policy_action.id]["artifact_type_label"] == "UI Policy Action"
+
 
 def test_relationship_graph_artifact_mode_honors_exclude_ids(graph_ctx, db_session):
     payload = _build_relationship_graph_payload(
@@ -221,6 +266,20 @@ def test_relationship_graph_artifact_mode_honors_exclude_ids(graph_ctx, db_sessi
     result_ids = _result_ids(payload)
     assert graph_ctx.ui_policy.id not in result_ids
     assert graph_ctx.table_result.id not in result_ids
+
+
+def test_relationship_graph_artifact_mode_keeps_assessment_neighbors_when_scan_id_is_present(graph_ctx, db_session):
+    payload = _build_relationship_graph_payload(
+        db_session,
+        result_id=graph_ctx.business_rule.id,
+        assessment_id=graph_ctx.assessment.id,
+        scan_id=graph_ctx.scan.id,
+        max_neighbors=30,
+    )
+
+    result_ids = _result_ids(payload)
+    assert graph_ctx.script_include.id in result_ids
+    assert graph_ctx.cross_scan_dictionary.id in result_ids
 
 
 def test_relationship_graph_feature_mode_centers_feature(graph_ctx, db_session):
@@ -263,3 +322,49 @@ def test_relationship_graph_page_renders(client, graph_ctx):
     )
     assert response.status_code == 200
     assert "Relationship Graph" in response.text
+
+
+def test_dependency_map_artifact_mode_returns_dependency_only_edges(graph_ctx, db_session):
+    payload = _build_dependency_map_payload(
+        db_session,
+        result_id=graph_ctx.business_rule.id,
+        assessment_id=graph_ctx.assessment.id,
+        max_neighbors=30,
+    )
+
+    assert payload.get("graph_kind") == "dependency"
+    result_ids = _result_ids(payload)
+    assert graph_ctx.script_include.id in result_ids
+
+    edge_types = {edge.get("edge_type") for edge in payload.get("edges", [])}
+    assert edge_types == {"code_reference"}
+
+
+def test_dependency_map_artifact_mode_keeps_assessment_neighbors_when_scan_id_is_present(graph_ctx, db_session):
+    payload = _build_dependency_map_payload(
+        db_session,
+        result_id=graph_ctx.business_rule.id,
+        assessment_id=graph_ctx.assessment.id,
+        scan_id=graph_ctx.scan.id,
+        max_neighbors=30,
+    )
+
+    result_ids = _result_ids(payload)
+    assert graph_ctx.script_include.id in result_ids
+    assert graph_ctx.cross_scan_dictionary.id in result_ids
+
+    edge_types = {edge.get("edge_type") for edge in payload.get("edges", [])}
+    assert edge_types == {"code_reference"}
+
+
+def test_dependency_map_api_requires_single_seed(client):
+    response = client.get("/api/dependency-map/neighborhood")
+    assert response.status_code == 400
+
+
+def test_dependency_map_page_renders(client, graph_ctx):
+    response = client.get(
+        f"/dependency-map?result_id={graph_ctx.business_rule.id}&assessment_id={graph_ctx.assessment.id}"
+    )
+    assert response.status_code == 200
+    assert "Dependency Map" in response.text

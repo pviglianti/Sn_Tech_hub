@@ -8,6 +8,7 @@ from src.models import (
     AssessmentState,
     AssessmentType,
     CodeReference,
+    Feature,
     FeatureContextArtifact,
     FeatureGroupingRun,
     FeatureScanResult,
@@ -120,6 +121,79 @@ def _seed_assessment_with_signals(session):
     return asmt, r1, r2, r3
 
 
+def test_feature_grouping_status_reports_bucket_and_mixed_feature_counts(db_session):
+    from src.mcp.tools.pipeline.feature_grouping_status import handle as run_status
+    from src.services.feature_governance import refresh_feature_metadata
+
+    asmt, r1, r2, _ = _seed_assessment_with_signals(db_session)
+    r2.is_adjacent = True
+    db_session.add(r2)
+    db_session.flush()
+
+    solution_feature = Feature(
+        assessment_id=asmt.id,
+        name="Working Feature 01",
+        feature_kind="functional",
+        name_status="provisional",
+    )
+    bucket_feature = Feature(
+        assessment_id=asmt.id,
+        name="ACL",
+        feature_kind="bucket",
+        name_status="final",
+        bucket_key="acl",
+    )
+    db_session.add(solution_feature)
+    db_session.add(bucket_feature)
+    db_session.flush()
+
+    db_session.add(
+        FeatureScanResult(
+            feature_id=solution_feature.id,
+            scan_result_id=r1.id,
+            assignment_source="ai",
+            is_primary=True,
+        )
+    )
+    db_session.add(
+        FeatureScanResult(
+            feature_id=solution_feature.id,
+            scan_result_id=r2.id,
+            assignment_source="ai",
+            is_primary=True,
+        )
+    )
+
+    r4 = ScanResult(
+        scan_id=r1.scan_id,
+        sys_id="r4",
+        table_name="sys_security_acl",
+        name="ACL Leftover",
+        origin_type=OriginType.modified_ootb,
+        is_adjacent=True,
+    )
+    db_session.add(r4)
+    db_session.flush()
+    db_session.add(
+        FeatureScanResult(
+            feature_id=bucket_feature.id,
+            scan_result_id=r4.id,
+            assignment_source="ai",
+            is_primary=True,
+        )
+    )
+    refresh_feature_metadata(db_session, assessment_id=asmt.id, commit=False)
+    db_session.commit()
+
+    status = run_status({"assessment_id": asmt.id}, db_session)
+    assert status["success"] is True
+    coverage = status["coverage"]
+    assert coverage["bucket_feature_count"] == 1
+    assert coverage["provisional_feature_count"] == 1
+    assert coverage["composition_counts"]["mixed"] >= 1
+    assert coverage["all_in_scope_assigned"] is True
+
+
 def test_seed_feature_groups_tool_creates_members_and_context(db_session):
     from src.mcp.tools.pipeline.seed_feature_groups import handle
 
@@ -167,6 +241,59 @@ def test_run_feature_reasoning_creates_run_and_status_reports_it(db_session):
     assert status["run_found"] is True
     assert status["run"]["id"] == first["run_id"]
     assert status["coverage"]["customized_total"] >= 2
+
+
+def test_seed_feature_groups_skips_out_of_scope_and_uses_ai_relationships(db_session):
+    from src.mcp.tools.pipeline.seed_feature_groups import handle
+
+    asmt, r1, r2, _ = _seed_assessment_with_signals(db_session)
+    r2.is_out_of_scope = True
+    db_session.add(r2)
+    db_session.commit()
+
+    result = handle({"assessment_id": asmt.id}, db_session)
+    assert result["success"] is True
+
+    links = db_session.exec(select(FeatureScanResult)).all()
+    assert all(link.scan_result_id != r2.id for link in links)
+
+
+def test_seed_feature_groups_can_use_ai_relationship_ids_without_engine_signals(db_session):
+    from src.mcp.tools.pipeline.seed_feature_groups import handle
+
+    asmt, r1, r2, _ = _seed_assessment_with_signals(db_session)
+    code_refs = db_session.exec(select(CodeReference)).all()
+    for row in code_refs:
+        db_session.delete(row)
+    naming_rows = db_session.exec(select(NamingCluster)).all()
+    for row in naming_rows:
+        db_session.delete(row)
+
+    r1.ai_observations = json.dumps(
+        {
+            "analysis_stage": "ai_analysis",
+            "scope_decision": "in_scope",
+            "directly_related_result_ids": [r2.id],
+        }
+    )
+    r2.ai_observations = json.dumps(
+        {
+            "analysis_stage": "ai_analysis",
+            "scope_decision": "in_scope",
+            "directly_related_result_ids": [r1.id],
+        }
+    )
+    db_session.add(r1)
+    db_session.add(r2)
+    db_session.commit()
+
+    result = handle({"assessment_id": asmt.id}, db_session)
+    assert result["success"] is True
+    assert result["grouped_count"] >= 2
+
+    links = db_session.exec(select(FeatureScanResult)).all()
+    assert any(link.scan_result_id == r1.id for link in links)
+    assert any(link.scan_result_id == r2.id for link in links)
 
 
 def test_group_by_feature_preserves_human_links(db_session):

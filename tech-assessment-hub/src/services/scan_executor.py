@@ -250,27 +250,32 @@ def _lookup_version_history_local(
 ) -> Optional[VersionHistory]:
     if not sys_update_name and not sys_metadata_sys_id:
         return None
-    stmt = (
-        select(VersionHistory)
-        .where(VersionHistory.instance_id == instance_id)
-        .where(func.lower(VersionHistory.state) == "current")
-    )
+    _order = (VersionHistory.sys_recorded_at.desc(), VersionHistory.id.desc())
 
-    if sys_update_name and sys_metadata_sys_id:
-        stmt = stmt.where(
-            or_(
-                VersionHistory.sys_update_name == sys_update_name,
-                VersionHistory.customer_update_sys_id == sys_metadata_sys_id,
-            )
-        )
-    elif sys_update_name:
-        stmt = stmt.where(VersionHistory.sys_update_name == sys_update_name)
-    else:
-        stmt = stmt.where(VersionHistory.customer_update_sys_id == sys_metadata_sys_id)
+    # Split OR into two separate queries so each can use its composite index.
+    # ix_version_history_instance_state_sys_update_name covers the first path;
+    # ix_version_history_instance_customer_update_sys_id covers the second.
+    if sys_update_name:
+        by_name = session.exec(
+            select(VersionHistory)
+            .where(VersionHistory.instance_id == instance_id)
+            .where(VersionHistory.state == "current")
+            .where(VersionHistory.sys_update_name == sys_update_name)
+            .order_by(*_order)
+        ).first()
+        if by_name:
+            return by_name
 
-    return session.exec(
-        stmt.order_by(VersionHistory.sys_recorded_at.desc(), VersionHistory.id.desc())
-    ).first()
+    if sys_metadata_sys_id:
+        return session.exec(
+            select(VersionHistory)
+            .where(VersionHistory.instance_id == instance_id)
+            .where(VersionHistory.state == "current")
+            .where(VersionHistory.customer_update_sys_id == sys_metadata_sys_id)
+            .order_by(*_order)
+        ).first()
+
+    return None
 
 
 def _lookup_customer_update_local(
@@ -369,26 +374,28 @@ def _version_history_count_local(
     if not sys_update_name and not sys_metadata_sys_id:
         return 0
 
-    stmt = (
-        select(func.count())
-        .select_from(VersionHistory)
-        .where(VersionHistory.instance_id == instance_id)
-    )
+    # Use separate indexed queries instead of OR to leverage composite indexes.
+    by_name_count = 0
+    if sys_update_name:
+        by_name_count = int(session.exec(
+            select(func.count())
+            .select_from(VersionHistory)
+            .where(VersionHistory.instance_id == instance_id)
+            .where(VersionHistory.sys_update_name == sys_update_name)
+        ).one() or 0)
 
-    if sys_update_name and sys_metadata_sys_id:
-        stmt = stmt.where(
-            or_(
-                VersionHistory.sys_update_name == sys_update_name,
-                VersionHistory.customer_update_sys_id == sys_metadata_sys_id,
-            )
-        )
-    elif sys_update_name:
-        stmt = stmt.where(VersionHistory.sys_update_name == sys_update_name)
-    else:
-        stmt = stmt.where(VersionHistory.customer_update_sys_id == sys_metadata_sys_id)
+    by_sid_count = 0
+    if sys_metadata_sys_id:
+        by_sid_count = int(session.exec(
+            select(func.count())
+            .select_from(VersionHistory)
+            .where(VersionHistory.instance_id == instance_id)
+            .where(VersionHistory.customer_update_sys_id == sys_metadata_sys_id)
+        ).one() or 0)
 
-    count = session.exec(stmt).one()
-    return int(count or 0)
+    # These usually identify the same records; return the larger count as a
+    # conservative upper bound (only used for > 1 check in baseline_changed).
+    return max(by_name_count, by_sid_count)
 
 
 def _baseline_changed_from_version_history_local(
@@ -420,26 +427,28 @@ def _lookup_earliest_version_history_local(
     """Look up the earliest (first) version history record for an artifact."""
     if not sys_update_name and not sys_metadata_sys_id:
         return None
-    stmt = (
-        select(VersionHistory)
-        .where(VersionHistory.instance_id == instance_id)
-    )
+    _order = (VersionHistory.sys_recorded_at.asc(), VersionHistory.id.asc())
 
-    if sys_update_name and sys_metadata_sys_id:
-        stmt = stmt.where(
-            or_(
-                VersionHistory.sys_update_name == sys_update_name,
-                VersionHistory.customer_update_sys_id == sys_metadata_sys_id,
-            )
-        )
-    elif sys_update_name:
-        stmt = stmt.where(VersionHistory.sys_update_name == sys_update_name)
-    else:
-        stmt = stmt.where(VersionHistory.customer_update_sys_id == sys_metadata_sys_id)
+    # Split OR into separate indexed queries.
+    if sys_update_name:
+        by_name = session.exec(
+            select(VersionHistory)
+            .where(VersionHistory.instance_id == instance_id)
+            .where(VersionHistory.sys_update_name == sys_update_name)
+            .order_by(*_order)
+        ).first()
+        if by_name:
+            return by_name
 
-    return session.exec(
-        stmt.order_by(VersionHistory.sys_recorded_at.asc(), VersionHistory.id.asc())
-    ).first()
+    if sys_metadata_sys_id:
+        return session.exec(
+            select(VersionHistory)
+            .where(VersionHistory.instance_id == instance_id)
+            .where(VersionHistory.customer_update_sys_id == sys_metadata_sys_id)
+            .order_by(*_order)
+        ).first()
+
+    return None
 
 
 def _version_row_to_record(version_row: Optional[VersionHistory]) -> Optional[Dict[str, Any]]:

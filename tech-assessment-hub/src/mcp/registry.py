@@ -16,6 +16,16 @@ class ToolSpec:
     fallback_policy: str = "graceful_degrade"
 
 
+def _tool_annotations(permission: str) -> Dict[str, Any]:
+    """Derive MCP tool impact hints from the app's read/write permission flag."""
+    read_only = permission == "read"
+    return {
+        "readOnlyHint": read_only,
+        "openWorldHint": False if not read_only else None,
+        "destructiveHint": False if not read_only else None,
+    }
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: Dict[str, ToolSpec] = {}
@@ -29,6 +39,7 @@ class ToolRegistry:
                 "name": spec.name,
                 "description": spec.description,
                 "inputSchema": spec.input_schema,
+                "annotations": _tool_annotations(spec.permission),
             }
             for spec in self._tools.values()
         ]
@@ -152,6 +163,7 @@ def build_registry() -> ToolRegistry:
     from .tools.core.connection import TOOL_SPEC as connection_tool
     from .tools.core.inventory import TOOL_SPEC as inventory_tool
     from .tools.core.db_reader import TOOL_SPEC as db_reader_tool
+    from .tools.core.search_fetch import SEARCH_TOOL_SPEC, FETCH_TOOL_SPEC
     from .tools.core.workspace import (
         SCAFFOLD_TOOL_SPEC,
         READ_FILE_TOOL_SPEC,
@@ -162,6 +174,8 @@ def build_registry() -> ToolRegistry:
     registry.register(connection_tool)
     registry.register(inventory_tool)
     registry.register(db_reader_tool)
+    registry.register(SEARCH_TOOL_SPEC)
+    registry.register(FETCH_TOOL_SPEC)
     registry.register(SCAFFOLD_TOOL_SPEC)
     registry.register(READ_FILE_TOOL_SPEC)
     registry.register(UPDATE_FILE_TOOL_SPEC)
@@ -177,6 +191,10 @@ def build_registry() -> ToolRegistry:
     from .tools.core.query_live import TOOL_SPEC as query_live_tool
     from .tools.core.customizations import TOOL_SPEC as customizations_tool
     from .tools.core.get_usage_count import TOOL_SPEC as get_usage_count_tool
+    from .tools.core.servicenow_docs_search import (
+        SEARCH_TOOL_SPEC as search_servicenow_docs_tool,
+        FETCH_TOOL_SPEC as fetch_web_document_tool,
+    )
 
     registry.register(instance_summary_tool)
     registry.register(assessment_results_tool)
@@ -189,6 +207,8 @@ def build_registry() -> ToolRegistry:
     registry.register(query_live_tool)
     registry.register(customizations_tool)
     registry.register(get_usage_count_tool)
+    registry.register(search_servicenow_docs_tool)
+    registry.register(fetch_web_document_tool)
 
     # --- Level 2 analysis tools (pipeline) ---
     from .tools.pipeline.customization_summary import TOOL_SPEC as customization_summary_tool

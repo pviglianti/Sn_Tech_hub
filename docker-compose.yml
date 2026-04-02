@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  fastapi-hub:
+    build: .
+    container_name: snow-flow-hub
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mounts a persistent volume to the /app/data directory inside the container
+      - sqlite_data:/app/data
+    env_file:
+      - .env
+    environment:
+      # Overrides the database URL to point to the persistent volume path
+      - DATABASE_URL=sqlite:////app/data/hub_data.db
+    restart: unless-stopped
+
+volumes:
+  # Declares the named volume that Docker will manage
+  sqlite_data:

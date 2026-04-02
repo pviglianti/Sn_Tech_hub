@@ -1,0 +1,335 @@
+{% extends "base.html" %}
+
+{% block title %}Assessment Types - Tech Assessment Hub{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Assessment Types</h1>
+    <div class="button-group">
+        <button type="button" class="btn btn-secondary" id="atReloadBtn" title="Reload assessment types from the server">Reload</button>
+        <button type="button" class="btn btn-primary" id="atNewBtn" title="Start a new assessment type entry">New Type</button>
+    </div>
+</div>
+
+<div class="card">
+    <p class="text-muted-plain mb-0">
+        Define assessment type configurations that control which scans run, what fields are required, and which data drivers are used.
+    </p>
+</div>
+
+<div class="at-layout mt-1">
+    <div class="card">
+        <h2>Types</h2>
+        <p class="text-muted-plain mb-1">
+            Check one row to edit. Click a record row or link to open the full record view. Use column picker to show any stored field.
+        </p>
+        <div id="assessmentTypeTableContainer"></div>
+    </div>
+    <div class="card">
+        <h2 id="atEditorTitle">New Type</h2>
+        <form id="atEditorForm">
+            <input type="hidden" id="atId" value="">
+            <div class="form-group">
+                <label for="atName">Name</label>
+                <input type="text" id="atName" placeholder="e.g. global_app" required>
+                <small>Unique identifier key for this assessment type.</small>
+            </div>
+            <div class="form-group">
+                <label for="atLabel">Label</label>
+                <input type="text" id="atLabel" placeholder="e.g. Global Application" required>
+            </div>
+            <div class="form-group">
+                <label for="atDescription">Description</label>
+                <textarea id="atDescription" rows="3" placeholder="What this assessment type covers"></textarea>
+            </div>
+            <div class="form-group">
+                <label for="atRequiredFields">Required Fields</label>
+                <textarea id="atRequiredFields" rows="3" placeholder="One per line, e.g. target_app_id"></textarea>
+                <small>JSON array stored; enter one value per line.</small>
+            </div>
+            <div class="form-group">
+                <label for="atDefaultScans">Default Scans</label>
+                <textarea id="atDefaultScans" rows="3" placeholder="One per line, e.g. metadata_index"></textarea>
+                <small>JSON array stored; enter one value per line.</small>
+            </div>
+            <div class="form-group">
+                <label for="atScopeOptions">Scope Options</label>
+                <textarea id="atScopeOptions" rows="3" placeholder="One per line, e.g. all, global"></textarea>
+                <small>JSON array stored; enter one value per line.</small>
+            </div>
+            <div class="form-group">
+                <label for="atDrivers">Drivers</label>
+                <textarea id="atDrivers" rows="3" placeholder="One per line, e.g. core_tables, keywords"></textarea>
+                <small>JSON array stored; enter one value per line.</small>
+            </div>
+            <div class="form-group">
+                <label for="atDisplayOrder">Display Order</label>
+                <input type="number" id="atDisplayOrder" value="0">
+            </div>
+            <div class="form-group mb-0">
+                <label>
+                    <input type="checkbox" id="atIsActive" checked>
+                    Active
+                </label>
+            </div>
+            <div class="button-group mt-1">
+                <button type="submit" class="btn btn-primary" id="atSaveBtn">Save</button>
+                <button type="button" class="btn btn-secondary" id="atToggleActiveBtn">Deactivate</button>
+                <button type="button" class="btn btn-secondary" id="atClearFormBtn">Clear</button>
+            </div>
+        </form>
+        <pre id="atEditorStatus" class="code-block mt-1">Ready.</pre>
+    </div>
+</div>
+
+<style>
+.at-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(360px, 1fr);
+    gap: 1rem;
+    align-items: start;
+}
+
+@media (max-width: 1280px) {
+    .at-layout {
+        grid-template-columns: 1fr;
+    }
+}
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/ConditionBuilder.js?v={{ static_version }}"></script>
+<script src="/static/js/ColumnPicker.js?v={{ static_version }}"></script>
+<script src="/static/js/DataTable.js?v={{ static_version }}"></script>
+<script>
+(function () {
+    var container = document.getElementById('assessmentTypeTableContainer');
+    if (!container || !window.DataTable) {
+        return;
+    }
+
+    var editorForm = document.getElementById('atEditorForm');
+    var editorStatus = document.getElementById('atEditorStatus');
+    var editorTitle = document.getElementById('atEditorTitle');
+
+    /* ---- JSON array <-> textarea helpers ---- */
+
+    function jsonArrayToLines(value) {
+        if (!value) return '';
+        var arr = value;
+        if (typeof value === 'string') {
+            try { arr = JSON.parse(value); } catch (e) { return String(value); }
+        }
+        if (!Array.isArray(arr)) return String(value);
+        return arr.join('\n');
+    }
+
+    function linesToJsonArray(text) {
+        var raw = String(text || '').trim();
+        if (!raw) return [];
+        return raw.split('\n').map(function (line) {
+            return line.trim();
+        }).filter(Boolean);
+    }
+
+    /* ---- Status helper ---- */
+
+    function setStatus(text, isError) {
+        if (!editorStatus) return;
+        editorStatus.textContent = String(text || '');
+        editorStatus.style.color = isError ? 'var(--danger-color)' : 'var(--text-color)';
+    }
+
+    /* ---- Form helpers ---- */
+
+    function resetForm() {
+        document.getElementById('atId').value = '';
+        document.getElementById('atName').value = '';
+        document.getElementById('atName').disabled = false;
+        document.getElementById('atLabel').value = '';
+        document.getElementById('atDescription').value = '';
+        document.getElementById('atRequiredFields').value = '';
+        document.getElementById('atDefaultScans').value = '';
+        document.getElementById('atScopeOptions').value = '';
+        document.getElementById('atDrivers').value = '';
+        document.getElementById('atDisplayOrder').value = '0';
+        document.getElementById('atIsActive').checked = true;
+        editorTitle.textContent = 'New Type';
+        document.getElementById('atSaveBtn').textContent = 'Create';
+        document.getElementById('atToggleActiveBtn').disabled = true;
+    }
+
+    function loadRowIntoForm(row) {
+        if (!row) return;
+        document.getElementById('atId').value = row.id || '';
+        document.getElementById('atName').value = row.name || '';
+        document.getElementById('atName').disabled = true;
+        document.getElementById('atLabel').value = row.label || '';
+        document.getElementById('atDescription').value = row.description || '';
+        document.getElementById('atRequiredFields').value = jsonArrayToLines(row.required_fields);
+        document.getElementById('atDefaultScans').value = jsonArrayToLines(row.default_scans);
+        document.getElementById('atScopeOptions').value = jsonArrayToLines(row.scope_options);
+        document.getElementById('atDrivers').value = jsonArrayToLines(row.drivers);
+        document.getElementById('atDisplayOrder').value = (row.display_order != null) ? row.display_order : 0;
+        document.getElementById('atIsActive').checked = !!row.is_active;
+        editorTitle.textContent = 'Edit: ' + (row.name || row.id);
+        document.getElementById('atSaveBtn').textContent = 'Save';
+        document.getElementById('atToggleActiveBtn').disabled = false;
+        document.getElementById('atToggleActiveBtn').textContent = row.is_active ? 'Deactivate' : 'Activate';
+    }
+
+    function payloadFromForm() {
+        return {
+            name: String(document.getElementById('atName').value || '').trim(),
+            label: String(document.getElementById('atLabel').value || '').trim(),
+            description: String(document.getElementById('atDescription').value || '').trim() || null,
+            required_fields: linesToJsonArray(document.getElementById('atRequiredFields').value),
+            default_scans: linesToJsonArray(document.getElementById('atDefaultScans').value),
+            scope_options: linesToJsonArray(document.getElementById('atScopeOptions').value),
+            drivers: linesToJsonArray(document.getElementById('atDrivers').value),
+            display_order: parseInt(document.getElementById('atDisplayOrder').value || '0', 10) || 0,
+            is_active: !!document.getElementById('atIsActive').checked,
+        };
+    }
+
+    resetForm();
+
+    /* ---- DataTable ---- */
+
+    var dt = new window.DataTable(container, {
+        dataUrl: '/api/scan-config/assessment-types/records',
+        schemaUrl: '/api/scan-config/assessment-types/field-schema',
+        instanceId: 0,
+        tableName: 'assessment_type_config',
+        pageSize: 50,
+        storageKey: 'dt_assessment_type_admin_v1',
+        includeTableAndInstanceParams: false,
+        selectable: true,
+        rowIdField: 'id',
+        onDataLoaded: function (_data, table) {
+            /* no-op placeholder for consistency */
+        },
+        onSelectionChange: function (selectedRows) {
+            if (selectedRows.length === 1) {
+                loadRowIntoForm(selectedRows[0]);
+                setStatus('Loaded selected assessment type for editing.', false);
+                return;
+            }
+            if (selectedRows.length > 1) {
+                setStatus('Multiple rows selected. Select one row to edit.', true);
+                return;
+            }
+            resetForm();
+            setStatus('Ready.', false);
+        },
+        customRenderers: {
+            is_active: function (value, row, td) {
+                var span = document.createElement('span');
+                span.className = 'status-badge ' + (value ? 'status-connected' : 'status-draft');
+                span.textContent = value ? 'active' : 'inactive';
+                td.appendChild(span);
+            }
+        }
+    });
+
+    /* ---- Button handlers ---- */
+
+    document.getElementById('atReloadBtn').addEventListener('click', function () {
+        dt.refresh().catch(function (err) {
+            setStatus(err.message, true);
+        });
+    });
+
+    document.getElementById('atNewBtn').addEventListener('click', function () {
+        dt.clearSelection();
+        resetForm();
+        setStatus('New type form ready.', false);
+    });
+
+    document.getElementById('atClearFormBtn').addEventListener('click', function () {
+        dt.clearSelection();
+        resetForm();
+        setStatus('Form cleared.', false);
+    });
+
+    document.getElementById('atToggleActiveBtn').addEventListener('click', async function () {
+        var idValue = parseInt(document.getElementById('atId').value || '0', 10);
+        if (!idValue) {
+            setStatus('Select an existing type before toggling active state.', true);
+            return;
+        }
+        var nextActive = !document.getElementById('atIsActive').checked;
+        try {
+            var res = await fetch('/api/scan-config/assessment-types/' + encodeURIComponent(idValue), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ is_active: nextActive }),
+            });
+            if (!res.ok) {
+                throw new Error('Toggle failed: ' + res.status);
+            }
+            document.getElementById('atIsActive').checked = nextActive;
+            setStatus('Assessment type active state updated.', false);
+            await dt.refresh();
+        } catch (err) {
+            setStatus(err.message, true);
+        }
+    });
+
+    /* ---- Form submit ---- */
+
+    editorForm.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        var idValue = parseInt(document.getElementById('atId').value || '0', 10);
+        var payload = payloadFromForm();
+
+        if (!payload.name) {
+            setStatus('Name is required.', true);
+            return;
+        }
+        if (!payload.label) {
+            setStatus('Label is required.', true);
+            return;
+        }
+
+        var url = '/api/scan-config/assessment-types';
+        var method = 'POST';
+        if (idValue) {
+            method = 'PUT';
+            url = '/api/scan-config/assessment-types/' + encodeURIComponent(idValue);
+            delete payload.name;
+        }
+
+        try {
+            setStatus('Saving...', false);
+            var res = await fetch(url, {
+                method: method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+                throw new Error('Save failed: ' + res.status);
+            }
+            var saved = await res.json();
+            loadRowIntoForm(saved);
+            await dt.refresh();
+            setStatus('Saved ' + (saved.name || ('ID ' + saved.id)) + '.', false);
+        } catch (err) {
+            setStatus(err.message, true);
+        }
+    });
+
+    /* ---- Init ---- */
+
+    dt.init()
+        .then(function () {
+            /* table loaded */
+        })
+        .catch(function (err) {
+            container.innerHTML = '<div class="empty-state"><h2>Error</h2><p>' + err.message + '</p></div>';
+            setStatus('Failed to initialize table: ' + err.message, true);
+        });
+})();
+</script>
+{% endblock %}

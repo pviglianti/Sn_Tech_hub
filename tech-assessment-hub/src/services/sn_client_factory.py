@@ -33,7 +33,12 @@ def create_client_for_instance(
     Returns:
         A ready-to-use ServiceNowClient.
     """
-    password = decrypt_password(instance.password_encrypted)
+    password = ""
+    if instance.password_encrypted:
+        try:
+            password = decrypt_password(instance.password_encrypted)
+        except Exception:
+            pass
 
     if instance.auth_type == "oauth" and instance.client_id and instance.client_secret_encrypted:
         client_secret = decrypt_password(instance.client_secret_encrypted)

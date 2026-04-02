@@ -31,6 +31,7 @@ from src.models import (
     FeatureScanResult,
     GeneralRecommendation,
     Disposition,
+    ReviewStatus,
 )
 from src.server import (
     _PIPELINE_STAGE_ORDER,
@@ -38,6 +39,7 @@ from src.server import (
     _PIPELINE_STAGE_AUTONEXT,
     _run_assessment_pipeline_stage,
 )
+from src.services.ai_feature_dispatch import AIFeatureStageSummary
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +117,7 @@ def _seed_full_pipeline_data(db_session, *, pipeline_stage="ai_analysis"):
         assessment_id=asmt.id,
         name="ComplexFeature",
         description="Feature with 5+ members",
+        name_status="final",
     )
     db_session.add(feat_complex)
     db_session.flush()
@@ -142,6 +145,7 @@ def _seed_full_pipeline_data(db_session, *, pipeline_stage="ai_analysis"):
         assessment_id=asmt.id,
         name="SimpleFeature",
         description="Feature with few members",
+        name_status="final",
         disposition=Disposition.keep_as_is,
         recommendation="Keep it as is",
     )
@@ -158,6 +162,27 @@ def _seed_full_pipeline_data(db_session, *, pipeline_stage="ai_analysis"):
     db_session.refresh(feat_simple)
     db_session.refresh(asmt)
     return asmt, inst, scan, customized_srs, [feat_complex, feat_simple]
+
+
+def _mock_feature_dispatch_summary(
+    *,
+    stage="ai_refinement",
+    pass_count=2,
+    feature_count=2,
+    assigned_count=5,
+    unassigned_count=0,
+    provisional_feature_count=0,
+    run_id=77,
+):
+    return AIFeatureStageSummary(
+        stage=stage,
+        pass_count=pass_count,
+        feature_count=feature_count,
+        assigned_count=assigned_count,
+        unassigned_count=unassigned_count,
+        provisional_feature_count=provisional_feature_count,
+        run_id=run_id,
+    )
 
 
 def _make_mock_context(sr_name="TestArtifact", sr_table="sys_script_include"):
@@ -278,13 +303,15 @@ class TestEndpointToHandler:
 
     @patch("src.server._set_assessment_pipeline_job_state")
     @patch("src.server._set_assessment_pipeline_stage")
+    @patch("src.server.run_ai_feature_stage_dispatch")
     def test_ai_refinement_does_not_auto_advance_stage(
-        self, mock_set_stage, mock_set_job, db_session, db_engine
+        self, mock_dispatch, mock_set_stage, mock_set_job, db_session, db_engine
     ):
         """Running ai_refinement handler should NOT auto-advance pipeline_stage."""
         asmt, _, _, _, _ = _seed_full_pipeline_data(
             db_session, pipeline_stage=PipelineStage.ai_refinement.value
         )
+        mock_dispatch.return_value = _mock_feature_dispatch_summary()
 
         with patch("src.server.engine", db_engine):
             _run_assessment_pipeline_stage(asmt.id, target_stage="ai_refinement")
@@ -455,9 +482,10 @@ class TestCrossStageDataFlow:
 
     @patch("src.server._set_assessment_pipeline_job_state")
     @patch("src.server._set_assessment_pipeline_stage")
+    @patch("src.server.run_ai_feature_stage_dispatch")
     @patch("src.server.gather_artifact_context")
     def test_ai_analysis_writes_observations_then_refinement_enriches(
-        self, mock_gather, mock_set_stage, mock_set_job, db_session, db_engine
+        self, mock_gather, mock_dispatch, mock_set_stage, mock_set_job, db_session, db_engine
     ):
         """ai_analysis populates ai_observations; ai_refinement adds technical_review key."""
         # Step 1: Seed and run ai_analysis
@@ -479,6 +507,7 @@ class TestCrossStageDataFlow:
         asmt.pipeline_stage = PipelineStage.ai_refinement.value
         db_session.add(asmt)
         db_session.commit()
+        mock_dispatch.return_value = _mock_feature_dispatch_summary()
 
         with patch("src.server.engine", db_engine):
             _run_assessment_pipeline_stage(asmt.id, target_stage="ai_refinement")
@@ -507,7 +536,11 @@ class TestCrossStageDataFlow:
             db_session, pipeline_stage=PipelineStage.ai_refinement.value
         )
 
-        with patch("src.server.engine", db_engine):
+        with patch("src.server.engine", db_engine), \
+            patch(
+                "src.server.run_ai_feature_stage_dispatch",
+                return_value=_mock_feature_dispatch_summary(),
+            ):
             _run_assessment_pipeline_stage(asmt.id, target_stage="ai_refinement")
 
         # Verify technical_findings recommendation exists
@@ -600,7 +633,11 @@ class TestCrossStageDataFlow:
         db_session.add(asmt)
         db_session.commit()
 
-        with patch("src.server.engine", db_engine):
+        with patch("src.server.engine", db_engine), \
+            patch(
+                "src.server.run_ai_feature_stage_dispatch",
+                return_value=_mock_feature_dispatch_summary(),
+            ):
             _run_assessment_pipeline_stage(asmt.id, target_stage="ai_refinement")
 
         # Verify technical_findings GeneralRecommendation created
@@ -641,3 +678,37 @@ class TestCrossStageDataFlow:
         assert report_data["assessment_name"] == "Integration Test"
         assert report_data["assessment_number"] == "ASMT0055500"
         assert report_data["instance_name"] == "integ-test"
+
+
+class TestFeatureCoverageGates:
+    @patch("src.server._get_assessment_pipeline_job_snapshot", return_value=None)
+    @patch("src.server._start_assessment_pipeline_job", return_value=True)
+    def test_manual_override_requires_reviewed_resolution(self, mock_start, mock_snap, client, db_session):
+        inst, asmt = _seed_instance_and_assessment(db_session, PipelineStage.recommendations.value)
+        scan = Scan(
+            assessment_id=asmt.id,
+            scan_type=ScanType.metadata,
+            name="override-scan",
+            status=ScanStatus.completed,
+        )
+        db_session.add(scan)
+        db_session.flush()
+        db_session.add(
+            ScanResult(
+                scan_id=scan.id,
+                sys_id="override_sr_1",
+                table_name="incident",
+                name="Needs Human Review",
+                origin_type=OriginType.modified_ootb,
+                review_status=ReviewStatus.pending_review,
+            )
+        )
+        db_session.commit()
+
+        resp = client.post(
+            f"/api/assessments/{asmt.id}/advance-pipeline",
+            json={"target_stage": "report", "manual_override": True},
+        )
+        assert resp.status_code == 409, resp.text
+        assert "manual pipeline override is not ready" in resp.json()["detail"].lower()
+        mock_start.assert_not_called()

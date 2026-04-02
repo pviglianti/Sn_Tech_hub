@@ -92,8 +92,10 @@ app_file_class_queries:
     target_table_field: ref_sys_report.table
     pattern: "ref_sys_report.tableLIKE{table}"
   sys_dictionary:
-    target_table_field: ref_sys_dictionary.name
-    keyword_pattern: "ref_sys_dictionary.nameLIKE{keyword}"
+    # target_table_field: ref_sys_dictionary.name
+    target_table_field: NULL
+   # pattern: "ref_sys_dictionary.nameLIKE{table}"
+    keyword_pattern: "123TEXTQUERY321={keyword}"
   sys_choice:
     target_table_field: ref_sys_choice.name
     pattern: "ref_sys_choice.nameSTARTSWITH{table}."
@@ -118,8 +120,8 @@ update_xml_filters:
 
 scope_filters:
   global:
-    metadata: "sys_scope={scope_id}"
-    update_xml: "update_set.application={scope_id}"
+    metadata: ""
+    update_xml: ""
   all:
     metadata: ""
     update_xml: ""
@@ -138,6 +140,7 @@ global_app_overrides:
   incident:
     tables:
       - incident_task
+      - incident
     keywords:
       - incident
       - inc

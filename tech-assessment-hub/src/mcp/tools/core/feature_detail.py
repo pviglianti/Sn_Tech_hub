@@ -8,7 +8,7 @@ from typing import Any, Dict
 from sqlmodel import Session, select
 
 from ...registry import ToolSpec
-from ....models import Feature, FeatureRecommendation, FeatureScanResult, ScanResult
+from ....models import Feature, FeatureContextArtifact, FeatureRecommendation, FeatureScanResult, ScanResult
 
 
 INPUT_SCHEMA: Dict[str, Any] = {
@@ -38,6 +38,9 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
         .where(FeatureRecommendation.feature_id == feature_id)
         .order_by(FeatureRecommendation.id.asc())
     ).all()
+    context_links = session.exec(
+        select(FeatureContextArtifact).where(FeatureContextArtifact.feature_id == feature_id)
+    ).all()
 
     scan_results = []
     for link in links:
@@ -49,12 +52,39 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
                 "table_name": sr.table_name,
                 "name": sr.name,
                 "origin_type": sr.origin_type.value if sr.origin_type else None,
+                "is_adjacent": bool(sr.is_adjacent),
+                "is_out_of_scope": bool(sr.is_out_of_scope),
                 "disposition": sr.disposition.value if sr.disposition else None,
                 "review_status": sr.review_status.value if sr.review_status else None,
                 "severity": sr.severity.value if sr.severity else None,
                 "is_primary": link.is_primary,
+                "membership_type": link.membership_type,
+                "assignment_source": link.assignment_source,
+                "assignment_confidence": link.assignment_confidence,
                 "link_notes": link.notes,
             })
+
+    context_artifacts = []
+    for link in context_links:
+        sr = session.get(ScanResult, link.scan_result_id)
+        if sr:
+            context_artifacts.append(
+                {
+                    "id": link.id,
+                    "context_type": link.context_type,
+                    "confidence": link.confidence,
+                    "iteration_number": link.iteration_number,
+                    "scan_result": {
+                        "id": sr.id,
+                        "sys_id": sr.sys_id,
+                        "table_name": sr.table_name,
+                        "name": sr.name,
+                        "origin_type": sr.origin_type.value if sr.origin_type else None,
+                        "is_adjacent": bool(sr.is_adjacent),
+                        "is_out_of_scope": bool(sr.is_out_of_scope),
+                    },
+                }
+            )
 
     return {
         "success": True,
@@ -63,6 +93,10 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
             "assessment_id": feature.assessment_id,
             "name": feature.name,
             "description": feature.description,
+            "feature_kind": feature.feature_kind,
+            "composition_type": feature.composition_type,
+            "name_status": feature.name_status,
+            "bucket_key": feature.bucket_key,
             "parent_id": feature.parent_id,
             "disposition": feature.disposition.value if feature.disposition else None,
             "recommendation": feature.recommendation,
@@ -86,6 +120,8 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
         ],
         "scan_results": scan_results,
         "scan_result_count": len(scan_results),
+        "context_artifacts": context_artifacts,
+        "context_artifact_count": len(context_artifacts),
     }
 
 

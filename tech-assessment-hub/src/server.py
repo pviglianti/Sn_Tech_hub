@@ -28,15 +28,17 @@ from .models import (
     GeneralRecommendation,
     GlobalApp, AppFileClass, NumberSequence,
     ConnectionStatus, AssessmentState, AssessmentType, PipelineStage,
-    ScanStatus,
+    ScanStatus, ScanType,
     OriginType, HeadOwner, ReviewStatus, Disposition, Severity, FindingCategory,
     InstanceDataPull, DataPullType, DataPullStatus,
     Scope, Package, Application, UpdateSet, CustomerUpdateXML, VersionHistory,
     MetadataCustomization, InstancePlugin, PluginView, TableDefinition, InstanceAppFileType,
     AppConfig, JobRun, JobEvent, JobRunStatus, AssessmentRuntimeUsage,
+    AssessmentPhaseProgress,
     CodeReference, StructuralRelationship, UpdateSetOverlap,
     TemporalCluster, NamingCluster, TableColocationSummary, UpdateSetArtifactLink,
     BestPractice, BestPracticeCategory,
+    AppFileClassQuery, AssessmentTypeConfig, ScanKindConfig,
 )
 from .services.encryption import encrypt_password, decrypt_password
 from .services.sn_client import ServiceNowClient, ServiceNowClientError
@@ -57,6 +59,7 @@ from .services.integration_sync_runner import resolve_delta_decision
 from .services.integration_properties import (
     load_preflight_concurrent_types,
     load_ai_analysis_properties,
+    load_ai_feature_properties,
     load_ai_runtime_properties,
     load_pipeline_prompt_properties,
 )
@@ -80,9 +83,15 @@ from .mcp.server import handle_request as handle_mcp_request
 from .mcp.tools.pipeline.run_engines import handle as run_preprocessing_engines_handle
 from .mcp.tools.pipeline.seed_feature_groups import handle as seed_feature_groups_handle
 from .services.relationship_graph import build_relationship_graph
+from .services.dependency_graph import build_dependency_graph
 from .services.depth_first_analyzer import run_depth_first_analysis
-from .services.claude_code_dispatcher import ClaudeCodeDispatcher
-from .services.ai_stage_tool_sets import STAGE_TOOL_SETS, build_batch_prompt
+from .services.ai_analysis_dispatch import run_ai_analysis_dispatch
+from .services.ai_feature_dispatch import run_ai_feature_stage_dispatch
+from .services.feature_governance import (
+    build_feature_assignment_summary,
+    refresh_feature_metadata,
+    replace_result_feature_membership,
+)
 from .mcp.tools.pipeline.run_feature_reasoning import handle as run_feature_reasoning_handle
 from .mcp.tools.pipeline.generate_observations import handle as generate_observations_handle
 from .mcp.bridge import (
@@ -95,6 +104,7 @@ from .mcp.runtime.audit import tail_audit_events
 from .mcp.runtime.registry import load_runtime_config, save_runtime_config
 from .inventory_class_catalog import inventory_class_tables
 from .app_file_class_catalog import default_assessment_availability_for_instance_file_type
+from .artifact_detail_defs import get_class_label
 from .web.routes import analytics as analytics_routes
 from .web.routes.analytics import analytics_router
 from .web.routes.artifacts import artifacts_router
@@ -104,6 +114,7 @@ from .web.routes.dynamic_browser import dynamic_browser_router
 from .web.routes.instances import create_instances_router
 from .web.routes.job_log import job_log_router
 from .web.routes.mcp_admin import mcp_admin_router
+from .web.routes.scan_config_admin import scan_config_admin_router
 from .web.routes.preferences import create_preferences_router
 from .web.routes.assessment_runtime_usage import create_assessment_runtime_usage_router
 from .web.routes.customizations import customizations_router
@@ -637,56 +648,69 @@ def _update_assessment_pipeline_run_state(
     status: str,
     message: str,
     progress_percent: Optional[int] = None,
+    _max_retries: int = 3,
 ) -> None:
     if not run_uid:
         return
-    with Session(engine) as session:
-        run = _load_data_pull_run(session, run_uid)
-        if not run:
-            return
-        run_status = _assessment_pipeline_job_status_to_run_status(status)
-        now = datetime.utcnow()
-        run.status = run_status
-        if run_status in {JobRunStatus.running, JobRunStatus.queued} and not run.started_at:
-            run.started_at = now
-        if run_status in {JobRunStatus.completed, JobRunStatus.failed, JobRunStatus.cancelled}:
-            run.completed_at = now
-            run.queue_completed = 1
-        else:
-            run.completed_at = None
-            run.queue_completed = 0
-        run.queue_total = 1
-        run.current_data_type = stage
-        run.current_index = None if run.queue_completed else 1
-        if progress_percent is None:
-            progress_percent = 100 if run.queue_completed else 20
-        run.progress_pct = max(0, min(100, int(progress_percent)))
-        run.message = message
-        run.error_message = message if run_status == JobRunStatus.failed else None
-        metadata = _assessment_pipeline_metadata(run.metadata_json)
-        metadata["assessment_id"] = assessment_id
-        metadata["stage"] = stage
-        run.metadata_json = _json_dumps(metadata)
-        run.updated_at = now
-        run.last_heartbeat_at = now
-        event_type = run_status.value if run_status in {
-            JobRunStatus.completed,
-            JobRunStatus.failed,
-            JobRunStatus.cancelled,
-        } else "progress"
-        _append_data_pull_event(
-            session,
-            run,
-            event_type=event_type,
-            summary=message,
-            payload={
-                "assessment_id": assessment_id,
-                "stage": stage,
-                "status": status,
-                "progress_percent": run.progress_pct,
-            },
-        )
-        session.commit()
+    for attempt in range(1, _max_retries + 1):
+        try:
+            with Session(engine) as session:
+                run = _load_data_pull_run(session, run_uid)
+                if not run:
+                    return
+                run_status = _assessment_pipeline_job_status_to_run_status(status)
+                now = datetime.utcnow()
+                run.status = run_status
+                if run_status in {JobRunStatus.running, JobRunStatus.queued} and not run.started_at:
+                    run.started_at = now
+                if run_status in {JobRunStatus.completed, JobRunStatus.failed, JobRunStatus.cancelled}:
+                    run.completed_at = now
+                    run.queue_completed = 1
+                else:
+                    run.completed_at = None
+                    run.queue_completed = 0
+                run.queue_total = 1
+                run.current_data_type = stage
+                run.current_index = None if run.queue_completed else 1
+                if progress_percent is None:
+                    progress_percent = 100 if run.queue_completed else 20
+                run.progress_pct = max(0, min(100, int(progress_percent)))
+                run.message = message
+                run.error_message = message if run_status == JobRunStatus.failed else None
+                metadata = _assessment_pipeline_metadata(run.metadata_json)
+                metadata["assessment_id"] = assessment_id
+                metadata["stage"] = stage
+                run.metadata_json = _json_dumps(metadata)
+                run.updated_at = now
+                run.last_heartbeat_at = now
+                event_type = run_status.value if run_status in {
+                    JobRunStatus.completed,
+                    JobRunStatus.failed,
+                    JobRunStatus.cancelled,
+                } else "progress"
+                _append_data_pull_event(
+                    session,
+                    run,
+                    event_type=event_type,
+                    summary=message,
+                    payload={
+                        "assessment_id": assessment_id,
+                        "stage": stage,
+                        "status": status,
+                        "progress_percent": run.progress_pct,
+                    },
+                )
+                session.commit()
+            return  # success
+        except Exception as exc:
+            if "database is locked" in str(exc) and attempt < _max_retries:
+                logger.warning(
+                    "database locked on pipeline run state update (attempt %d/%d), retrying...",
+                    attempt, _max_retries,
+                )
+                time.sleep(0.5 * attempt)
+            else:
+                raise
 
 
 def _serialize_assessment_pipeline_run(run: JobRun, *, is_alive: bool) -> Dict[str, Any]:
@@ -861,6 +885,65 @@ def _assessment_review_gate_summary(session: Session, assessment_id: int) -> Dic
         "in_progress": in_progress,
         "total_customized": total,
         "all_reviewed": total > 0 and reviewed >= total,
+    }
+
+
+def _assessment_ai_analysis_summary(session: Session, assessment_id: int) -> Dict[str, Any]:
+    rows = session.exec(
+        select(ScanResult.observations, ScanResult.ai_observations)
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .where(Scan.assessment_id == assessment_id)
+        .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
+    ).all()
+
+    scope_counts: Dict[str, int] = collections.Counter()
+    triaged = 0
+    observations_written = 0
+    relationship_links_written = 0
+    connected_dispatch_count = 0
+
+    for observation_text, ai_raw in rows:
+        if str(observation_text or "").strip():
+            observations_written += 1
+        parsed = _safe_json(ai_raw, {})
+        if not isinstance(parsed, dict):
+            continue
+        scope_decision = str(parsed.get("scope_decision") or "").strip().lower()
+        if scope_decision:
+            triaged += 1
+            scope_counts[scope_decision] += 1
+        related_ids = parsed.get("directly_related_result_ids") or []
+        if isinstance(related_ids, list) and related_ids:
+            relationship_links_written += 1
+        dispatch_trace = parsed.get("dispatch_trace") or {}
+        if isinstance(dispatch_trace, dict) and dispatch_trace:
+            connected_dispatch_count += 1
+
+    phase = session.exec(
+        select(AssessmentPhaseProgress)
+        .where(AssessmentPhaseProgress.assessment_id == assessment_id)
+        .where(AssessmentPhaseProgress.phase == PipelineStage.ai_analysis.value)
+        .order_by(AssessmentPhaseProgress.id.desc())
+        .limit(1)
+    ).first()
+
+    total_customized = len(rows)
+    phase_status = None
+    phase_error = None
+    if phase is not None:
+        phase_status = str(phase.status or "").strip().lower() or None
+        phase_error = str(phase.last_error or "").strip() or None
+
+    return {
+        "total_customized": total_customized,
+        "triaged_count": triaged,
+        "observations_written": observations_written,
+        "relationship_links_written": relationship_links_written,
+        "connected_dispatch_count": connected_dispatch_count,
+        "scope_counts": dict(scope_counts),
+        "all_triaged": total_customized == 0 or triaged >= total_customized,
+        "phase_status": phase_status,
+        "phase_error": phase_error,
     }
 
 
@@ -1630,54 +1713,22 @@ def _run_assessment_pipeline_stage(
         if stage == PipelineStage.ai_analysis.value:
             # --- AI Analysis: gather contextual enrichment for customized artifacts ---
             ai_props = load_ai_analysis_properties(session, instance_id=assessment.instance_id)
+            runtime_props = load_ai_runtime_properties(session, instance_id=assessment.instance_id)
             pipeline_prompt_props = load_pipeline_prompt_properties(session, instance_id=assessment.instance_id)
             instance_id = assessment.instance_id
 
-            # Only use DFS when both the property flag and relationship graph allow it.
-            graph = build_relationship_graph(session, assessment_id)
+            dispatch_resolved = None
+            dispatch_setup_error = None
+            if runtime_props.mode != "disabled":
+                try:
+                    dispatch_resolved = DispatcherRouter(session).resolve(stage)
+                except Exception as exc:
+                    dispatch_setup_error = str(exc)
 
-            if ai_props.enable_depth_first and graph and len(graph.adjacency) > 0:
-                # --- Depth-first relationship-driven analysis ---
-
-                def dfs_checkpoint_cb(sr_id, visited_count, total):
-                    checkpoint_phase_progress(
-                        session, assessment_id, stage,
-                        completed_items=visited_count, total_items=total,
-                        status="running", checkpoint={"last_sr_id": sr_id}, commit=False,
-                    )
-                    session.commit()
-
-                def dfs_progress_cb(progress_pct, message):
-                    _set_assessment_pipeline_job_state(
-                        assessment_id, stage=stage, status="running",
-                        message=message, progress_percent=progress_pct,
-                    )
-
-                result = run_depth_first_analysis(
-                    session, assessment_id, instance_id, graph,
-                    max_rabbit_hole_depth=ai_props.max_rabbit_hole_depth,
-                    max_neighbors_per_hop=ai_props.max_neighbors_per_hop,
-                    min_edge_weight=ai_props.min_edge_weight_for_traversal,
-                    context_enrichment=ai_props.context_enrichment,
-                    use_registered_prompts=pipeline_prompt_props.use_registered_prompts,
-                    checkpoint_callback=dfs_checkpoint_cb,
-                    progress_callback=dfs_progress_cb,
-                )
-                # Note: complete_phase_progress is called inside run_depth_first_analysis
-                success_message = (
-                    f"Depth-first analysis complete: {result.analyzed}/{result.total_customized} artifacts, "
-                    f"{result.features_created} features created, {result.features_updated} updated"
-                )
-                telemetry_details["ai_analysis"] = {
-                    "mode": "depth_first",
-                    "customized_total": result.total_customized,
-                    "analyzed_count": result.analyzed,
-                    "features_created": result.features_created,
-                    "features_updated": result.features_updated,
-                }
-            else:
-                # --- Sequential analysis (default) ---
-                # Query customized ScanResults via Scan -> ScanResult join
+            if dispatch_resolved is not None:
+                registered_prompt_name = None
+                registered_prompt_text = None
+                registered_prompt_error = None
                 customized = session.exec(
                     select(ScanResult)
                     .join(Scan, ScanResult.scan_id == Scan.id)
@@ -1697,7 +1748,6 @@ def _run_assessment_pipeline_stage(
                     commit=False,
                 )
                 resume_from = min(max(0, int(phase_progress.resume_from_index or 0)), total)
-                analyzed_count = 0
                 if total == 0:
                     success_message = "AI Analysis stage completed (0 customized artifacts found)."
                     complete_phase_progress(
@@ -1719,78 +1769,39 @@ def _run_assessment_pipeline_stage(
                         commit=False,
                     )
                 else:
-                    for i, sr in enumerate(customized[resume_from:], start=resume_from):
-                        # Gather context via the contextual lookup service.
-                        # Keep this baseline JSON shape stable for downstream stages/tests.
-                        ctx = gather_artifact_context(
-                            session, instance_id, sr.id, ai_props.context_enrichment
-                        )
-
-                        references = ctx.get("references") or []
-                        human_ctx = ctx.get("human_context") or {}
-                        artifact_info = ctx.get("artifact") or {}
-
-                        human_context_present = bool(
-                            human_ctx.get("observations")
-                            or human_ctx.get("disposition")
-                            or human_ctx.get("features")
-                        )
-
-                        analysis_result = {
-                            "artifact_name": artifact_info.get("name") or sr.name,
-                            "artifact_table": artifact_info.get("table_name") or sr.table_name,
-                            "context_enrichment_mode": ai_props.context_enrichment,
-                            "references_found": sum(1 for r in references if r.get("resolved")),
-                            "has_local_data": ctx.get("has_local_table_data", False),
-                            "human_context_present": human_context_present,
-                            "update_sets_count": len(ctx.get("update_sets") or []),
-                        }
-
-                        if pipeline_prompt_props.use_registered_prompts:
-                            prompt_text, prompt_error = _try_registered_prompt_text(
-                                session,
-                                prompt_name="artifact_analyzer",
-                                arguments={
-                                    "result_id": str(sr.id),
-                                    "assessment_id": str(assessment_id),
-                                },
-                            )
-                            if prompt_text:
-                                analysis_result["registered_prompt"] = "artifact_analyzer"
-                                analysis_result["prompt_context"] = prompt_text
-                            if prompt_error:
-                                analysis_result["registered_prompt_error"] = prompt_error
-
-                        sr.ai_observations = json.dumps(analysis_result, sort_keys=True)
-                        session.add(sr)
-                        analyzed_count += 1
-
-                        checkpoint_phase_progress(
+                    if pipeline_prompt_props.use_registered_prompts:
+                        prompt_text, prompt_error = _try_registered_prompt_text(
                             session,
-                            assessment_id,
-                            stage,
-                            completed_items=i + 1,
-                            last_item_id=int(sr.id) if sr.id is not None else None,
-                            status="running",
-                            checkpoint={
-                                "resume_from_index": i + 1,
-                                "last_item_name": sr.name,
-                                "context_enrichment": ai_props.context_enrichment,
-                            },
-                            commit=False,
+                            prompt_name="tech_assessment_expert",
+                            arguments={"assessment_id": str(assessment_id)},
                         )
-                        session.commit()
+                        if prompt_text:
+                            registered_prompt_name = "tech_assessment_expert"
+                            registered_prompt_text = prompt_text
+                        if prompt_error:
+                            registered_prompt_error = prompt_error
 
-                        # Update progress
-                        progress = 15 + int((i + 1) / total * 80)
-                        _set_assessment_pipeline_job_state(
-                            assessment_id,
-                            stage=stage,
-                            status="running",
-                            message=f"Analyzing artifact {i + 1}/{total}...",
-                            progress_percent=progress,
-                        )
-
+                    # Release the phase-progress write before background status updates
+                    # and connected MCP tool traffic touch the same SQLite database.
+                    session.commit()
+                    _set_assessment_pipeline_job_state(
+                        assessment_id,
+                        stage=stage,
+                        status="running",
+                        message=f"Dispatching AI scope triage for {total - resume_from} artifact(s)...",
+                        progress_percent=25,
+                    )
+                    dispatch_summary = run_ai_analysis_dispatch(
+                        session,
+                        assessment=assessment,
+                        resolved=dispatch_resolved,
+                        runtime_props=runtime_props,
+                        customized_results=customized[resume_from:],
+                        batch_size=ai_props.batch_size,
+                        registered_prompt_name=registered_prompt_name,
+                        registered_prompt_text=registered_prompt_text,
+                        registered_prompt_error=registered_prompt_error,
+                    )
                     complete_phase_progress(
                         session,
                         assessment_id,
@@ -1799,13 +1810,197 @@ def _run_assessment_pipeline_stage(
                         commit=False,
                     )
                     success_message = (
-                        f"AI Analysis stage completed ({resume_from + analyzed_count}/{total} customized artifacts analyzed)."
+                        "AI Analysis stage completed "
+                        f"({dispatch_summary.processed_count}/{total - resume_from} customized artifacts triaged with connected AI)."
                     )
+
                 telemetry_details["ai_analysis"] = {
+                    "mode": "connected_tools",
+                    "runtime_mode": runtime_props.mode,
+                    "provider_kind": dispatch_resolved.provider_kind,
+                    "model_name": dispatch_resolved.model_name,
                     "customized_total": total,
                     "resume_from_index": resume_from,
-                    "analyzed_count": analyzed_count,
+                    "registered_prompt": registered_prompt_name if total > 0 and resume_from < total else None,
+                    "registered_prompt_error": registered_prompt_error if total > 0 and resume_from < total else None,
                 }
+            else:
+                # Only use DFS when both the property flag and relationship graph allow it.
+                graph = build_relationship_graph(session, assessment_id)
+
+                if ai_props.enable_depth_first and graph and len(graph.adjacency) > 0:
+                    # --- Depth-first relationship-driven analysis ---
+
+                    def dfs_checkpoint_cb(sr_id, visited_count, total):
+                        checkpoint_phase_progress(
+                            session, assessment_id, stage,
+                            completed_items=visited_count, total_items=total,
+                            status="running", checkpoint={"last_sr_id": sr_id}, commit=False,
+                        )
+                        session.commit()
+
+                    def dfs_progress_cb(progress_pct, message):
+                        _set_assessment_pipeline_job_state(
+                            assessment_id, stage=stage, status="running",
+                            message=message, progress_percent=progress_pct,
+                        )
+
+                    result = run_depth_first_analysis(
+                        session, assessment_id, instance_id, graph,
+                        max_rabbit_hole_depth=ai_props.max_rabbit_hole_depth,
+                        max_neighbors_per_hop=ai_props.max_neighbors_per_hop,
+                        min_edge_weight=ai_props.min_edge_weight_for_traversal,
+                        context_enrichment=ai_props.context_enrichment,
+                        use_registered_prompts=pipeline_prompt_props.use_registered_prompts,
+                        checkpoint_callback=dfs_checkpoint_cb,
+                        progress_callback=dfs_progress_cb,
+                    )
+                    # Note: complete_phase_progress is called inside run_depth_first_analysis
+                    success_message = (
+                        f"Depth-first analysis complete: {result.analyzed}/{result.total_customized} artifacts, "
+                        f"{result.features_created} features created, {result.features_updated} updated"
+                    )
+                    telemetry_details["ai_analysis"] = {
+                        "mode": "depth_first_fallback",
+                        "dispatch_setup_error": dispatch_setup_error,
+                        "customized_total": result.total_customized,
+                        "analyzed_count": result.analyzed,
+                        "features_created": result.features_created,
+                        "features_updated": result.features_updated,
+                    }
+                else:
+                    # --- Sequential analysis (default fallback) ---
+                    # Query customized ScanResults via Scan -> ScanResult join
+                    customized = session.exec(
+                        select(ScanResult)
+                        .join(Scan, ScanResult.scan_id == Scan.id)
+                        .where(Scan.assessment_id == assessment_id)
+                        .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
+                        .order_by(ScanResult.id.asc())
+                    ).all()
+
+                    total = len(customized)
+                    phase_progress = start_phase_progress(
+                        session,
+                        assessment_id,
+                        stage,
+                        total_items=total,
+                        allow_resume=True,
+                        checkpoint={"total_items": total},
+                        commit=False,
+                    )
+                    resume_from = min(max(0, int(phase_progress.resume_from_index or 0)), total)
+                    analyzed_count = 0
+                    if total == 0:
+                        success_message = "AI Analysis stage completed (0 customized artifacts found)."
+                        complete_phase_progress(
+                            session,
+                            assessment_id,
+                            stage,
+                            checkpoint={"completed_items": 0, "resume_from_index": 0},
+                            commit=False,
+                        )
+                    elif resume_from >= total:
+                        success_message = (
+                            f"AI Analysis stage already complete ({total}/{total} customized artifacts analyzed)."
+                        )
+                        complete_phase_progress(
+                            session,
+                            assessment_id,
+                            stage,
+                            checkpoint={"completed_items": total, "resume_from_index": total},
+                            commit=False,
+                        )
+                    else:
+                        for i, sr in enumerate(customized[resume_from:], start=resume_from):
+                            # Gather context via the contextual lookup service.
+                            # Keep this baseline JSON shape stable for downstream stages/tests.
+                            ctx = gather_artifact_context(
+                                session, instance_id, sr.id, ai_props.context_enrichment
+                            )
+
+                            references = ctx.get("references") or []
+                            human_ctx = ctx.get("human_context") or {}
+                            artifact_info = ctx.get("artifact") or {}
+
+                            human_context_present = bool(
+                                human_ctx.get("observations")
+                                or human_ctx.get("disposition")
+                                or human_ctx.get("features")
+                            )
+
+                            analysis_result = {
+                                "artifact_name": artifact_info.get("name") or sr.name,
+                                "artifact_table": artifact_info.get("table_name") or sr.table_name,
+                                "context_enrichment_mode": ai_props.context_enrichment,
+                                "references_found": sum(1 for r in references if r.get("resolved")),
+                                "has_local_data": ctx.get("has_local_table_data", False),
+                                "human_context_present": human_context_present,
+                                "update_sets_count": len(ctx.get("update_sets") or []),
+                            }
+
+                            if pipeline_prompt_props.use_registered_prompts:
+                                prompt_text, prompt_error = _try_registered_prompt_text(
+                                    session,
+                                    prompt_name="artifact_analyzer",
+                                    arguments={
+                                        "result_id": str(sr.id),
+                                        "assessment_id": str(assessment_id),
+                                    },
+                                )
+                                if prompt_text:
+                                    analysis_result["registered_prompt"] = "artifact_analyzer"
+                                    analysis_result["prompt_context"] = prompt_text
+                                if prompt_error:
+                                    analysis_result["registered_prompt_error"] = prompt_error
+
+                            sr.ai_observations = json.dumps(analysis_result, sort_keys=True)
+                            session.add(sr)
+                            analyzed_count += 1
+
+                            checkpoint_phase_progress(
+                                session,
+                                assessment_id,
+                                stage,
+                                completed_items=i + 1,
+                                last_item_id=int(sr.id) if sr.id is not None else None,
+                                status="running",
+                                checkpoint={
+                                    "resume_from_index": i + 1,
+                                    "last_item_name": sr.name,
+                                    "context_enrichment": ai_props.context_enrichment,
+                                },
+                                commit=False,
+                            )
+                            session.commit()
+
+                            # Update progress
+                            progress = 15 + int((i + 1) / total * 80)
+                            _set_assessment_pipeline_job_state(
+                                assessment_id,
+                                stage=stage,
+                                status="running",
+                                message=f"Analyzing artifact {i + 1}/{total}...",
+                                progress_percent=progress,
+                            )
+
+                        complete_phase_progress(
+                            session,
+                            assessment_id,
+                            stage,
+                            checkpoint={"completed_items": total, "resume_from_index": total},
+                            commit=False,
+                        )
+                        success_message = (
+                            f"AI Analysis stage completed ({resume_from + analyzed_count}/{total} customized artifacts analyzed)."
+                        )
+                    telemetry_details["ai_analysis"] = {
+                        "mode": "sequential_fallback",
+                        "dispatch_setup_error": dispatch_setup_error,
+                        "customized_total": total,
+                        "resume_from_index": resume_from,
+                        "analyzed_count": analyzed_count,
+                    }
 
         elif stage == PipelineStage.engines.value:
             start_phase_progress(
@@ -1913,196 +2108,185 @@ def _run_assessment_pipeline_stage(
             }
 
         elif stage == PipelineStage.grouping.value:
+            feature_props = load_ai_feature_properties(session, instance_id=assessment.instance_id)
+            runtime_props = load_ai_runtime_properties(session, instance_id=assessment.instance_id)
+            pipeline_prompt_props_grouping = load_pipeline_prompt_properties(
+                session,
+                instance_id=assessment.instance_id,
+            )
+            stage_passes = [
+                item for item in feature_props.pass_plan
+                if str(item.get("stage") or "").strip().lower() == stage
+            ]
             phase_progress = start_phase_progress(
                 session,
                 assessment_id,
                 stage,
-                total_items=0,
+                total_items=max(1, len(stage_passes)),
                 allow_resume=True,
-                checkpoint={"stage_operation": "seed_feature_groups"},
+                checkpoint={"stage_operation": "ai_feature_grouping"},
                 commit=False,
             )
             if skip_review:
                 _mark_remaining_customizations_reviewed(session, assessment_id)
-
-            # If features already exist (e.g. from depth-first analysis), run in merge mode
-            grouping_params = {"assessment_id": assessment_id}
-            existing_feature_count = session.exec(
-                select(func.count(Feature.id)).where(Feature.assessment_id == assessment_id)
-            ).one()
-            if existing_feature_count > 0:
-                grouping_params["reset_existing"] = False
-
-            result = seed_feature_groups_handle(grouping_params, session)
-            if not result.get("success"):
-                raise RuntimeError(result.get("error") or "Feature grouping failed.")
-            features_created = int(result.get("features_created") or 0)
-            grouped_count = int(result.get("grouped_count") or 0)
+            session.commit()
+            _set_assessment_pipeline_job_state(
+                assessment_id,
+                stage=stage,
+                status="running",
+                message="Dispatching AI-owned feature grouping passes...",
+                progress_percent=20,
+            )
+            dispatch_summary = run_ai_feature_stage_dispatch(
+                session,
+                assessment=assessment,
+                stage=stage,
+                runtime_props=runtime_props,
+                feature_props=feature_props,
+                use_registered_prompts=pipeline_prompt_props_grouping.use_registered_prompts,
+            )
+            feature_summary = build_feature_assignment_summary(session, assessment_id=assessment_id)
             checkpoint_phase_progress(
                 session,
                 assessment_id,
                 stage,
-                total_items=max(0, grouped_count),
-                completed_items=max(0, grouped_count),
+                total_items=max(1, dispatch_summary.pass_count),
+                completed_items=max(1, dispatch_summary.pass_count),
                 status="completed",
                 checkpoint={
-                    "features_created": features_created,
-                    "grouped_count": grouped_count,
-                    "run_attempt": int(phase_progress.run_attempt or 0),
+                    "pass_count": dispatch_summary.pass_count,
+                    "feature_count": dispatch_summary.feature_count,
+                    "assigned_count": dispatch_summary.assigned_count,
+                    "unassigned_count": dispatch_summary.unassigned_count,
+                    "provisional_feature_count": dispatch_summary.provisional_feature_count,
+                    "run_id": dispatch_summary.run_id,
                 },
                 commit=False,
             )
             success_message = (
-                f"Grouping stage completed ({grouped_count} customized results grouped; "
-                f"{features_created} feature(s) created)."
+                f"Grouping stage completed with AI-authored features "
+                f"({dispatch_summary.feature_count} feature(s), "
+                f"{dispatch_summary.assigned_count} assigned artifact(s), "
+                f"{dispatch_summary.unassigned_count} unassigned)."
             )
-            telemetry_local_calls_delta += 1
+            telemetry_local_calls_delta += int(max(1, dispatch_summary.pass_count))
             telemetry_details["grouping"] = {
-                "grouped_count": grouped_count,
-                "features_created": features_created,
+                "pass_count": dispatch_summary.pass_count,
+                "feature_count": dispatch_summary.feature_count,
+                "assigned_count": dispatch_summary.assigned_count,
+                "unassigned_count": dispatch_summary.unassigned_count,
+                "bucket_feature_count": int(feature_summary.get("bucket_feature_count") or 0),
+                "provisional_feature_count": int(feature_summary.get("provisional_feature_count") or 0),
             }
 
         elif stage == PipelineStage.ai_refinement.value:
+            feature_props = load_ai_feature_properties(session, instance_id=assessment.instance_id)
+            runtime_props = load_ai_runtime_properties(session, instance_id=assessment.instance_id)
             pipeline_prompt_props_refinement = load_pipeline_prompt_properties(
                 session,
                 instance_id=assessment.instance_id,
             )
+            stage_passes = [
+                item for item in feature_props.pass_plan
+                if str(item.get("stage") or "").strip().lower() == stage
+            ]
             start_phase_progress(
                 session,
                 assessment_id,
                 stage,
-                total_items=3,
+                total_items=max(1, len(stage_passes)),
                 allow_resume=True,
-                checkpoint={"substeps": ["complex_features", "artifact_review", "rollup"]},
+                checkpoint={"stage_operation": "ai_feature_refinement"},
                 commit=False,
             )
-            # --- AI Refinement: relationship tracing, artifact review, debt roll-up ---
-
-            # ---- Sub-step 1: Identify complex features (5+ members) ----
+            session.commit()
             _set_assessment_pipeline_job_state(
                 assessment_id,
                 stage=stage,
                 status="running",
-                message="Identifying complex features...",
-                progress_percent=15,
+                message="Dispatching AI refinement passes...",
+                progress_percent=20,
             )
+            dispatch_summary = run_ai_feature_stage_dispatch(
+                session,
+                assessment=assessment,
+                stage=stage,
+                runtime_props=runtime_props,
+                feature_props=feature_props,
+                use_registered_prompts=pipeline_prompt_props_refinement.use_registered_prompts,
+            )
+            feature_summary = build_feature_assignment_summary(session, assessment_id=assessment_id)
 
             features = session.exec(
                 select(Feature).where(Feature.assessment_id == assessment_id)
             ).all()
-
-            complex_features: list = []
             for feat in features:
-                member_count = session.exec(
-                    select(func.count(FeatureScanResult.id))
-                    .where(FeatureScanResult.feature_id == feat.id)
-                ).one()
-                if member_count >= 5:
-                    # Gather member artifact details
-                    member_links = session.exec(
-                        select(FeatureScanResult).where(FeatureScanResult.feature_id == feat.id)
-                    ).all()
-                    member_names: list = []
-                    member_tables: set = set()
+                member_links = session.exec(
+                    select(FeatureScanResult).where(FeatureScanResult.feature_id == feat.id)
+                ).all()
+                if len(member_links) < 5 or feat.ai_summary:
+                    continue
+                member_names: List[str] = []
+                member_tables: set = set()
+                for link in member_links:
+                    sr = session.get(ScanResult, link.scan_result_id)
+                    if not sr:
+                        continue
+                    member_names.append(sr.name or sr.sys_id)
+                    if sr.table_name:
+                        member_tables.add(sr.table_name)
+                summary_payload = {
+                    "refinement_type": "complex_feature_analysis",
+                    "feature_name": feat.name,
+                    "member_count": len(member_links),
+                    "member_artifacts": member_names,
+                    "tables_involved": sorted(member_tables),
+                    "cross_table_relationship": len(member_tables) > 1,
+                }
+                if pipeline_prompt_props_refinement.use_registered_prompts:
+                    representative_result_id = None
                     for link in member_links:
-                        sr = session.get(ScanResult, link.scan_result_id)
-                        if sr:
-                            member_names.append(sr.name or sr.sys_id)
-                            if sr.table_name:
-                                member_tables.add(sr.table_name)
-
-                    cross_table = len(member_tables) > 1
-
-                    summary = {
-                        "refinement_type": "complex_feature_analysis",
-                        "feature_name": feat.name,
-                        "member_count": member_count,
-                        "member_artifacts": member_names,
-                        "tables_involved": sorted(member_tables),
-                        "cross_table_relationship": cross_table,
-                        "human_disposition": feat.disposition.value if feat.disposition else None,
-                        "human_recommendation": feat.recommendation,
-                    }
-                    if pipeline_prompt_props_refinement.use_registered_prompts:
-                        representative_result_id = None
-                        prioritized_links = sorted(
-                            member_links,
-                            key=lambda link: (
-                                0 if bool(link.is_primary) else 1,
-                                int(link.id or 0),
-                            ),
+                        if link.scan_result_id is not None:
+                            representative_result_id = int(link.scan_result_id)
+                            break
+                    if representative_result_id is not None:
+                        prompt_text, prompt_error = _try_registered_prompt_text(
+                            session,
+                            prompt_name="relationship_tracer",
+                            arguments={
+                                "result_id": str(representative_result_id),
+                                "assessment_id": str(assessment_id),
+                                "direction": "both",
+                                "max_depth": "3",
+                            },
                         )
-                        for link in prioritized_links:
-                            if link.scan_result_id is not None:
-                                representative_result_id = int(link.scan_result_id)
-                                break
-                        if representative_result_id is not None:
-                            prompt_text, prompt_error = _try_registered_prompt_text(
-                                session,
-                                prompt_name="relationship_tracer",
-                                arguments={
-                                    "result_id": str(representative_result_id),
-                                    "assessment_id": str(assessment_id),
-                                    "direction": "both",
-                                    "max_depth": "3",
-                                },
-                            )
-                            if prompt_text:
-                                summary["registered_prompt"] = "relationship_tracer"
-                                summary["prompt_context"] = prompt_text
-                            if prompt_error:
-                                summary["registered_prompt_error"] = prompt_error
-                        else:
-                            summary["registered_prompt_error"] = (
-                                "No feature member available for relationship_tracer prompt."
-                            )
-                    feat.ai_summary = json.dumps(summary, sort_keys=True)
-                    session.add(feat)
-                    complex_features.append((feat, member_count))
-
-            checkpoint_phase_progress(
-                session,
-                assessment_id,
-                stage,
-                total_items=3,
-                completed_items=1,
-                status="running",
-                checkpoint={
-                    "substep": "complex_features",
-                    "complex_features_analyzed": len(complex_features),
-                    "feature_count": len(features),
-                },
-                commit=False,
-            )
-            # Persist sub-step 1 so resume does not lose completed feature analysis work.
-            session.commit()
-
-            # ---- Sub-step 2: Mode A — review flagged artifacts ----
-            _set_assessment_pipeline_job_state(
-                assessment_id,
-                stage=stage,
-                status="running",
-                message="Reviewing flagged artifacts...",
-                progress_percent=45,
-            )
+                        if prompt_text:
+                            summary_payload["registered_prompt"] = "relationship_tracer"
+                            summary_payload["prompt_context"] = prompt_text
+                        if prompt_error:
+                            summary_payload["registered_prompt_error"] = prompt_error
+                    else:
+                        summary_payload["registered_prompt_error"] = (
+                            "No feature member available for relationship_tracer prompt."
+                        )
+                feat.ai_summary = json.dumps(summary_payload, sort_keys=True)
+                session.add(feat)
 
             flagged_artifacts = session.exec(
                 select(ScanResult)
                 .join(Scan, ScanResult.scan_id == Scan.id)
                 .where(Scan.assessment_id == assessment_id)
                 .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
+                .where(ScanResult.is_out_of_scope == False)  # noqa: E712
                 .where(ScanResult.ai_observations.isnot(None))
             ).all()
-
-            mode_a_count = 0
             for sr in flagged_artifacts:
                 try:
                     existing_obs = json.loads(sr.ai_observations) if sr.ai_observations else {}
                 except (json.JSONDecodeError, TypeError):
                     existing_obs = {}
-
-                # Build Mode A technical review context
-                # Gather feature memberships for this artifact
+                if "technical_review" in existing_obs:
+                    continue
                 feat_links = session.exec(
                     select(FeatureScanResult).where(FeatureScanResult.scan_result_id == sr.id)
                 ).all()
@@ -2111,14 +2295,13 @@ def _run_assessment_pipeline_stage(
                     linked_feat = session.get(Feature, fl.feature_id)
                     if linked_feat:
                         feature_names.append(linked_feat.name)
-
-                technical_review = {
+                existing_obs["technical_review"] = {
                     "review_type": "mode_a_artifact_review",
                     "artifact_name": sr.name,
                     "artifact_table": sr.table_name,
                     "feature_memberships": feature_names,
                     "has_prior_analysis": bool(existing_obs),
-                    "prior_analysis_keys": sorted(existing_obs.keys()) if existing_obs else [],
+                    "prior_analysis_keys": sorted(existing_obs.keys()),
                 }
                 if pipeline_prompt_props_refinement.use_registered_prompts:
                     prompt_text, prompt_error = _try_registered_prompt_text(
@@ -2130,76 +2313,27 @@ def _run_assessment_pipeline_stage(
                         },
                     )
                     if prompt_text:
-                        technical_review["registered_prompt"] = "technical_architect"
-                        technical_review["prompt_context"] = prompt_text
+                        existing_obs["technical_review"]["registered_prompt"] = "technical_architect"
+                        existing_obs["technical_review"]["prompt_context"] = prompt_text
                     if prompt_error:
-                        technical_review["registered_prompt_error"] = prompt_error
-
-                existing_obs["technical_review"] = technical_review
+                        existing_obs["technical_review"]["registered_prompt_error"] = prompt_error
                 sr.ai_observations = json.dumps(existing_obs, sort_keys=True)
                 session.add(sr)
-                mode_a_count += 1
 
-            checkpoint_phase_progress(
-                session,
-                assessment_id,
-                stage,
-                total_items=3,
-                completed_items=2,
-                status="running",
-                checkpoint={
-                    "substep": "artifact_review",
-                    "artifacts_reviewed_mode_a": mode_a_count,
-                    "flagged_artifacts_total": len(flagged_artifacts),
-                },
-                commit=False,
-            )
-            # Persist sub-step 2 to improve resumability on downstream failures.
-            session.commit()
-
-            # ---- Sub-step 3: Mode B — assessment-wide roll-up ----
-            _set_assessment_pipeline_job_state(
-                assessment_id,
-                stage=stage,
-                status="running",
-                message="Building assessment-wide technical debt roll-up...",
-                progress_percent=75,
-            )
-
-            # Total customized artifacts grouped by table_name
-            table_counts_rows = session.exec(
-                select(ScanResult.table_name, func.count(ScanResult.id))
-                .join(Scan, ScanResult.scan_id == Scan.id)
-                .where(Scan.assessment_id == assessment_id)
-                .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
-                .group_by(ScanResult.table_name)
+            existing_rollups = session.exec(
+                select(GeneralRecommendation)
+                .where(GeneralRecommendation.assessment_id == assessment_id)
+                .where(GeneralRecommendation.category == "technical_findings")
             ).all()
-            customized_by_table = {row[0]: row[1] for row in table_counts_rows}
-            total_customized = sum(customized_by_table.values())
-
-            # Features count
-            features_count = len(features)
-
-            # Disposition distribution
-            disposition_dist: dict = {}
-            for feat in features:
-                disp_val = feat.disposition.value if feat.disposition else "unset"
-                disposition_dist[disp_val] = disposition_dist.get(disp_val, 0) + 1
-
-            # Best practice checks count (active definitions)
-            bp_count = session.exec(
-                select(func.count(BestPractice.id)).where(BestPractice.is_active == True)  # noqa: E712
-            ).one()
-
-            rollup_data = {
+            for row in existing_rollups:
+                session.delete(row)
+            rollup_payload = {
                 "rollup_type": "mode_b_assessment_wide",
-                "total_customized_artifacts": total_customized,
-                "customized_by_table": dict(sorted(customized_by_table.items())),
-                "features_created": features_count,
-                "disposition_distribution": dict(sorted(disposition_dist.items())),
-                "active_best_practice_checks": bp_count,
-                "complex_features_analyzed": len(complex_features),
-                "artifacts_reviewed_mode_a": mode_a_count,
+                "total_customized_artifacts": int(feature_summary.get("in_scope_customized_total") or 0),
+                "features_created": dispatch_summary.feature_count,
+                "bucket_feature_count": int(feature_summary.get("bucket_feature_count") or 0),
+                "provisional_feature_count": int(feature_summary.get("provisional_feature_count") or 0),
+                "unassigned_count": int(feature_summary.get("unassigned_count") or 0),
             }
             if pipeline_prompt_props_refinement.use_registered_prompts:
                 prompt_text, prompt_error = _try_registered_prompt_text(
@@ -2210,147 +2344,126 @@ def _run_assessment_pipeline_stage(
                     },
                 )
                 if prompt_text:
-                    rollup_data["registered_prompt"] = "technical_architect"
-                    rollup_data["prompt_context"] = prompt_text
+                    rollup_payload["registered_prompt"] = "technical_architect"
+                    rollup_payload["prompt_context"] = prompt_text
                 if prompt_error:
-                    rollup_data["registered_prompt_error"] = prompt_error
-
-            gen_rec = GeneralRecommendation(
-                assessment_id=assessment_id,
-                title="AI Refinement \u2014 Technical Debt Roll-up",
-                category="technical_findings",
-                created_by="ai_pipeline",
-                description=json.dumps(rollup_data, sort_keys=True),
-            )
-            session.add(gen_rec)
-
-            _set_assessment_pipeline_job_state(
-                assessment_id,
-                stage=stage,
-                status="running",
-                message="Committing AI refinement results...",
-                progress_percent=95,
+                    rollup_payload["registered_prompt_error"] = prompt_error
+            session.add(
+                GeneralRecommendation(
+                    assessment_id=assessment_id,
+                    title="AI Refinement — Technical Debt Roll-up",
+                    category="technical_findings",
+                    created_by="ai_pipeline",
+                    description=json.dumps(rollup_payload, sort_keys=True),
+                )
             )
             session.commit()
-
             success_message = (
-                f"AI Refinement completed: {len(complex_features)} complex feature(s) analyzed, "
-                f"{mode_a_count} artifact(s) reviewed, assessment-wide roll-up generated."
+                f"AI Refinement completed with finalized feature naming "
+                f"({dispatch_summary.feature_count} feature(s), "
+                f"{dispatch_summary.assigned_count} assigned artifact(s), "
+                f"{dispatch_summary.provisional_feature_count} provisional feature(s) remaining)."
             )
             complete_phase_progress(
                 session,
                 assessment_id,
                 stage,
                 checkpoint={
-                    "completed_items": 3,
-                    "complex_features_analyzed": len(complex_features),
-                    "artifacts_reviewed_mode_a": mode_a_count,
+                    "completed_items": max(1, dispatch_summary.pass_count),
+                    "pass_count": dispatch_summary.pass_count,
+                    "feature_count": dispatch_summary.feature_count,
+                    "assigned_count": dispatch_summary.assigned_count,
+                    "unassigned_count": dispatch_summary.unassigned_count,
+                    "provisional_feature_count": dispatch_summary.provisional_feature_count,
+                    "run_id": dispatch_summary.run_id,
                 },
                 commit=False,
             )
             telemetry_details["ai_refinement"] = {
-                "complex_features_analyzed": len(complex_features),
-                "artifacts_reviewed_mode_a": mode_a_count,
+                "pass_count": dispatch_summary.pass_count,
+                "feature_count": dispatch_summary.feature_count,
+                "assigned_count": dispatch_summary.assigned_count,
+                "unassigned_count": dispatch_summary.unassigned_count,
+                "bucket_feature_count": int(feature_summary.get("bucket_feature_count") or 0),
+                "provisional_feature_count": int(feature_summary.get("provisional_feature_count") or 0),
             }
 
         elif stage == PipelineStage.recommendations.value:
+            feature_summary = build_feature_assignment_summary(session, assessment_id=assessment_id)
+            if int(feature_summary.get("unassigned_count") or 0) > 0:
+                raise RuntimeError(
+                    "Recommendations are blocked until every in-scope customized artifact is covered by a feature "
+                    "or reviewed human standalone rationale."
+                )
+            if int(feature_summary.get("provisional_feature_count") or 0) > 0:
+                raise RuntimeError(
+                    "Recommendations are blocked until AI refinement finalizes every feature name."
+                )
+            feature_props = load_ai_feature_properties(session, instance_id=assessment.instance_id)
+            runtime_props = load_ai_runtime_properties(session, instance_id=assessment.instance_id)
+            pipeline_prompt_props_recommendations = load_pipeline_prompt_properties(
+                session,
+                instance_id=assessment.instance_id,
+            )
             phase_progress = start_phase_progress(
                 session,
                 assessment_id,
                 stage,
-                total_items=0,
+                total_items=1,
                 allow_resume=True,
-                checkpoint={"stage_operation": "run_feature_reasoning"},
+                checkpoint={"stage_operation": "ai_feature_recommendations"},
                 commit=False,
             )
-            progress_checkpoint: Dict[str, Any] = {}
-            if phase_progress.checkpoint_json:
-                try:
-                    parsed_checkpoint = json.loads(phase_progress.checkpoint_json)
-                    if isinstance(parsed_checkpoint, dict):
-                        progress_checkpoint = parsed_checkpoint
-                except Exception:
-                    progress_checkpoint = {}
-
-            pass_count = max(0, int(phase_progress.completed_items or 0))
-            resume_run_id = progress_checkpoint.get("run_id")
-            initial_payload = {"assessment_id": assessment_id, "pass_type": "auto"}
-            if resume_run_id:
-                initial_payload["run_id"] = resume_run_id
-
-            response = run_feature_reasoning_handle(initial_payload, session)
-            pass_count += 1
-            max_iterations = int(response.get("max_iterations") or 3)
-            checkpoint_phase_progress(
-                session,
+            existing_feature_recommendations = session.exec(
+                select(FeatureRecommendation).where(FeatureRecommendation.assessment_id == assessment_id)
+            ).all()
+            for row in existing_feature_recommendations:
+                session.delete(row)
+            session.commit()
+            _set_assessment_pipeline_job_state(
                 assessment_id,
-                stage,
-                total_items=max(max_iterations, pass_count),
-                completed_items=pass_count,
+                stage=stage,
                 status="running",
-                checkpoint={
-                    "run_id": response.get("run_id"),
-                    "max_iterations": max_iterations,
-                    "converged": bool(response.get("converged")),
-                    "resume_from_index": pass_count,
-                },
-                commit=False,
+                message="Dispatching AI recommendation pass...",
+                progress_percent=20,
             )
-
-            while response.get("should_continue"):
-                if pass_count >= max_iterations:
-                    break
-                response = run_feature_reasoning_handle(
-                    {
-                        "assessment_id": assessment_id,
-                        "run_id": response.get("run_id"),
-                        "pass_type": "auto",
-                    },
-                    session,
-                )
-                pass_count += 1
-                max_iterations = int(response.get("max_iterations") or max_iterations)
-                checkpoint_phase_progress(
-                    session,
-                    assessment_id,
-                    stage,
-                    total_items=max(max_iterations, pass_count),
-                    completed_items=pass_count,
-                    status="running",
-                    checkpoint={
-                        "run_id": response.get("run_id"),
-                        "max_iterations": max_iterations,
-                        "converged": bool(response.get("converged")),
-                        "resume_from_index": pass_count,
-                    },
-                    commit=False,
-                )
-            if not response.get("success", True):
-                raise RuntimeError(response.get("error") or "Feature reasoning failed.")
+            dispatch_summary = run_ai_feature_stage_dispatch(
+                session,
+                assessment=assessment,
+                stage=stage,
+                runtime_props=runtime_props,
+                feature_props=feature_props,
+                use_registered_prompts=pipeline_prompt_props_recommendations.use_registered_prompts,
+            )
+            recommendation_count = int(
+                session.exec(
+                    select(func.count(FeatureRecommendation.id))
+                    .where(FeatureRecommendation.assessment_id == assessment_id)
+                ).one()
+                or 0
+            )
             checkpoint_phase_progress(
                 session,
                 assessment_id,
                 stage,
-                total_items=pass_count,
-                completed_items=pass_count,
+                total_items=max(1, dispatch_summary.pass_count),
+                completed_items=max(1, dispatch_summary.pass_count),
                 status="completed",
                 checkpoint={
-                    "run_id": response.get("run_id"),
-                    "pass_count": pass_count,
-                    "max_iterations": max_iterations,
-                    "converged": bool(response.get("converged")),
-                    "resume_from_index": pass_count,
+                    "pass_count": dispatch_summary.pass_count,
+                    "recommendation_count": recommendation_count,
+                    "run_id": dispatch_summary.run_id,
                 },
                 commit=False,
             )
             success_message = (
-                f"Recommendation stage verification completed in {pass_count} pass(es); "
-                f"converged={bool(response.get('converged'))}."
+                f"Recommendation stage completed with AI-authored feature recommendations "
+                f"({recommendation_count} recommendation row(s))."
             )
-            telemetry_local_calls_delta += int(pass_count)
+            telemetry_local_calls_delta += int(max(1, dispatch_summary.pass_count))
             telemetry_details["recommendations"] = {
-                "pass_count": pass_count,
-                "converged": bool(response.get("converged")),
+                "pass_count": dispatch_summary.pass_count,
+                "recommendation_count": recommendation_count,
             }
 
         elif stage == PipelineStage.review.value:
@@ -2383,6 +2496,16 @@ def _run_assessment_pipeline_stage(
             telemetry_details["review"] = {"skip_review": bool(skip_review)}
 
         elif stage == PipelineStage.report.value:
+            feature_summary = build_feature_assignment_summary(session, assessment_id=assessment_id)
+            if int(feature_summary.get("unassigned_count") or 0) > 0:
+                raise RuntimeError(
+                    "Report generation is blocked until every in-scope customized artifact is covered "
+                    "by a feature or reviewed human standalone rationale."
+                )
+            if int(feature_summary.get("provisional_feature_count") or 0) > 0:
+                raise RuntimeError(
+                    "Report generation is blocked until AI refinement finalizes every feature name."
+                )
             pipeline_prompt_props_report = load_pipeline_prompt_properties(
                 session, instance_id=assessment.instance_id
             )
@@ -2395,6 +2518,7 @@ def _run_assessment_pipeline_stage(
                 checkpoint={"stage_operation": "build_report_data"},
                 commit=False,
             )
+            session.commit()
             # --- Report: aggregate assessment data for final report ---
 
             # 1. Gather assessment statistics
@@ -2411,12 +2535,14 @@ def _run_assessment_pipeline_stage(
                 .join(Scan, ScanResult.scan_id == Scan.id)
                 .where(Scan.assessment_id == assessment_id)
             ).all()
+            in_scope_customized_results = [
+                sr
+                for sr in all_scan_results
+                if sr.origin_type in list(_CUSTOMIZED_ORIGIN_VALUES) and not bool(sr.is_out_of_scope)
+            ]
 
             total_count = len(all_scan_results)
-            customized_count = sum(
-                1 for sr in all_scan_results
-                if sr.origin_type in list(_CUSTOMIZED_ORIGIN_VALUES)
-            )
+            customized_count = len(in_scope_customized_results)
             table_counter = collections.Counter(sr.table_name for sr in all_scan_results if sr.table_name)
             origin_counter = collections.Counter(sr.origin_type for sr in all_scan_results if sr.origin_type)
 
@@ -2436,8 +2562,20 @@ def _run_assessment_pipeline_stage(
             feat_disp_counter = collections.Counter(
                 (f.disposition.value if f.disposition else "unset") for f in features
             )
+            feat_kind_counter = collections.Counter(
+                (f.feature_kind or "functional") for f in features
+            )
+            feat_composition_counter = collections.Counter(
+                (f.composition_type or "unset") for f in features
+            )
             ai_summary_count = sum(1 for f in features if f.ai_summary)
-            reco_count = sum(1 for f in features if f.recommendation)
+            reco_count = int(
+                session.exec(
+                    select(func.count(FeatureRecommendation.id))
+                    .where(FeatureRecommendation.assessment_id == assessment_id)
+                ).one()
+                or 0
+            )
 
             # 3. Gather recommendation data
             _set_assessment_pipeline_job_state(
@@ -2467,14 +2605,12 @@ def _run_assessment_pipeline_stage(
             )
 
             reviewed_count = sum(
-                1 for sr in all_scan_results
-                if sr.origin_type in list(_CUSTOMIZED_ORIGIN_VALUES)
-                and sr.review_status == ReviewStatus.reviewed
+                1 for sr in in_scope_customized_results
+                if sr.review_status == ReviewStatus.reviewed
             )
             disp_counter = collections.Counter(
                 (sr.disposition.value if sr.disposition else "unset")
-                for sr in all_scan_results
-                if sr.origin_type in list(_CUSTOMIZED_ORIGIN_VALUES)
+                for sr in in_scope_customized_results
             )
 
             # 5. Build report data dict
@@ -2487,6 +2623,18 @@ def _run_assessment_pipeline_stage(
             )
 
             instance = session.get(Instance, assessment.instance_id)
+            feature_coverage_summary = {
+                "in_scope_customized_total": int(feature_summary.get("in_scope_customized_total") or 0),
+                "assigned_count": int(feature_summary.get("assigned_count") or 0),
+                "human_standalone_count": int(feature_summary.get("human_standalone_count") or 0),
+                "resolved_count": int(feature_summary.get("resolved_count") or 0),
+                "unassigned_count": int(feature_summary.get("unassigned_count") or 0),
+                "reviewed_in_scope_count": int(feature_summary.get("reviewed_in_scope_count") or 0),
+                "manual_override_ready": bool(feature_summary.get("manual_override_ready")),
+                "provisional_feature_count": int(feature_summary.get("provisional_feature_count") or 0),
+                "bucket_feature_count": int(feature_summary.get("bucket_feature_count") or 0),
+                "composition_counts": dict(feature_summary.get("composition_counts") or {}),
+            }
 
             report_data = {
                 "assessment_name": assessment.name,
@@ -2500,15 +2648,20 @@ def _run_assessment_pipeline_stage(
                 },
                 "features": {
                     "total": feature_count,
+                    "kind_distribution": dict(feat_kind_counter),
+                    "composition_distribution": dict(feat_composition_counter),
                     "disposition_distribution": dict(feat_disp_counter),
                     "with_ai_summary": ai_summary_count,
                     "with_recommendations": reco_count,
+                    "provisional_feature_count": int(feature_summary.get("provisional_feature_count") or 0),
+                    "bucket_feature_count": int(feature_summary.get("bucket_feature_count") or 0),
                 },
                 "review_status": {
                     "reviewed": reviewed_count,
                     "total_customized": customized_count,
                     "disposition_distribution": dict(disp_counter),
                 },
+                "feature_coverage": feature_coverage_summary,
                 "general_recommendations": {
                     "total": gr_total,
                     "by_category": dict(gr_category_counter),
@@ -3484,6 +3637,9 @@ def _build_compact_result_payload(result: ScanResult) -> Dict[str, Any]:
         "table_name": result.table_name,
         "origin_type": origin_value,
         "is_customized": origin_value in _CUSTOMIZED_ORIGIN_VALUES,
+        "is_adjacent": bool(result.is_adjacent),
+        "is_out_of_scope": bool(result.is_out_of_scope),
+        "review_status": result.review_status.value if result.review_status else None,
         "sys_updated_on": result.sys_updated_on.isoformat() if result.sys_updated_on else None,
     }
 
@@ -3800,6 +3956,8 @@ def _build_feature_hierarchy_payload(
     assessment_id: int,
     scan_id: Optional[int] = None,
 ) -> Dict[str, Any]:
+    assignment_summary = build_feature_assignment_summary(session, assessment_id=assessment_id)
+    unresolved_result_ids = set(int(rid) for rid in assignment_summary.get("unassigned_result_ids") or [])
     scoped_results = _scoped_scan_results(session, assessment_id=assessment_id, scan_id=scan_id)
     scoped_result_by_id = {row.id: row for row in scoped_results if row.id is not None}
     scoped_result_ids = set(scoped_result_by_id.keys())
@@ -3916,6 +4074,10 @@ def _build_feature_hierarchy_payload(
             "id": feature.id,
             "name": feature.name,
             "description": feature.description,
+            "feature_kind": feature.feature_kind,
+            "composition_type": feature.composition_type,
+            "name_status": feature.name_status,
+            "bucket_key": feature.bucket_key,
             "parent_id": feature.parent_id,
             "disposition": feature.disposition.value if feature.disposition else None,
             "recommendation": feature.recommendation,
@@ -4010,6 +4172,8 @@ def _build_feature_hierarchy_payload(
             continue
         if result.id in assigned_customized_result_ids:
             continue
+        if result.id not in unresolved_result_ids:
+            continue
         key = str(result.table_name or "unknown")
         ungrouped_by_class.setdefault(key, []).append(_build_compact_result_payload(result))
 
@@ -4047,6 +4211,8 @@ def _build_feature_hierarchy_payload(
             "customized_member_count": len(assigned_customized_result_ids),
             "context_artifact_count": context_total,
             "ungrouped_customized_count": sum(item["count"] for item in ungrouped),
+            "bucket_feature_count": int(assignment_summary.get("bucket_feature_count") or 0),
+            "provisional_feature_count": int(assignment_summary.get("provisional_feature_count") or 0),
         },
         "generated_at": datetime.utcnow().isoformat(),
     }
@@ -4055,6 +4221,7 @@ def _build_feature_hierarchy_payload(
 _GRAPH_EDGE_LABELS: Dict[str, str] = {
     "code_reference": "Code Reference",
     "structural": "Structural Relationship",
+    "shared_dependency": "Shared Dependency",
     "reference_field": "Reference Field",
     "dictionary_binding": "Dictionary Binding",
     "target_table": "Target Table",
@@ -4151,6 +4318,15 @@ def _graph_result_links(
                 "scan_id": scan_id,
             },
         )
+        links["dependency_map"] = _build_url(
+            "/dependency-map",
+            {
+                "result_id": result_id,
+                "assessment_id": assessment_id,
+                "instance_id": instance_id,
+                "scan_id": scan_id,
+            },
+        )
     if assessment_id is not None:
         links["assessment"] = f"/assessments/{assessment_id}"
     artifact_record_url = _graph_browse_record_url(
@@ -4211,6 +4387,15 @@ def _graph_table_links(
     if table_name:
         links["graph"] = _build_url(
             "/relationship-graph",
+            {
+                "table_name": table_name,
+                "assessment_id": assessment_id,
+                "instance_id": instance_id,
+                "scan_id": scan_id,
+            },
+        )
+        links["dependency_map"] = _build_url(
+            "/dependency-map",
             {
                 "table_name": table_name,
                 "assessment_id": assessment_id,
@@ -4519,11 +4704,22 @@ def _build_graph_artifact_node_payload(
     assessment_id: int,
     instance_id: int,
     feature_refs: Optional[List[Dict[str, Any]]] = None,
+    artifact_type_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     origin_value = _origin_type_value(result)
     refs = feature_refs or []
     feature_ids = sorted({int(ref.get("feature_id")) for ref in refs if ref.get("feature_id") is not None})
     feature_names = sorted({str(ref.get("feature_name")) for ref in refs if ref.get("feature_name")})
+    is_adjacent = bool(result.is_adjacent)
+    is_out_of_scope = bool(result.is_out_of_scope)
+    if is_out_of_scope:
+        scope_state = "out_of_scope"
+    elif is_adjacent:
+        scope_state = "adjacent"
+    elif origin_value in _CUSTOMIZED_ORIGIN_VALUES:
+        scope_state = "direct"
+    else:
+        scope_state = "unknown"
     return {
         "id": _graph_result_node_id(int(result.id or 0)),
         "node_type": "artifact",
@@ -4535,9 +4731,14 @@ def _build_graph_artifact_node_payload(
         "label": result.name or f"Result {result.id}",
         "name": result.name,
         "table_name": result.table_name,
+        "artifact_type_key": result.table_name,
+        "artifact_type_label": artifact_type_label or get_class_label(result.table_name or ""),
         "sys_id": result.sys_id,
         "origin_type": origin_value,
         "is_customized": bool(origin_value in _CUSTOMIZED_ORIGIN_VALUES),
+        "is_adjacent": is_adjacent,
+        "is_out_of_scope": is_out_of_scope,
+        "scope_state": scope_state,
         "sys_updated_on": result.sys_updated_on.isoformat() if result.sys_updated_on else None,
         "feature_ids": feature_ids,
         "feature_names": feature_names,
@@ -4565,6 +4766,22 @@ def _load_graph_artifact_nodes(
         .join(Assessment, Scan.assessment_id == Assessment.id)
         .where(ScanResult.id.in_(result_ids))
     ).all()
+    class_names = sorted(
+        {
+            str(result.table_name or "").strip()
+            for result, _scan, _assessment in rows
+            if str(result.table_name or "").strip()
+        }
+    )
+    class_label_rows = session.exec(
+        select(AppFileClass.sys_class_name, AppFileClass.label)
+        .where(AppFileClass.sys_class_name.in_(class_names))
+    ).all() if class_names else []
+    class_label_map: Dict[str, str] = {
+        str(class_name): str(label)
+        for class_name, label in class_label_rows
+        if class_name and label
+    }
     refs_by_result = _graph_feature_refs_for_results(session, result_ids)
     nodes_by_id: Dict[int, Dict[str, Any]] = {}
     for result, scan, assessment in rows:
@@ -4575,6 +4792,7 @@ def _load_graph_artifact_nodes(
             assessment_id=scan.assessment_id,
             instance_id=assessment.instance_id,
             feature_refs=refs_by_result.get(int(result.id), []),
+            artifact_type_label=class_label_map.get(str(result.table_name or "").strip()),
         )
     return nodes_by_id
 
@@ -5260,16 +5478,6 @@ def _build_relationship_graph_artifact_payload(
     if scan_id is not None and center_scan.id != scan_id:
         raise ValueError("Result does not belong to the requested scan.")
 
-    allowed_scan_result_ids: Optional[set] = None
-    if scan_id is not None:
-        allowed_scan_result_ids = set(
-            int(value)
-            for value in session.exec(
-                select(ScanResult.id).where(ScanResult.scan_id == scan_id)
-            ).all()
-            if value is not None
-        )
-
     neighbor_priority: Dict[int, int] = {}
 
     def _register_neighbor(candidate_id: Optional[int], priority: int) -> None:
@@ -5277,8 +5485,6 @@ def _build_relationship_graph_artifact_payload(
             return
         cid = int(candidate_id)
         if cid == result_id:
-            return
-        if allowed_scan_result_ids is not None and cid not in allowed_scan_result_ids:
             return
         current = neighbor_priority.get(cid)
         if current is None or priority < current:
@@ -5918,6 +6124,318 @@ def _build_relationship_graph_payload(
             exclude_result_ids=excludes,
         )
     raise ValueError("Provide one seed input: result_id, feature_id, or table_name.")
+
+
+def _build_dependency_edge_counts(edges: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for edge in edges:
+        edge_type = str(edge.get("edge_type") or "").strip()
+        if not edge_type:
+            continue
+        counts[edge_type] = counts.get(edge_type, 0) + 1
+    return counts
+
+
+def _append_dependency_map_edges(
+    dependency_graph: Any,
+    *,
+    selected_result_ids: List[int],
+    edges: List[Dict[str, Any]],
+    edge_ids: set,
+) -> None:
+    selected_set = {int(value) for value in selected_result_ids if value is not None}
+    for source_id in sorted(selected_set):
+        for dependency in dependency_graph.adjacency.get(source_id, []):
+            target_id = int(dependency.target_id)
+            if target_id not in selected_set or target_id == source_id:
+                continue
+            if dependency.direction == "inbound":
+                continue
+            if dependency.direction == "bidirectional" and source_id > target_id:
+                continue
+
+            detail_bits = [dependency.criticality.title() + " criticality"]
+            if dependency.shared_via:
+                detail_bits.append(f"shared via {dependency.shared_via}")
+
+            metadata: Dict[str, Any] = {
+                "direction": dependency.direction,
+                "criticality": dependency.criticality,
+                "weight": dependency.weight,
+            }
+            if dependency.shared_via:
+                metadata["shared_via"] = dependency.shared_via
+
+            suffix = str(dependency.shared_via or "").replace(":", "_")
+            _append_graph_edge(
+                edges=edges,
+                edge_ids=edge_ids,
+                edge_id=(
+                    f"dependency:{dependency.dependency_type}:{source_id}:{target_id}:"
+                    f"{dependency.direction}:{suffix}"
+                ),
+                source=_graph_result_node_id(source_id),
+                target=_graph_result_node_id(target_id),
+                edge_type=str(dependency.dependency_type),
+                detail="; ".join(detail_bits),
+                confidence=float(dependency.weight),
+                metadata=metadata,
+            )
+
+
+def _build_dependency_map_artifact_payload(
+    session: Session,
+    *,
+    result_id: int,
+    assessment_id: Optional[int],
+    instance_id: Optional[int],
+    scan_id: Optional[int],
+    max_neighbors: int,
+    exclude_result_ids: List[int],
+) -> Dict[str, Any]:
+    center_row = session.exec(
+        select(ScanResult, Scan, Assessment)
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .join(Assessment, Scan.assessment_id == Assessment.id)
+        .where(ScanResult.id == result_id)
+    ).first()
+    if not center_row:
+        raise ValueError("Result not found.")
+
+    center_result, center_scan, center_assessment = center_row
+    effective_assessment_id = assessment_id if assessment_id is not None else center_scan.assessment_id
+    effective_instance_id = instance_id if instance_id is not None else center_assessment.instance_id
+
+    if assessment_id is not None and center_scan.assessment_id != assessment_id:
+        raise ValueError("Result does not belong to the requested assessment.")
+    if instance_id is not None and center_assessment.instance_id != instance_id:
+        raise ValueError("Result does not belong to the requested instance.")
+    if scan_id is not None and center_scan.id != scan_id:
+        raise ValueError("Result does not belong to the requested scan.")
+
+    dependency_graph = build_dependency_graph(session, effective_assessment_id)
+    neighbor_scores: Dict[int, float] = {}
+    for dependency in dependency_graph.adjacency.get(result_id, []):
+        target_id = int(dependency.target_id)
+        if target_id == result_id:
+            continue
+        neighbor_scores[target_id] = max(neighbor_scores.get(target_id, 0.0), float(dependency.weight))
+
+    exclude_set = {int(value) for value in exclude_result_ids if value is not None}
+    sorted_neighbors = sorted(
+        neighbor_scores.keys(),
+        key=lambda rid: (
+            -neighbor_scores.get(rid, 0.0),
+            0 if rid in dependency_graph.customized_ids else 1,
+            rid,
+        ),
+    )
+    selected_neighbors = [rid for rid in sorted_neighbors if rid not in exclude_set][:max_neighbors]
+
+    node_result_ids = [result_id] + selected_neighbors
+    nodes_by_result_id = _load_graph_artifact_nodes(session, node_result_ids)
+    center_node = nodes_by_result_id.get(result_id)
+    if center_node is None:
+        raise ValueError("Center artifact could not be loaded.")
+
+    nodes = [center_node] + [
+        nodes_by_result_id[candidate_id]
+        for candidate_id in selected_neighbors
+        if candidate_id in nodes_by_result_id
+    ]
+    selected_node_result_ids = [
+        int(node["result_id"])
+        for node in nodes
+        if node.get("node_type") == "artifact" and node.get("result_id") is not None
+    ]
+
+    edges: List[Dict[str, Any]] = []
+    edge_ids: set = set()
+    _append_dependency_map_edges(
+        dependency_graph,
+        selected_result_ids=selected_node_result_ids,
+        edges=edges,
+        edge_ids=edge_ids,
+    )
+
+    return {
+        "mode": "artifact",
+        "graph_kind": "dependency",
+        "scope": {
+            "assessment_id": effective_assessment_id,
+            "instance_id": effective_instance_id,
+            "scan_id": scan_id,
+        },
+        "center_node": center_node,
+        "nodes": nodes,
+        "edges": edges,
+        "summary": {
+            "candidate_neighbor_count": len(neighbor_scores),
+            "returned_neighbor_count": max(0, len(nodes) - 1),
+            "truncated": len(neighbor_scores) > len(selected_neighbors),
+            "relationship_counts": _build_dependency_edge_counts(edges),
+            "generated_at": datetime.utcnow().isoformat(),
+        },
+    }
+
+
+def _build_dependency_map_table_payload(
+    session: Session,
+    *,
+    table_name: str,
+    assessment_id: Optional[int],
+    instance_id: Optional[int],
+    scan_id: Optional[int],
+    max_neighbors: int,
+    exclude_result_ids: List[int],
+) -> Dict[str, Any]:
+    normalized_table = str(table_name or "").strip()
+    if not normalized_table:
+        raise ValueError("table_name is required.")
+
+    effective_scan_id = scan_id
+    effective_assessment_id = assessment_id
+    effective_instance_id = instance_id
+
+    if effective_scan_id is not None:
+        scan = session.get(Scan, effective_scan_id)
+        if not scan:
+            raise ValueError("Scan not found.")
+        if effective_assessment_id is not None and effective_assessment_id != scan.assessment_id:
+            raise ValueError("Scan does not belong to the requested assessment.")
+        effective_assessment_id = scan.assessment_id
+
+    if effective_assessment_id is not None:
+        assessment = session.get(Assessment, effective_assessment_id)
+        if not assessment:
+            raise ValueError("Assessment not found.")
+        if effective_instance_id is not None and effective_instance_id != assessment.instance_id:
+            raise ValueError("Assessment does not belong to the requested instance.")
+        effective_instance_id = assessment.instance_id
+
+    if effective_assessment_id is None and effective_instance_id is None:
+        raise ValueError("Provide assessment_id or instance_id for table dependency scope.")
+
+    table_stmt = (
+        select(ScanResult.id)
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .join(Assessment, Scan.assessment_id == Assessment.id)
+        .where(ScanResult.table_name == normalized_table)
+        .order_by(desc(ScanResult.sys_updated_on), desc(ScanResult.id))
+        .limit(max_neighbors * 6)
+    )
+    if effective_scan_id is not None:
+        table_stmt = table_stmt.where(Scan.id == effective_scan_id)
+    if effective_assessment_id is not None:
+        table_stmt = table_stmt.where(Scan.assessment_id == effective_assessment_id)
+    if effective_instance_id is not None:
+        table_stmt = table_stmt.where(Assessment.instance_id == effective_instance_id)
+
+    candidate_ids = [int(value) for value in session.exec(table_stmt).all() if value is not None]
+    exclude_set = {int(value) for value in exclude_result_ids if value is not None}
+    selected_ids = [rid for rid in candidate_ids if rid not in exclude_set][:max_neighbors]
+
+    nodes_by_result_id = _load_graph_artifact_nodes(session, selected_ids)
+    artifact_nodes = [nodes_by_result_id[rid] for rid in selected_ids if rid in nodes_by_result_id]
+    selected_artifact_ids = [int(node["result_id"]) for node in artifact_nodes if node.get("result_id") is not None]
+
+    center_node = {
+        "id": _graph_table_node_id(normalized_table),
+        "node_type": "table",
+        "table_name": normalized_table,
+        "assessment_id": effective_assessment_id,
+        "instance_id": effective_instance_id,
+        "scan_id": effective_scan_id,
+        "label": normalized_table,
+        "name": normalized_table,
+        "links": _graph_table_links(
+            table_name=normalized_table,
+            assessment_id=effective_assessment_id,
+            instance_id=effective_instance_id,
+            scan_id=effective_scan_id,
+        ),
+    }
+
+    edges: List[Dict[str, Any]] = []
+    edge_ids: set = set()
+    for rid in selected_artifact_ids:
+        _append_graph_edge(
+            edges=edges,
+            edge_ids=edge_ids,
+            edge_id=f"dependency_table_member:{normalized_table}:{rid}",
+            source=center_node["id"],
+            target=_graph_result_node_id(rid),
+            edge_type="table_member",
+            detail=f"Artifact belongs to {normalized_table}",
+        )
+
+    if effective_assessment_id is not None and selected_artifact_ids:
+        dependency_graph = build_dependency_graph(session, effective_assessment_id)
+        _append_dependency_map_edges(
+            dependency_graph,
+            selected_result_ids=selected_artifact_ids,
+            edges=edges,
+            edge_ids=edge_ids,
+        )
+
+    return {
+        "mode": "table",
+        "graph_kind": "dependency",
+        "scope": {
+            "assessment_id": effective_assessment_id,
+            "instance_id": effective_instance_id,
+            "scan_id": effective_scan_id,
+        },
+        "center_node": center_node,
+        "nodes": [center_node] + artifact_nodes,
+        "edges": edges,
+        "summary": {
+            "candidate_neighbor_count": len(candidate_ids),
+            "returned_neighbor_count": len(artifact_nodes),
+            "truncated": len(candidate_ids) > len(selected_ids),
+            "relationship_counts": _build_dependency_edge_counts(edges),
+            "generated_at": datetime.utcnow().isoformat(),
+        },
+    }
+
+
+def _build_dependency_map_payload(
+    session: Session,
+    *,
+    result_id: Optional[int] = None,
+    table_name: Optional[str] = None,
+    assessment_id: Optional[int] = None,
+    instance_id: Optional[int] = None,
+    scan_id: Optional[int] = None,
+    max_neighbors: int = 30,
+    exclude_result_ids: Optional[List[int]] = None,
+) -> Dict[str, Any]:
+    if max_neighbors < 1:
+        raise ValueError("max_neighbors must be greater than 0.")
+    bounded_neighbors = min(max(1, int(max_neighbors)), 200)
+    excludes = [int(v) for v in (exclude_result_ids or []) if v is not None]
+
+    if result_id is not None:
+        return _build_dependency_map_artifact_payload(
+            session,
+            result_id=int(result_id),
+            assessment_id=assessment_id,
+            instance_id=instance_id,
+            scan_id=scan_id,
+            max_neighbors=bounded_neighbors,
+            exclude_result_ids=excludes,
+        )
+    if table_name is not None and str(table_name).strip():
+        return _build_dependency_map_table_payload(
+            session,
+            table_name=str(table_name),
+            assessment_id=assessment_id,
+            instance_id=instance_id,
+            scan_id=scan_id,
+            max_neighbors=bounded_neighbors,
+            exclude_result_ids=excludes,
+        )
+    raise ValueError("Provide one seed input: result_id or table_name.")
 
 
 def _build_feature_recommendation_payload(recommendation: FeatureRecommendation) -> Dict[str, Any]:
@@ -7620,6 +8138,7 @@ app.include_router(data_browser_router)
 app.include_router(dynamic_browser_router)
 app.include_router(analytics_router)
 app.include_router(mcp_admin_router)
+app.include_router(scan_config_admin_router)
 app.include_router(job_log_router)
 app.include_router(create_preferences_router(require_mcp_admin))
 app.include_router(create_assessment_runtime_usage_router(require_mcp_admin))
@@ -8739,11 +9258,15 @@ async def run_assessment_scans(
     if assessment.state != AssessmentState.in_progress:
         raise HTTPException(status_code=400, detail="Assessment must be in progress to run scans")
 
-    assessment.pipeline_stage = PipelineStage.scans
-    assessment.pipeline_stage_updated_at = datetime.utcnow()
-    assessment.updated_at = datetime.utcnow()
-    session.add(assessment)
-    session.commit()
+    # Only reset to scans stage if we haven't advanced past it yet.
+    # Once scans are done the user can advance to engines without re-running.
+    current = _pipeline_stage_value(assessment.pipeline_stage)
+    if current == PipelineStage.scans.value:
+        assessment.pipeline_stage = PipelineStage.scans
+        assessment.pipeline_stage_updated_at = datetime.utcnow()
+        assessment.updated_at = datetime.utcnow()
+        session.add(assessment)
+        session.commit()
 
     _start_assessment_scan_job(assessment_id, "full")
 
@@ -8755,7 +9278,10 @@ async def refresh_assessment_scans(
     assessment_id: int,
     session: Session = Depends(get_session)
 ):
-    """Refresh all scans (full) for an assessment."""
+    """Refresh all scans (full) for an assessment.
+
+    Resets pipeline to scans stage so preflight/postflight re-run.
+    """
     assessment = session.get(Assessment, assessment_id)
     if not assessment:
         raise HTTPException(status_code=404, detail="Assessment not found")
@@ -8779,19 +9305,16 @@ async def refresh_assessment_scans_delta(
     assessment_id: int,
     session: Session = Depends(get_session)
 ):
-    """Refresh all scans using delta mode (since last completion)."""
+    """Refresh all scans using delta mode (since last completion).
+
+    Delta only appends new records — does NOT reset the pipeline stage.
+    """
     assessment = session.get(Assessment, assessment_id)
     if not assessment:
         raise HTTPException(status_code=404, detail="Assessment not found")
 
     if assessment.state != AssessmentState.in_progress:
         raise HTTPException(status_code=400, detail="Assessment must be in progress to refresh scans")
-
-    assessment.pipeline_stage = PipelineStage.scans
-    assessment.pipeline_stage_updated_at = datetime.utcnow()
-    assessment.updated_at = datetime.utcnow()
-    session.add(assessment)
-    session.commit()
 
     _start_assessment_scan_job(assessment_id, "delta")
 
@@ -9021,6 +9544,55 @@ async def list_results(request: Request, session: Session = Depends(get_session)
     })
 
 
+def _render_graph_page(
+    request: Request,
+    *,
+    graph_title: str,
+    graph_kind: str,
+    graph_api_url: str,
+    result_id: Optional[int],
+    feature_id: Optional[int],
+    table_name: Optional[str],
+    assessment_id: Optional[int],
+    instance_id: Optional[int],
+    scan_id: Optional[int],
+) -> HTMLResponse:
+    normalized_table = str(table_name or "").strip()
+    if result_id is None and feature_id is None and not normalized_table:
+        raise HTTPException(status_code=400, detail="Provide result_id, feature_id, or table_name.")
+
+    if result_id is not None:
+        seed_mode = "artifact"
+        seed_label = f"Artifact #{result_id}"
+    elif feature_id is not None:
+        seed_mode = "feature"
+        seed_label = f"Feature #{feature_id}"
+    else:
+        seed_mode = "table"
+        seed_label = normalized_table
+
+    seed_payload = {
+        "result_id": result_id,
+        "feature_id": feature_id,
+        "table_name": normalized_table or None,
+        "assessment_id": assessment_id,
+        "instance_id": instance_id,
+        "scan_id": scan_id,
+    }
+
+    return templates.TemplateResponse("relationship_graph.html", {
+        "request": request,
+        "graph_title": graph_title,
+        "graph_kind": graph_kind,
+        "graph_api_url": graph_api_url,
+        "seed_mode": seed_mode,
+        "seed_label": seed_label,
+        "seed_payload": seed_payload,
+        "assessment_id": assessment_id,
+        "scan_id": scan_id,
+    })
+
+
 @app.get("/relationship-graph", response_class=HTMLResponse)
 async def relationship_graph_page(
     request: Request,
@@ -9032,36 +9604,42 @@ async def relationship_graph_page(
     scan_id: Optional[int] = Query(default=None),
 ):
     """Standalone relationship graph explorer page."""
-    if result_id is None and feature_id is None and not str(table_name or "").strip():
-        raise HTTPException(status_code=400, detail="Provide result_id, feature_id, or table_name.")
+    return _render_graph_page(
+        request,
+        graph_title="Relationship Graph",
+        graph_kind="relationship",
+        graph_api_url="/api/relationship-graph/neighborhood",
+        result_id=result_id,
+        feature_id=feature_id,
+        table_name=table_name,
+        assessment_id=assessment_id,
+        instance_id=instance_id,
+        scan_id=scan_id,
+    )
 
-    if result_id is not None:
-        seed_mode = "artifact"
-        seed_label = f"Artifact #{result_id}"
-    elif feature_id is not None:
-        seed_mode = "feature"
-        seed_label = f"Feature #{feature_id}"
-    else:
-        seed_mode = "table"
-        seed_label = str(table_name or "").strip()
 
-    seed_payload = {
-        "result_id": result_id,
-        "feature_id": feature_id,
-        "table_name": str(table_name or "").strip() or None,
-        "assessment_id": assessment_id,
-        "instance_id": instance_id,
-        "scan_id": scan_id,
-    }
-
-    return templates.TemplateResponse("relationship_graph.html", {
-        "request": request,
-        "seed_mode": seed_mode,
-        "seed_label": seed_label,
-        "seed_payload": seed_payload,
-        "assessment_id": assessment_id,
-        "scan_id": scan_id,
-    })
+@app.get("/dependency-map", response_class=HTMLResponse)
+async def dependency_map_page(
+    request: Request,
+    result_id: Optional[int] = Query(default=None),
+    table_name: Optional[str] = Query(default=None),
+    assessment_id: Optional[int] = Query(default=None),
+    instance_id: Optional[int] = Query(default=None),
+    scan_id: Optional[int] = Query(default=None),
+):
+    """Standalone dependency map explorer page."""
+    return _render_graph_page(
+        request,
+        graph_title="Dependency Map",
+        graph_kind="dependency",
+        graph_api_url="/api/dependency-map/neighborhood",
+        result_id=result_id,
+        feature_id=None,
+        table_name=table_name,
+        assessment_id=assessment_id,
+        instance_id=instance_id,
+        scan_id=scan_id,
+    )
 
 
 @app.get("/results/{result_id}", response_class=HTMLResponse)
@@ -9320,7 +9898,8 @@ async def update_result(
         new_feature = Feature(
             assessment_id=assessment_id,
             name=new_feature_name_clean,
-            description=new_feature_description_clean
+            description=new_feature_description_clean,
+            name_status="human_locked",
         )
         session.add(new_feature)
         session.commit()
@@ -9328,17 +9907,15 @@ async def update_result(
         feature_id = new_feature.id
 
     if feature_id:
-        existing_links = session.exec(
-            select(FeatureScanResult).where(FeatureScanResult.scan_result_id == result_id)
-        ).all()
-        for link in existing_links:
-            session.delete(link)
-        session.add(FeatureScanResult(
+        replace_result_feature_membership(
+            session,
             feature_id=feature_id,
-            scan_result_id=result_id,
-            is_primary=True,
+            scan_result=result,
             assignment_source="human",
-        ))
+            is_primary=True,
+            membership_type="primary",
+        )
+        refresh_feature_metadata(session, feature_ids=[feature_id], commit=False)
 
     session.add(result)
     session.commit()
@@ -9507,6 +10084,7 @@ async def api_assessment_scan_status(
     pipeline_stage = _pipeline_stage_value(assessment.pipeline_stage)
     pipeline_run = _get_assessment_pipeline_job_snapshot(assessment_id, session=session)
     review_gate = _assessment_review_gate_summary(session, assessment_id)
+    feature_status = build_feature_assignment_summary(session, assessment_id=assessment_id)
 
     return {
         "assessment_id": assessment_id,
@@ -9528,6 +10106,7 @@ async def api_assessment_scan_status(
             ),
             "active_run": pipeline_run,
             "review_gate": review_gate,
+            "feature_status": feature_status,
         },
         "last_updated": datetime.utcnow().isoformat(),
     }
@@ -9576,6 +10155,7 @@ async def api_advance_pipeline_stage(
     skip_review = bool(payload.get("skip_review", False))
     force = bool(payload.get("force", False))
     rerun = bool(payload.get("rerun", False))
+    manual_override = bool(payload.get("manual_override", False))
 
     current_stage = _pipeline_stage_value(assessment.pipeline_stage)
     current_index = _pipeline_stage_index(current_stage)
@@ -9626,12 +10206,60 @@ async def api_advance_pipeline_stage(
                 ),
             )
 
+    if not force and target_stage == PipelineStage.observations.value:
+        runtime_props = load_ai_runtime_properties(session, instance_id=assessment.instance_id)
+        ai_summary = _assessment_ai_analysis_summary(session, assessment_id)
+        if runtime_props.mode != "disabled":
+            if ai_summary.get("phase_status") == "failed":
+                detail = "AI Analysis must complete successfully before observations can run."
+                if ai_summary.get("phase_error"):
+                    detail += f" Latest error: {ai_summary['phase_error']}"
+                raise HTTPException(status_code=409, detail=detail)
+            if ai_summary["total_customized"] > 0 and not ai_summary["all_triaged"]:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "AI Analysis did not persist scope triage for every customized artifact. "
+                        f"Triage coverage is {ai_summary['triaged_count']}/{ai_summary['total_customized']}. "
+                        "Finish artifact-by-artifact AI scope review before running observations."
+                    ),
+                )
+
     review_gate = _assessment_review_gate_summary(session, assessment_id)
+    feature_status = build_feature_assignment_summary(session, assessment_id=assessment_id)
+    if manual_override and not bool(feature_status.get("manual_override_ready")):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Manual pipeline override is not ready. "
+                + str(feature_status.get("blocking_reason") or "")
+            ).strip(),
+        )
     if target_stage == PipelineStage.grouping.value and not skip_review and not review_gate["all_reviewed"]:
         raise HTTPException(
             status_code=409,
             detail="Review gate not satisfied. Mark all customized results reviewed or pass skip_review=true.",
         )
+    if not manual_override and target_stage in {
+        PipelineStage.recommendations.value,
+        PipelineStage.report.value,
+    }:
+        if int(feature_status.get("unassigned_count") or 0) > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Feature coverage gate not satisfied. "
+                    f"Unassigned in-scope customized artifacts remain: {int(feature_status.get('unassigned_count') or 0)}."
+                ),
+            )
+        if int(feature_status.get("provisional_feature_count") or 0) > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Feature naming gate not satisfied. "
+                    f"Provisional features remaining: {int(feature_status.get('provisional_feature_count') or 0)}."
+                ),
+            )
 
     if target_stage == PipelineStage.review.value:
         skipped_count = 0
@@ -9645,7 +10273,9 @@ async def api_advance_pipeline_stage(
             "requested_stage": target_stage,
             "current_stage": PipelineStage.review.value,
             "skipped_review_count": skipped_count,
+            "manual_override": manual_override,
             "review_gate": review_gate,
+            "feature_status": feature_status,
             "pipeline_run": None,
         }
 
@@ -9668,8 +10298,10 @@ async def api_advance_pipeline_stage(
         "requested_stage": target_stage,
         "current_stage": _pipeline_stage_value(refreshed.pipeline_stage if refreshed else assessment.pipeline_stage),
         "skip_review": skip_review,
+        "manual_override": manual_override,
         "pipeline_run": pipeline_run,
         "review_gate": _assessment_review_gate_summary(session, assessment_id),
+        "feature_status": build_feature_assignment_summary(session, assessment_id=assessment_id),
     }
 
 
@@ -9950,6 +10582,48 @@ async def api_relationship_graph_neighborhood(
             session,
             result_id=result_id,
             feature_id=feature_id,
+            table_name=normalized_table or None,
+            assessment_id=assessment_id,
+            instance_id=instance_id,
+            scan_id=scan_id,
+            max_neighbors=max_neighbors,
+            exclude_result_ids=_parse_csv_ints(exclude_result_ids),
+        )
+        return payload
+    except ValueError as exc:
+        message = str(exc)
+        status = 404 if "not found" in message.lower() else 400
+        raise HTTPException(status_code=status, detail=message)
+
+
+@app.get("/api/dependency-map/neighborhood")
+async def api_dependency_map_neighborhood(
+    result_id: Optional[int] = Query(default=None),
+    table_name: Optional[str] = Query(default=None),
+    assessment_id: Optional[int] = Query(default=None),
+    instance_id: Optional[int] = Query(default=None),
+    scan_id: Optional[int] = Query(default=None),
+    max_neighbors: int = Query(default=30, ge=1, le=200),
+    exclude_result_ids: str = Query(default=""),
+    session: Session = Depends(get_session),
+):
+    """Progressive neighborhood payload for dependency map exploration."""
+    normalized_table = str(table_name or "").strip()
+    seed_count = 0
+    if result_id is not None:
+        seed_count += 1
+    if normalized_table:
+        seed_count += 1
+    if seed_count != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide exactly one seed: result_id or table_name.",
+        )
+
+    try:
+        payload = _build_dependency_map_payload(
+            session,
+            result_id=result_id,
             table_name=normalized_table or None,
             assessment_id=assessment_id,
             instance_id=instance_id,
@@ -10532,6 +11206,416 @@ async def admin_best_practice_record_page(
     )
 
 
+# =============================================================================
+# Scan Configuration Admin API
+# =============================================================================
+
+# -- Field schemas -----------------------------------------------------------
+
+_SCOPE_FIELD_LABELS = {
+    "core_tables_json": "Core Tables",
+    "keywords_json": "Keywords",
+    "table_prefixes_json": "Table Prefixes",
+    "plugins_json": "Plugins",
+    "parent_table": "Parent Table",
+    "display_order": "Order",
+    "is_active": "Active",
+}
+_SCOPE_FIELD_ORDER = [
+    "name", "label", "description", "core_tables_json", "keywords_json",
+    "table_prefixes_json", "plugins_json", "parent_table", "display_order", "is_active", "id",
+]
+_SCOPE_FIELDS = _static_model_fields(GlobalApp, label_overrides=_SCOPE_FIELD_LABELS, ordered_columns=_SCOPE_FIELD_ORDER)
+_SCOPE_ALLOWED_SORT_FIELDS = {f["local_column"] for f in _SCOPE_FIELDS}
+
+_FILE_CLASS_FIELD_LABELS = {
+    "sys_class_name": "Class Name",
+    "target_table_field": "Target Table Field",
+    "has_script": "Has Script",
+    "is_important": "Important",
+    "display_order": "Order",
+    "is_active": "Active",
+}
+_FILE_CLASS_FIELD_ORDER = [
+    "sys_class_name", "label", "description", "target_table_field",
+    "has_script", "is_important", "display_order", "is_active", "id",
+]
+_FILE_CLASS_FIELDS = _static_model_fields(AppFileClass, label_overrides=_FILE_CLASS_FIELD_LABELS, ordered_columns=_FILE_CLASS_FIELD_ORDER)
+_FILE_CLASS_ALLOWED_SORT_FIELDS = {f["local_column"] for f in _FILE_CLASS_FIELDS}
+
+_FILE_CLASS_QUERY_FIELD_LABELS = {
+    "app_file_class_id": "File Class",
+    "query_type": "Query Type",
+    "target_table_field": "Target Table Field",
+    "display_order": "Order",
+    "is_active": "Active",
+}
+_FILE_CLASS_QUERY_FIELD_ORDER = [
+    "query_type", "pattern", "target_table_field", "description",
+    "display_order", "is_active", "app_file_class_id", "id",
+]
+_FILE_CLASS_QUERY_FIELDS = _static_model_fields(AppFileClassQuery, label_overrides=_FILE_CLASS_QUERY_FIELD_LABELS, ordered_columns=_FILE_CLASS_QUERY_FIELD_ORDER)
+
+_ASSESSMENT_TYPE_FIELD_LABELS = {
+    "required_fields_json": "Required Fields",
+    "default_scans_json": "Default Scans",
+    "scope_options_json": "Scope Options",
+    "drivers_json": "Drivers",
+    "display_order": "Order",
+    "is_active": "Active",
+}
+_ASSESSMENT_TYPE_FIELD_ORDER = [
+    "name", "label", "description", "required_fields_json", "default_scans_json",
+    "scope_options_json", "drivers_json", "display_order", "is_active", "id",
+]
+_ASSESSMENT_TYPE_FIELDS = _static_model_fields(AssessmentTypeConfig, label_overrides=_ASSESSMENT_TYPE_FIELD_LABELS, ordered_columns=_ASSESSMENT_TYPE_FIELD_ORDER)
+_ASSESSMENT_TYPE_ALLOWED_SORT_FIELDS = {f["local_column"] for f in _ASSESSMENT_TYPE_FIELDS}
+
+_SCAN_KIND_FIELD_LABELS = {
+    "target_table": "Target Table",
+    "display_order": "Order",
+    "is_active": "Active",
+}
+_SCAN_KIND_FIELD_ORDER = [
+    "name", "target_table", "description", "display_order", "is_active", "id",
+]
+_SCAN_KIND_FIELDS = _static_model_fields(ScanKindConfig, label_overrides=_SCAN_KIND_FIELD_LABELS, ordered_columns=_SCAN_KIND_FIELD_ORDER)
+_SCAN_KIND_ALLOWED_SORT_FIELDS = {f["local_column"] for f in _SCAN_KIND_FIELDS}
+
+
+def _model_to_dict(obj: Any) -> Dict[str, Any]:
+    """Generic serializer for any SQLModel to a JSON-safe dict."""
+    payload: Dict[str, Any] = {}
+    for column in obj.__class__.__table__.columns:
+        payload[column.name] = _json_safe_value(getattr(obj, column.name, None))
+    return payload
+
+
+def _generic_records_query(
+    session: Session,
+    table_name: str,
+    fields: list,
+    allowed_sort_fields: set,
+    offset: int,
+    limit: int,
+    sort_field: str,
+    sort_dir: str,
+    extra_where: Optional[str] = None,
+    extra_params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Reusable paginated query for admin DataTables."""
+    normalized_sort_field = sort_field if sort_field in allowed_sort_fields else "id"
+    normalized_sort_dir = "asc" if str(sort_dir).lower() == "asc" else "desc"
+
+    where_parts: List[str] = ["1=1"]
+    params: Dict[str, Any] = extra_params or {}
+
+    if extra_where:
+        where_parts.append(extra_where)
+
+    where_clause = " AND ".join(f"({part})" for part in where_parts)
+    selected_columns = [field["local_column"] for field in fields]
+    select_cols = ", ".join(f'"{column}"' for column in selected_columns)
+
+    count_sql = text(f'SELECT COUNT(*) FROM "{table_name}" WHERE {where_clause}')
+    data_sql = text(
+        f'SELECT {select_cols} FROM "{table_name}" '
+        f"WHERE {where_clause} "
+        f'ORDER BY "{normalized_sort_field}" {normalized_sort_dir.upper()}, "id" DESC '
+        "LIMIT :limit OFFSET :offset"
+    )
+    query_params = dict(params)
+    query_params["limit"] = int(limit)
+    query_params["offset"] = int(offset)
+
+    connection = session.connection()
+    total = int(connection.execute(count_sql, params).scalar() or 0)
+    rows = connection.execute(data_sql, query_params).all()
+    records = [_row_mapping_to_json(row) for row in rows]
+
+    return {
+        "local_table_name": table_name,
+        "fields": fields,
+        "rows": records,
+        "total": total,
+        "offset": int(offset),
+        "limit": int(limit),
+        "count": len(records),
+    }
+
+
+# -- Scopes (Global Apps) API ------------------------------------------------
+
+@app.get("/api/scan-config/scopes/field-schema")
+async def api_scope_field_schema():
+    return {"local_table_name": "global_app", "field_count": len(_SCOPE_FIELDS), "fields": _SCOPE_FIELDS, "available_tables": []}
+
+
+@app.get("/api/scan-config/scopes/records")
+async def api_scope_records(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=500),
+    sort_field: str = Query("display_order"),
+    sort_dir: str = Query("asc"),
+    session: Session = Depends(get_session),
+):
+    return _generic_records_query(session, "global_app", _SCOPE_FIELDS, _SCOPE_ALLOWED_SORT_FIELDS, offset, limit, sort_field, sort_dir)
+
+
+@app.get("/api/scan-config/scopes/{scope_id}")
+async def api_scope_detail(scope_id: int, session: Session = Depends(get_session)):
+    obj = session.get(GlobalApp, scope_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Scope not found")
+    return _model_to_dict(obj)
+
+
+@app.post("/api/scan-config/scopes", status_code=201)
+async def api_create_scope(payload: Dict[str, Any] = Body(...), session: Session = Depends(get_session)):
+    obj = GlobalApp(
+        name=payload["name"],
+        label=payload["label"],
+        description=payload.get("description"),
+        core_tables_json=payload.get("core_tables_json", "[]"),
+        keywords_json=payload.get("keywords_json", "[]"),
+        table_prefixes_json=payload.get("table_prefixes_json"),
+        plugins_json=payload.get("plugins_json"),
+        parent_table=payload.get("parent_table"),
+        display_order=payload.get("display_order", 0),
+        is_active=payload.get("is_active", True),
+    )
+    session.add(obj)
+    session.commit()
+    session.refresh(obj)
+    return _model_to_dict(obj)
+
+
+@app.put("/api/scan-config/scopes/{scope_id}")
+async def api_update_scope(scope_id: int, payload: Dict[str, Any] = Body(...), session: Session = Depends(get_session)):
+    obj = session.get(GlobalApp, scope_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Scope not found")
+    for key in ("name", "label", "description", "core_tables_json", "keywords_json",
+                "table_prefixes_json", "plugins_json", "parent_table", "display_order", "is_active"):
+        if key in payload:
+            setattr(obj, key, payload[key])
+    session.add(obj)
+    session.commit()
+    session.refresh(obj)
+    return _model_to_dict(obj)
+
+
+# -- App File Classes API ----------------------------------------------------
+
+@app.get("/api/scan-config/file-classes/field-schema")
+async def api_file_class_field_schema():
+    return {"local_table_name": "app_file_class", "field_count": len(_FILE_CLASS_FIELDS), "fields": _FILE_CLASS_FIELDS, "available_tables": []}
+
+
+@app.get("/api/scan-config/file-classes/records")
+async def api_file_class_records(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=500),
+    sort_field: str = Query("display_order"),
+    sort_dir: str = Query("asc"),
+    session: Session = Depends(get_session),
+):
+    return _generic_records_query(session, "app_file_class", _FILE_CLASS_FIELDS, _FILE_CLASS_ALLOWED_SORT_FIELDS, offset, limit, sort_field, sort_dir)
+
+
+@app.get("/api/scan-config/file-classes/{class_id}")
+async def api_file_class_detail(class_id: int, session: Session = Depends(get_session)):
+    obj = session.get(AppFileClass, class_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="App file class not found")
+    return _model_to_dict(obj)
+
+
+@app.put("/api/scan-config/file-classes/{class_id}")
+async def api_update_file_class(class_id: int, payload: Dict[str, Any] = Body(...), session: Session = Depends(get_session)):
+    obj = session.get(AppFileClass, class_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="App file class not found")
+    for key in ("label", "description", "target_table_field", "has_script", "is_important", "display_order", "is_active"):
+        if key in payload:
+            setattr(obj, key, payload[key])
+    session.add(obj)
+    session.commit()
+    session.refresh(obj)
+    return _model_to_dict(obj)
+
+
+# -- App File Class Queries API ----------------------------------------------
+
+@app.get("/api/scan-config/file-classes/{class_id}/queries")
+async def api_file_class_queries(class_id: int, session: Session = Depends(get_session)):
+    queries = session.exec(
+        select(AppFileClassQuery)
+        .where(AppFileClassQuery.app_file_class_id == class_id)
+        .order_by(AppFileClassQuery.display_order, AppFileClassQuery.id)
+    ).all()
+    return {"queries": [_model_to_dict(q) for q in queries]}
+
+
+@app.post("/api/scan-config/file-classes/{class_id}/queries", status_code=201)
+async def api_create_file_class_query(class_id: int, payload: Dict[str, Any] = Body(...), session: Session = Depends(get_session)):
+    parent = session.get(AppFileClass, class_id)
+    if not parent:
+        raise HTTPException(status_code=404, detail="App file class not found")
+    obj = AppFileClassQuery(
+        app_file_class_id=class_id,
+        query_type=payload["query_type"],
+        pattern=payload["pattern"],
+        target_table_field=payload.get("target_table_field"),
+        description=payload.get("description"),
+        is_active=payload.get("is_active", True),
+        display_order=payload.get("display_order", 0),
+    )
+    session.add(obj)
+    session.commit()
+    session.refresh(obj)
+    return _model_to_dict(obj)
+
+
+@app.put("/api/scan-config/queries/{query_id}")
+async def api_update_file_class_query(query_id: int, payload: Dict[str, Any] = Body(...), session: Session = Depends(get_session)):
+    obj = session.get(AppFileClassQuery, query_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Query not found")
+    for key in ("query_type", "pattern", "target_table_field", "description", "is_active", "display_order"):
+        if key in payload:
+            setattr(obj, key, payload[key])
+    session.add(obj)
+    session.commit()
+    session.refresh(obj)
+    return _model_to_dict(obj)
+
+
+@app.delete("/api/scan-config/queries/{query_id}")
+async def api_delete_file_class_query(query_id: int, session: Session = Depends(get_session)):
+    obj = session.get(AppFileClassQuery, query_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Query not found")
+    session.delete(obj)
+    session.commit()
+    return {"ok": True}
+
+
+# -- Assessment Types API ----------------------------------------------------
+
+@app.get("/api/scan-config/assessment-types/field-schema")
+async def api_assessment_type_field_schema():
+    return {"local_table_name": "assessment_type_config", "field_count": len(_ASSESSMENT_TYPE_FIELDS), "fields": _ASSESSMENT_TYPE_FIELDS, "available_tables": []}
+
+
+@app.get("/api/scan-config/assessment-types/records")
+async def api_assessment_type_records(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=500),
+    sort_field: str = Query("display_order"),
+    sort_dir: str = Query("asc"),
+    session: Session = Depends(get_session),
+):
+    return _generic_records_query(session, "assessment_type_config", _ASSESSMENT_TYPE_FIELDS, _ASSESSMENT_TYPE_ALLOWED_SORT_FIELDS, offset, limit, sort_field, sort_dir)
+
+
+@app.get("/api/scan-config/assessment-types/{type_id}")
+async def api_assessment_type_detail(type_id: int, session: Session = Depends(get_session)):
+    obj = session.get(AssessmentTypeConfig, type_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Assessment type not found")
+    return _model_to_dict(obj)
+
+
+@app.post("/api/scan-config/assessment-types", status_code=201)
+async def api_create_assessment_type(payload: Dict[str, Any] = Body(...), session: Session = Depends(get_session)):
+    obj = AssessmentTypeConfig(
+        name=payload["name"],
+        label=payload["label"],
+        description=payload.get("description"),
+        required_fields_json=payload.get("required_fields_json", "[]"),
+        default_scans_json=payload.get("default_scans_json", "[]"),
+        scope_options_json=payload.get("scope_options_json", "[]"),
+        drivers_json=payload.get("drivers_json", "[]"),
+        display_order=payload.get("display_order", 0),
+        is_active=payload.get("is_active", True),
+    )
+    session.add(obj)
+    session.commit()
+    session.refresh(obj)
+    return _model_to_dict(obj)
+
+
+@app.put("/api/scan-config/assessment-types/{type_id}")
+async def api_update_assessment_type(type_id: int, payload: Dict[str, Any] = Body(...), session: Session = Depends(get_session)):
+    obj = session.get(AssessmentTypeConfig, type_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Assessment type not found")
+    for key in ("name", "label", "description", "required_fields_json", "default_scans_json",
+                "scope_options_json", "drivers_json", "display_order", "is_active"):
+        if key in payload:
+            setattr(obj, key, payload[key])
+    session.add(obj)
+    session.commit()
+    session.refresh(obj)
+    return _model_to_dict(obj)
+
+
+# -- Scan Kinds API ----------------------------------------------------------
+
+@app.get("/api/scan-config/scan-kinds/field-schema")
+async def api_scan_kind_field_schema():
+    return {"local_table_name": "scan_kind_config", "field_count": len(_SCAN_KIND_FIELDS), "fields": _SCAN_KIND_FIELDS, "available_tables": []}
+
+
+@app.get("/api/scan-config/scan-kinds/records")
+async def api_scan_kind_records(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=500),
+    sort_field: str = Query("display_order"),
+    sort_dir: str = Query("asc"),
+    session: Session = Depends(get_session),
+):
+    return _generic_records_query(session, "scan_kind_config", _SCAN_KIND_FIELDS, _SCAN_KIND_ALLOWED_SORT_FIELDS, offset, limit, sort_field, sort_dir)
+
+
+@app.get("/api/scan-config/scan-kinds/{kind_id}")
+async def api_scan_kind_detail(kind_id: int, session: Session = Depends(get_session)):
+    obj = session.get(ScanKindConfig, kind_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Scan kind not found")
+    return _model_to_dict(obj)
+
+
+@app.post("/api/scan-config/scan-kinds", status_code=201)
+async def api_create_scan_kind(payload: Dict[str, Any] = Body(...), session: Session = Depends(get_session)):
+    obj = ScanKindConfig(
+        name=payload["name"],
+        target_table=payload["target_table"],
+        description=payload.get("description"),
+        display_order=payload.get("display_order", 0),
+        is_active=payload.get("is_active", True),
+    )
+    session.add(obj)
+    session.commit()
+    session.refresh(obj)
+    return _model_to_dict(obj)
+
+
+@app.put("/api/scan-config/scan-kinds/{kind_id}")
+async def api_update_scan_kind(kind_id: int, payload: Dict[str, Any] = Body(...), session: Session = Depends(get_session)):
+    obj = session.get(ScanKindConfig, kind_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Scan kind not found")
+    for key in ("name", "target_table", "description", "display_order", "is_active"):
+        if key in payload:
+            setattr(obj, key, payload[key])
+    session.add(obj)
+    session.commit()
+    session.refresh(obj)
+    return _model_to_dict(obj)
+
+
 @app.get("/settings/llm-providers", response_class=HTMLResponse)
 def page_llm_settings(request: Request, session: Session = Depends(get_session)):
     """LLM provider settings page."""
@@ -10622,7 +11706,33 @@ def api_llm_detect_clis(session: Session = Depends(get_session)):
 def api_llm_cli_login(
     provider_kind: str, session: Session = Depends(get_session)
 ):
-    """Trigger CLI browser login for a provider."""
+    """Check CLI auth first; if already authenticated, auto-connect. Otherwise open terminal login."""
+    from src.services.llm.auth_manager import _DISPATCHER_MAP
+    dispatcher_cls = _DISPATCHER_MAP.get(provider_kind)
+    if dispatcher_cls:
+        dispatcher = dispatcher_cls()
+        ok, msg = dispatcher.test_cli_auth()
+        if ok:
+            # Already authenticated — create/update CLI slot and mark as ok
+            mgr = AuthManager(session)
+            from sqlmodel import select as sel
+            from src.services.llm.models import LLMProvider
+            provider = session.exec(
+                sel(LLMProvider).where(LLMProvider.provider_kind == provider_kind)
+            ).first()
+            if provider:
+                slot = mgr.create_cli_slot(provider.id)
+                slot.last_test_result = "ok"
+                slot.last_tested_at = datetime.utcnow().isoformat()
+                session.add(slot)
+                session.commit()
+            return {
+                "status": "already_authenticated",
+                "provider_kind": provider_kind,
+                "message": msg,
+            }
+
+    # Not authenticated — fall back to terminal login
     mgr = AuthManager(session)
     mgr.trigger_cli_login(provider_kind)
     return {"status": "login_triggered", "provider_kind": provider_kind}

@@ -20,14 +20,9 @@
             <li><a href="/instances" class="{% if '/instances' in request.url.path %}active{% endif %}">Instances</a></li>
             <li><a href="/data-browser" class="{% if '/data-browser' in request.url.path %}active{% endif %}">Pre Flight Data Browser</a></li>
             <li><a href="/analytics" class="{% if '/analytics' in request.url.path %}active{% endif %}">Comparison</a></li>
-            <li><a href="/mcp-console" class="{% if '/mcp-console' in request.url.path %}active{% endif %}">MCP</a></li>
-            <li><a href="/integration-properties" class="{% if '/integration-properties' in request.url.path %}active{% endif %}">Properties</a></li>
-            <li><a href="/settings/llm-providers" class="{% if '/settings/llm-providers' in request.url.path %}active{% endif %}">LLM Settings</a></li>
             <li><a href="/assessments" class="{% if '/assessments' in request.url.path %}active{% endif %}">Assessments</a></li>
             <li><a href="/results" class="{% if '/results' in request.url.path %}active{% endif %}">Results</a></li>
-            <li><a href="/job-log" class="{% if '/job-log' in request.url.path %}active{% endif %}">Job Log</a></li>
             <li><a href="/csdm/ingestion" class="{% if '/csdm' in request.url.path %}active{% endif %}">CSDM Data</a></li>
-            <li><a href="/browse" class="{% if '/browse' in request.url.path %}active{% endif %}">Table Browser</a></li>
             <li><a href="/admin/best-practices" class="{% if '/admin/best-practices' in request.url.path %}active{% endif %}">Best Practices</a></li>
             <li class="theme-menu-item">
                 <details class="theme-menu" data-theme-menu>
@@ -91,6 +86,24 @@
                         </button>
                     </div>
                 </details>
+            </li>
+            <li class="admin-menu-item">
+                <button type="button" class="admin-menu-trigger{% if '/mcp-console' in request.url.path or '/integration-properties' in request.url.path or '/settings/llm-providers' in request.url.path or '/job-log' in request.url.path or '/browse' in request.url.path or '/admin/scan-config' in request.url.path %} has-active{% endif %}" data-admin-toggle>
+                    <span>Admin</span>
+                    <span class="admin-menu-caret" aria-hidden="true">&#9662;</span>
+                </button>
+                <div class="admin-menu-panel" data-admin-panel>
+                    <a href="/mcp-console" class="admin-menu-option{% if '/mcp-console' in request.url.path %} is-active{% endif %}">MCP</a>
+                    <a href="/integration-properties" class="admin-menu-option{% if '/integration-properties' in request.url.path %} is-active{% endif %}">Properties</a>
+                    <a href="/settings/llm-providers" class="admin-menu-option{% if '/settings/llm-providers' in request.url.path %} is-active{% endif %}">LLM Settings</a>
+                    <a href="/job-log" class="admin-menu-option{% if '/job-log' in request.url.path %} is-active{% endif %}">Job Log</a>
+                    <a href="/browse" class="admin-menu-option{% if '/browse' in request.url.path %} is-active{% endif %}">Table Browser</a>
+                    <div style="border-top:1px solid var(--border-color);margin:0.25rem 0"></div>
+                    <a href="/admin/scan-config/scopes" class="admin-menu-option{% if '/admin/scan-config/scopes' in request.url.path %} is-active{% endif %}">Scopes</a>
+                    <a href="/admin/scan-config/file-classes" class="admin-menu-option{% if '/admin/scan-config/file-classes' in request.url.path %} is-active{% endif %}">File Classes</a>
+                    <a href="/admin/scan-config/assessment-types" class="admin-menu-option{% if '/admin/scan-config/assessment-types' in request.url.path %} is-active{% endif %}">Assessment Types</a>
+                    <a href="/admin/scan-config/scan-kinds" class="admin-menu-option{% if '/admin/scan-config/scan-kinds' in request.url.path %} is-active{% endif %}">Scan Kinds</a>
+                </div>
             </li>
         </ul>
     </nav>

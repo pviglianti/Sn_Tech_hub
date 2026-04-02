@@ -90,14 +90,15 @@ def resolve_assessment_drivers(assessment: Assessment, global_app: Optional[Glob
 
 
 def _scope_condition(scope_filter: str, scope_id: Optional[str], scope_rules: Dict[str, Any], key: str) -> Optional[str]:
-    if scope_filter == "global":
-        pattern = (scope_rules.get("global") or {}).get(key, "")
-        if pattern:
-            return pattern.format(scope_id=scope_id or "global")
-        if key == "metadata":
-            return "sys_scope=global"
-        if key == "update_xml":
-            return "update_set.application.scope=global"
+    """Build an optional scope filter from scan_rules.yaml.
+
+    Scope filtering is driven entirely by the YAML config.  If the config
+    value is empty the query is not narrowed — the assessment's table/keyword
+    drivers are the only thing that controls what gets pulled.
+    """
+    pattern = (scope_rules.get(scope_filter) or {}).get(key, "")
+    if pattern:
+        return pattern.format(scope_id=scope_id or "global")
     return None
 
 

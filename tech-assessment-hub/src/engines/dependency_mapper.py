@@ -17,14 +17,13 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from ..models import (
     Assessment,
     DependencyChain,
     DependencyCluster,
-    Feature,
-    FeatureScanResult,
     Scan,
 )
 from ..services.dependency_graph import build_dependency_graph
@@ -167,7 +166,12 @@ def _propagate_risk_to_features(
     assessment_id: int,
     cluster_results: List[Dict[str, Any]],
 ) -> None:
-    """Set Feature.change_risk_score/level from overlapping dependency clusters."""
+    """Set feature change risk from overlapping dependency clusters.
+
+    Use raw SQL here instead of ORM Feature loads so Engine 7 can still run
+    against older databases that have not yet added newer non-risk Feature
+    columns.
+    """
     if not cluster_results:
         return
 
@@ -180,26 +184,45 @@ def _propagate_risk_to_features(
                 member_risk[mid] = cl["change_risk_score"]
                 member_level[mid] = cl["change_risk_level"]
 
-    # Load features and their scan result links
-    features = list(session.exec(
-        select(Feature).where(Feature.assessment_id == assessment_id)
-    ).all())
+    feature_members: Dict[int, List[int]] = {}
+    feature_ids: List[int] = []
+    rows = session.exec(
+        text(
+            "SELECT f.id, fsr.scan_result_id "
+            "FROM feature f "
+            "LEFT JOIN feature_scan_result fsr ON fsr.feature_id = f.id "
+            "WHERE f.assessment_id = :aid"
+        ).bindparams(aid=assessment_id)
+    ).all()
 
-    for feature in features:
-        links = list(session.exec(
-            select(FeatureScanResult).where(
-                FeatureScanResult.feature_id == feature.id
-            )
-        ).all())
+    for row in rows:
+        values = tuple(row)
+        if not values:
+            continue
+        feature_id = values[0]
+        if feature_id is None:
+            continue
+        feature_id = int(feature_id)
+        if feature_id not in feature_members:
+            feature_members[feature_id] = []
+            feature_ids.append(feature_id)
+        scan_result_id = values[1] if len(values) > 1 else None
+        if scan_result_id is not None:
+            feature_members[feature_id].append(int(scan_result_id))
+
+    for feature_id in feature_ids:
         max_risk = 0.0
         max_level = "low"
-        for link in links:
-            sr_id = link.scan_result_id
+        for sr_id in feature_members.get(feature_id, []):
             if sr_id in member_risk and member_risk[sr_id] > max_risk:
                 max_risk = member_risk[sr_id]
                 max_level = member_level[sr_id]
 
         if max_risk > 0:
-            feature.change_risk_score = max_risk
-            feature.change_risk_level = max_level
-            session.add(feature)
+            session.exec(
+                text(
+                    "UPDATE feature "
+                    "SET change_risk_score = :score, change_risk_level = :level "
+                    "WHERE id = :feature_id"
+                ).bindparams(score=max_risk, level=max_level, feature_id=feature_id)
+            )

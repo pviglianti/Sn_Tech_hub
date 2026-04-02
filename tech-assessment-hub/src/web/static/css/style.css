@@ -248,6 +248,100 @@ h1, h2, h3, h4, h5, h6 {
     }
 }
 
+/* Admin dropdown menu */
+.admin-menu-item {
+    position: relative;
+}
+
+.admin-menu-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--text-muted);
+    font-weight: 500;
+    font: inherit;
+    font-size: 0.8125rem;
+    padding: 0.4rem 0.65rem;
+    border-radius: var(--radius-sm);
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.2s ease;
+}
+
+.admin-menu-trigger:hover,
+.admin-menu-trigger.is-open {
+    color: var(--primary-color);
+    background: rgba(37, 99, 235, 0.08);
+}
+
+.admin-menu-trigger.has-active {
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.admin-menu-caret {
+    font-size: 0.7rem;
+    transition: transform 0.15s ease;
+}
+
+.admin-menu-trigger.is-open .admin-menu-caret {
+    transform: rotate(180deg);
+}
+
+.admin-menu-panel {
+    display: none;
+    position: absolute;
+    top: calc(100% + 0.5rem);
+    right: 0;
+    min-width: 180px;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
+    padding: 0.4rem;
+    z-index: 240;
+    animation: menuSlideIn 0.15s ease-out;
+}
+
+.admin-menu-panel.is-open {
+    display: grid;
+    gap: 0.15rem;
+}
+
+.admin-menu-option {
+    display: block;
+    width: 100%;
+    padding: 0.5rem 0.7rem;
+    color: var(--text-color);
+    text-decoration: none;
+    font-size: 0.85rem;
+    font-weight: 500;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    transition: all 0.15s ease;
+}
+
+.admin-menu-option:hover {
+    background: var(--bg-color);
+    border-color: var(--border-color);
+}
+
+.admin-menu-option.is-active {
+    color: var(--primary-color);
+    border-color: var(--primary-color);
+    background: rgba(37, 99, 235, 0.08);
+    font-weight: 600;
+}
+
+@media (max-width: 1180px) {
+    .admin-menu-panel {
+        right: auto;
+        left: 0;
+    }
+}
+
 /* Container */
 .container {
     max-width: 1440px;
