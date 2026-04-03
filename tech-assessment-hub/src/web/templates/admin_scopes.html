@@ -171,10 +171,10 @@
         document.getElementById('scName').disabled = true;
         document.getElementById('scLabel').value = row.label || '';
         document.getElementById('scDescription').value = row.description || '';
-        document.getElementById('scCoreTables').value = jsonArrayToLines(row.core_tables);
-        document.getElementById('scKeywords').value = jsonArrayToLines(row.keywords);
-        document.getElementById('scTablePrefixes').value = jsonArrayToLines(row.table_prefixes);
-        document.getElementById('scPlugins').value = jsonArrayToLines(row.plugins);
+        document.getElementById('scCoreTables').value = jsonArrayToLines(row.core_tables_json);
+        document.getElementById('scKeywords').value = jsonArrayToLines(row.keywords_json);
+        document.getElementById('scTablePrefixes').value = jsonArrayToLines(row.table_prefixes_json);
+        document.getElementById('scPlugins').value = jsonArrayToLines(row.plugins_json);
         document.getElementById('scParentTable').value = row.parent_table || '';
         document.getElementById('scDisplayOrder').value = row.display_order != null ? row.display_order : '100';
         document.getElementById('scIsActive').checked = !!row.is_active;
@@ -189,10 +189,10 @@
             name: String(document.getElementById('scName').value || '').trim(),
             label: String(document.getElementById('scLabel').value || '').trim(),
             description: String(document.getElementById('scDescription').value || '').trim() || null,
-            core_tables: linesToJsonArray(document.getElementById('scCoreTables').value),
-            keywords: linesToJsonArray(document.getElementById('scKeywords').value),
-            table_prefixes: linesToJsonArray(document.getElementById('scTablePrefixes').value),
-            plugins: linesToJsonArray(document.getElementById('scPlugins').value),
+            core_tables_json: linesToJsonArray(document.getElementById('scCoreTables').value),
+            keywords_json: linesToJsonArray(document.getElementById('scKeywords').value),
+            table_prefixes_json: linesToJsonArray(document.getElementById('scTablePrefixes').value),
+            plugins_json: linesToJsonArray(document.getElementById('scPlugins').value),
             parent_table: String(document.getElementById('scParentTable').value || '').trim() || null,
             display_order: parseInt(document.getElementById('scDisplayOrder').value || '100', 10),
             is_active: !!document.getElementById('scIsActive').checked,

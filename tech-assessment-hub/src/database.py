@@ -110,7 +110,6 @@ def create_db_and_tables():
         "app_file_class",
         "app_file_class_query",
         "assessment_type_config",
-        "scan_kind_config",
     ])
     _ensure_assessment_pipeline_defaults()
     _ensure_instance_app_file_type_defaults()

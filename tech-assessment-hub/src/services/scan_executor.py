@@ -21,7 +21,9 @@ from .scan_rules import get_scan_rules, reload_scan_rules
 from .sn_client import ServiceNowClient, ServiceNowClientError
 from ..models import (
     AppFileClass,
+    AppFileClassQuery,
     Assessment,
+    AssessmentTypeConfig,
     InstanceAppFileType,
     GlobalApp,
     OriginType,
@@ -550,20 +552,50 @@ def _existing_results_for_assessment(session: Session, assessment_id: int, sys_i
 
 
 
+def _load_queries_for_classes(
+    session: Session,
+    class_ids: List[int],
+) -> Dict[int, List[AppFileClassQuery]]:
+    """Load AppFileClassQuery rows for a set of file class IDs, grouped by class."""
+    if not class_ids:
+        return {}
+    all_queries = session.exec(
+        select(AppFileClassQuery)
+        .where(AppFileClassQuery.app_file_class_id.in_(class_ids))
+        .order_by(AppFileClassQuery.display_order, AppFileClassQuery.id)
+    ).all()
+    result: Dict[int, List[AppFileClassQuery]] = {}
+    for q in all_queries:
+        result.setdefault(q.app_file_class_id, []).append(q)
+    return result
+
+
 def create_scans_for_assessment(
     session: Session,
     assessment: Assessment,
     client: ServiceNowClient,
 ) -> List[Scan]:
-    rules = get_scan_rules()
-    assessment_rules = (rules.get("assessment_types") or {}).get(assessment.assessment_type.value, {})
-    default_scans = assessment_rules.get("default_scans") or []
+    # Read default_scans from DB (AssessmentTypeConfig), fall back to YAML
+    at_config = session.exec(
+        select(AssessmentTypeConfig)
+        .where(AssessmentTypeConfig.name == assessment.assessment_type.value)
+    ).first()
+    if at_config:
+        default_scans = parse_list(at_config.default_scans_json)
+    else:
+        rules = get_scan_rules()
+        assessment_rules = (rules.get("assessment_types") or {}).get(assessment.assessment_type.value, {})
+        default_scans = assessment_rules.get("default_scans") or []
 
     global_app = _get_global_app(session, assessment)
     drivers = resolve_assessment_drivers(assessment, global_app)
 
     selected_classes = parse_list(assessment.app_file_classes_json)
     app_file_classes = _fetch_app_file_classes(session, selected_classes, instance_id=assessment.instance_id)
+
+    # Load query patterns from DB for all selected classes
+    class_ids = [fc.id for fc in app_file_classes if fc.id is not None]
+    queries_by_class = _load_queries_for_classes(session, class_ids)
 
     scope_id = None
     if assessment.scope_filter == "global":
@@ -573,12 +605,14 @@ def create_scans_for_assessment(
 
     if "metadata_index" in default_scans:
         for file_class in app_file_classes:
+            class_queries = queries_by_class.get(file_class.id, [])
+            # Pass DB queries if any exist; otherwise None triggers YAML fallback
             variants = build_metadata_query_variants(
                 app_file_class=file_class,
                 drivers=drivers,
                 scope_filter=assessment.scope_filter,
                 scope_id=scope_id,
-                rules=rules,
+                queries=class_queries if class_queries else None,
             )
             for variant in variants:
                 query_params = {
@@ -597,30 +631,6 @@ def create_scans_for_assessment(
                 )
                 session.add(scan)
                 scans.append(scan)
-
-    if "update_xml" in default_scans:
-        variants = build_update_xml_query_variants(
-            drivers=drivers,
-            scope_filter=assessment.scope_filter,
-            scope_id=scope_id,
-            rules=rules,
-        )
-        for variant in variants:
-            query_params = {
-                "target_table": variant.get("target_table"),
-                "keyword": variant.get("keyword"),
-            }
-            scan = Scan(
-                assessment_id=assessment.id,
-                scan_type=ScanType.update_xml,
-                name=variant.get("label") or "Update XML",
-                description="sys_update_xml scan for assessment scope",
-                encoded_query=variant.get("query") or "",
-                target_table="sys_update_xml",
-                query_params_json=json.dumps(query_params),
-            )
-            session.add(scan)
-            scans.append(scan)
 
     session.commit()
     for scan in scans:
@@ -684,7 +694,19 @@ def execute_scan(
                 "sys_updated_by",
             ]
             target_field = file_class.target_table_field if file_class else None
-            if file_class:
+            # Prefer target_table_field from DB query row over class-level default
+            if file_class and file_class.id is not None:
+                _db_query = session.exec(
+                    select(AppFileClassQuery)
+                    .where(AppFileClassQuery.app_file_class_id == file_class.id)
+                    .where(AppFileClassQuery.is_active == True)
+                    .where(AppFileClassQuery.target_table_field.is_not(None))
+                    .order_by(AppFileClassQuery.display_order.asc())
+                ).first()
+                if _db_query and _db_query.target_table_field:
+                    target_field = _db_query.target_table_field
+            if not target_field and file_class:
+                # Legacy fallback to YAML
                 query_rules = (rules.get("app_file_class_queries") or {}).get(file_class.sys_class_name, {})
                 target_field = query_rules.get("target_table_field") or target_field
             if target_field and target_field not in fields:

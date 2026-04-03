@@ -38,7 +38,7 @@ from .models import (
     CodeReference, StructuralRelationship, UpdateSetOverlap,
     TemporalCluster, NamingCluster, TableColocationSummary, UpdateSetArtifactLink,
     BestPractice, BestPracticeCategory,
-    AppFileClassQuery, AssessmentTypeConfig, ScanKindConfig,
+    AppFileClassQuery, AssessmentTypeConfig,
 )
 from .services.encryption import encrypt_password, decrypt_password
 from .services.sn_client import ServiceNowClient, ServiceNowClientError
@@ -11271,18 +11271,6 @@ _ASSESSMENT_TYPE_FIELD_ORDER = [
 _ASSESSMENT_TYPE_FIELDS = _static_model_fields(AssessmentTypeConfig, label_overrides=_ASSESSMENT_TYPE_FIELD_LABELS, ordered_columns=_ASSESSMENT_TYPE_FIELD_ORDER)
 _ASSESSMENT_TYPE_ALLOWED_SORT_FIELDS = {f["local_column"] for f in _ASSESSMENT_TYPE_FIELDS}
 
-_SCAN_KIND_FIELD_LABELS = {
-    "target_table": "Target Table",
-    "display_order": "Order",
-    "is_active": "Active",
-}
-_SCAN_KIND_FIELD_ORDER = [
-    "name", "target_table", "description", "display_order", "is_active", "id",
-]
-_SCAN_KIND_FIELDS = _static_model_fields(ScanKindConfig, label_overrides=_SCAN_KIND_FIELD_LABELS, ordered_columns=_SCAN_KIND_FIELD_ORDER)
-_SCAN_KIND_ALLOWED_SORT_FIELDS = {f["local_column"] for f in _SCAN_KIND_FIELDS}
-
-
 def _model_to_dict(obj: Any) -> Dict[str, Any]:
     """Generic serializer for any SQLModel to a JSON-safe dict."""
     payload: Dict[str, Any] = {}
@@ -11423,11 +11411,63 @@ async def api_file_class_records(
     return _generic_records_query(session, "app_file_class", _FILE_CLASS_FIELDS, _FILE_CLASS_ALLOWED_SORT_FIELDS, offset, limit, sort_field, sort_dir)
 
 
+@app.get("/api/scan-config/file-classes/available-instance-types")
+async def api_available_instance_file_types(session: Session = Depends(get_session)):
+    """Return instance app file types that are NOT yet in the AppFileClass table.
+
+    Used by the admin UI to populate a dropdown when adding new file classes.
+    """
+    existing_names = {
+        row.sys_class_name
+        for row in session.exec(select(AppFileClass)).all()
+    }
+    # Get distinct class names from all instances
+    instance_rows = session.exec(
+        select(InstanceAppFileType)
+        .where(InstanceAppFileType.sys_class_name.is_not(None))
+        .order_by(InstanceAppFileType.sys_class_name.asc())
+    ).all()
+
+    seen = set()
+    options = []
+    for row in instance_rows:
+        class_name = (row.sys_class_name or "").strip()
+        if not class_name or class_name in seen or class_name in existing_names:
+            continue
+        seen.add(class_name)
+        options.append({
+            "sys_class_name": class_name,
+            "label": row.label or row.name or class_name,
+            "source_field": row.source_field,
+            "source_table_name": row.source_table_name,
+        })
+
+    return {"options": options}
+
+
 @app.get("/api/scan-config/file-classes/{class_id}")
 async def api_file_class_detail(class_id: int, session: Session = Depends(get_session)):
     obj = session.get(AppFileClass, class_id)
     if not obj:
         raise HTTPException(status_code=404, detail="App file class not found")
+    return _model_to_dict(obj)
+
+
+@app.post("/api/scan-config/file-classes", status_code=201)
+async def api_create_file_class(payload: Dict[str, Any] = Body(...), session: Session = Depends(get_session)):
+    obj = AppFileClass(
+        sys_class_name=payload["sys_class_name"],
+        label=payload["label"],
+        description=payload.get("description"),
+        target_table_field=payload.get("target_table_field"),
+        has_script=payload.get("has_script", True),
+        is_important=payload.get("is_important", False),
+        display_order=payload.get("display_order", 0),
+        is_active=payload.get("is_active", True),
+    )
+    session.add(obj)
+    session.commit()
+    session.refresh(obj)
     return _model_to_dict(obj)
 
 
@@ -11553,61 +11593,6 @@ async def api_update_assessment_type(type_id: int, payload: Dict[str, Any] = Bod
         raise HTTPException(status_code=404, detail="Assessment type not found")
     for key in ("name", "label", "description", "required_fields_json", "default_scans_json",
                 "scope_options_json", "drivers_json", "display_order", "is_active"):
-        if key in payload:
-            setattr(obj, key, payload[key])
-    session.add(obj)
-    session.commit()
-    session.refresh(obj)
-    return _model_to_dict(obj)
-
-
-# -- Scan Kinds API ----------------------------------------------------------
-
-@app.get("/api/scan-config/scan-kinds/field-schema")
-async def api_scan_kind_field_schema():
-    return {"local_table_name": "scan_kind_config", "field_count": len(_SCAN_KIND_FIELDS), "fields": _SCAN_KIND_FIELDS, "available_tables": []}
-
-
-@app.get("/api/scan-config/scan-kinds/records")
-async def api_scan_kind_records(
-    offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=500),
-    sort_field: str = Query("display_order"),
-    sort_dir: str = Query("asc"),
-    session: Session = Depends(get_session),
-):
-    return _generic_records_query(session, "scan_kind_config", _SCAN_KIND_FIELDS, _SCAN_KIND_ALLOWED_SORT_FIELDS, offset, limit, sort_field, sort_dir)
-
-
-@app.get("/api/scan-config/scan-kinds/{kind_id}")
-async def api_scan_kind_detail(kind_id: int, session: Session = Depends(get_session)):
-    obj = session.get(ScanKindConfig, kind_id)
-    if not obj:
-        raise HTTPException(status_code=404, detail="Scan kind not found")
-    return _model_to_dict(obj)
-
-
-@app.post("/api/scan-config/scan-kinds", status_code=201)
-async def api_create_scan_kind(payload: Dict[str, Any] = Body(...), session: Session = Depends(get_session)):
-    obj = ScanKindConfig(
-        name=payload["name"],
-        target_table=payload["target_table"],
-        description=payload.get("description"),
-        display_order=payload.get("display_order", 0),
-        is_active=payload.get("is_active", True),
-    )
-    session.add(obj)
-    session.commit()
-    session.refresh(obj)
-    return _model_to_dict(obj)
-
-
-@app.put("/api/scan-config/scan-kinds/{kind_id}")
-async def api_update_scan_kind(kind_id: int, payload: Dict[str, Any] = Body(...), session: Session = Depends(get_session)):
-    obj = session.get(ScanKindConfig, kind_id)
-    if not obj:
-        raise HTTPException(status_code=404, detail="Scan kind not found")
-    for key in ("name", "target_table", "description", "display_order", "is_active"):
         if key in payload:
             setattr(obj, key, payload[key])
     session.add(obj)

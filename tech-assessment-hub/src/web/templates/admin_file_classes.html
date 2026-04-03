@@ -28,10 +28,16 @@
         <h2 id="fcEditorTitle">File Class Detail</h2>
         <form id="fcEditorForm">
             <input type="hidden" id="fcId" value="">
-            <div class="form-group">
+            <div class="form-group" id="fcSysClassNameSelectGroup">
+                <label for="fcSysClassNameSelect">App File Type</label>
+                <select id="fcSysClassNameSelect">
+                    <option value="">-- Select from instance types --</option>
+                </select>
+                <small>Choose from instance app file types not already configured.</small>
+            </div>
+            <div class="form-group" id="fcSysClassNameTextGroup" style="display:none;">
                 <label for="fcSysClassName">Sys Class Name</label>
-                <input type="text" id="fcSysClassName" placeholder="e.g. sys_script">
-                <small>ServiceNow sys_class_name. Read-only when editing an existing record.</small>
+                <input type="text" id="fcSysClassName" readonly>
             </div>
             <div class="form-group">
                 <label for="fcLabel">Label</label>
@@ -95,18 +101,21 @@
                 <div class="form-group">
                     <label for="qQueryType">Query Type</label>
                     <select id="qQueryType">
-                        <option value="table_pattern">table_pattern</option>
-                        <option value="keyword_pattern">keyword_pattern</option>
-                        <option value="text_search">text_search</option>
+                        <option value="table_pattern">Table Pattern — queries by scope tables</option>
+                        <option value="keyword_pattern">Keyword Pattern — queries by scope keywords</option>
+                        <option value="custom">Custom — free-form encoded query</option>
                     </select>
+                    <small id="qQueryTypeHint" class="text-muted-plain"></small>
                 </div>
-                <div class="form-group">
-                    <label for="qPattern">Pattern</label>
-                    <textarea id="qPattern" rows="3" placeholder="Encoded query template" required></textarea>
+                <div class="form-group" id="qPatternGroup">
+                    <label for="qPattern">Pattern Preview</label>
+                    <textarea id="qPattern" rows="2" readonly></textarea>
+                    <small id="qPatternHelp"></small>
                 </div>
-                <div class="form-group">
-                    <label for="qTargetTableField">Target Table Field</label>
-                    <input type="text" id="qTargetTableField" placeholder="e.g. ref_sys_script.collection">
+                <div class="form-group" id="qCustomPatternGroup" style="display:none;">
+                    <label for="qCustomPattern">Custom Pattern</label>
+                    <textarea id="qCustomPattern" rows="3" placeholder="Encoded query template with {table}, {keyword}, or {base} placeholders"></textarea>
+                    <small>Use <code>{table}</code>, <code>{keyword}</code>, or <code>{base}</code> placeholders.</small>
                 </div>
                 <div class="form-group">
                     <label for="qDescription">Description</label>
@@ -233,6 +242,58 @@ hr {
 
     var selectedClassId = null;
     var selectedClassName = '';
+    var instanceTypeOptions = []; // cached from API
+
+    /* ── Load instance type dropdown ───────────────── */
+
+    var fcSysClassNameSelect = document.getElementById('fcSysClassNameSelect');
+    var fcSysClassNameSelectGroup = document.getElementById('fcSysClassNameSelectGroup');
+    var fcSysClassNameTextGroup = document.getElementById('fcSysClassNameTextGroup');
+
+    function loadInstanceTypeOptions() {
+        fetch('/api/scan-config/file-classes/available-instance-types')
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+                instanceTypeOptions = data.options || [];
+                rebuildDropdown();
+            })
+            .catch(function () { /* ignore */ });
+    }
+
+    function rebuildDropdown() {
+        while (fcSysClassNameSelect.options.length > 1) {
+            fcSysClassNameSelect.remove(1);
+        }
+        instanceTypeOptions.forEach(function (opt) {
+            var el = document.createElement('option');
+            el.value = opt.sys_class_name;
+            el.textContent = opt.label + ' (' + opt.sys_class_name + ')';
+            el.dataset.label = opt.label || '';
+            el.dataset.sourceField = opt.source_field || '';
+            el.dataset.sourceTableName = opt.source_table_name || '';
+            fcSysClassNameSelect.appendChild(el);
+        });
+    }
+
+    fcSysClassNameSelect.addEventListener('change', function () {
+        var selected = fcSysClassNameSelect.options[fcSysClassNameSelect.selectedIndex];
+        if (!selected || !selected.value) return;
+        document.getElementById('fcLabel').value = selected.dataset.label || '';
+        document.getElementById('fcTargetTableField').value = selected.dataset.sourceField || '';
+    });
+
+    function showNewMode() {
+        fcSysClassNameSelectGroup.style.display = 'block';
+        fcSysClassNameTextGroup.style.display = 'none';
+        document.getElementById('fcSaveBtn').textContent = 'Create';
+    }
+
+    function showEditMode(className) {
+        fcSysClassNameSelectGroup.style.display = 'none';
+        fcSysClassNameTextGroup.style.display = 'block';
+        document.getElementById('fcSysClassName').value = className;
+        document.getElementById('fcSaveBtn').textContent = 'Save';
+    }
 
     /* ── Status helpers ─────────────────────────────── */
 
@@ -253,7 +314,7 @@ hr {
     function resetForm() {
         document.getElementById('fcId').value = '';
         document.getElementById('fcSysClassName').value = '';
-        document.getElementById('fcSysClassName').readOnly = false;
+        fcSysClassNameSelect.value = '';
         document.getElementById('fcLabel').value = '';
         document.getElementById('fcDescription').value = '';
         document.getElementById('fcTargetTableField').value = '';
@@ -261,8 +322,8 @@ hr {
         document.getElementById('fcIsImportant').checked = false;
         document.getElementById('fcDisplayOrder').value = '100';
         document.getElementById('fcIsActive').checked = true;
-        editorTitle.textContent = 'File Class Detail';
-        document.getElementById('fcSaveBtn').textContent = 'Create';
+        editorTitle.textContent = 'Add File Class';
+        showNewMode();
         selectedClassId = null;
         selectedClassName = '';
         qAddBtn.disabled = true;
@@ -284,8 +345,7 @@ hr {
     function loadRowIntoForm(row) {
         if (!row) return;
         document.getElementById('fcId').value = row.id || '';
-        document.getElementById('fcSysClassName').value = row.sys_class_name || '';
-        document.getElementById('fcSysClassName').readOnly = true;
+        showEditMode(row.sys_class_name || '');
         document.getElementById('fcLabel').value = row.label || '';
         document.getElementById('fcDescription').value = row.description || '';
         document.getElementById('fcTargetTableField').value = row.target_table_field || '';
@@ -303,8 +363,12 @@ hr {
     }
 
     function payloadFromForm() {
+        var idValue = parseInt(document.getElementById('fcId').value || '0', 10);
+        var className = idValue
+            ? String(document.getElementById('fcSysClassName').value || '').trim()
+            : String(fcSysClassNameSelect.value || '').trim();
         return {
-            sys_class_name: String(document.getElementById('fcSysClassName').value || '').trim(),
+            sys_class_name: className,
             label: String(document.getElementById('fcLabel').value || '').trim(),
             description: String(document.getElementById('fcDescription').value || '').trim() || null,
             target_table_field: String(document.getElementById('fcTargetTableField').value || '').trim() || null,
@@ -326,38 +390,120 @@ hr {
         queryEditorForm.style.display = 'block';
     }
 
+    /* ── Auto-derive patterns from query type + class fields ── */
+
+    function deriveTablePattern() {
+        var ttf = String(document.getElementById('fcTargetTableField').value || '').trim();
+        if (!ttf) return null;
+        return 'ref_' + selectedClassName + '.' + ttf + 'LIKE{table}';
+    }
+
+    function deriveKeywordPattern() {
+        return '123TEXTQUERY321={keyword}';
+    }
+
+    function updatePatternForType() {
+        var qType = document.getElementById('qQueryType').value;
+        var patternEl = document.getElementById('qPattern');
+        var patternGroup = document.getElementById('qPatternGroup');
+        var customGroup = document.getElementById('qCustomPatternGroup');
+        var hintEl = document.getElementById('qQueryTypeHint');
+        var helpEl = document.getElementById('qPatternHelp');
+
+        if (qType === 'table_pattern') {
+            var tp = deriveTablePattern();
+            patternGroup.style.display = 'block';
+            customGroup.style.display = 'none';
+            patternEl.readOnly = true;
+            if (tp) {
+                patternEl.value = tp;
+                helpEl.textContent = 'Auto-derived from target table field. One scan generated per scope table.';
+                hintEl.textContent = 'Generates one scan per table defined in the scope (e.g., incident, incident_task).';
+            } else {
+                patternEl.value = '';
+                helpEl.textContent = 'This class has no target table field — table pattern cannot be auto-derived.';
+                hintEl.textContent = 'Requires a target table field on the file class.';
+            }
+        } else if (qType === 'keyword_pattern') {
+            patternGroup.style.display = 'block';
+            customGroup.style.display = 'none';
+            patternEl.readOnly = true;
+            patternEl.value = deriveKeywordPattern();
+            helpEl.textContent = 'Standard full-text keyword search. One scan generated per scope keyword.';
+            hintEl.textContent = 'Generates one scan per keyword defined in the scope (e.g., incident, inc).';
+        } else {
+            /* custom */
+            patternGroup.style.display = 'none';
+            customGroup.style.display = 'block';
+            hintEl.textContent = 'Enter a free-form encoded query pattern with placeholders.';
+        }
+    }
+
+    document.getElementById('qQueryType').addEventListener('change', updatePatternForType);
+
     function resetQueryForm() {
         document.getElementById('qId').value = '';
         document.getElementById('qQueryType').value = 'table_pattern';
-        document.getElementById('qPattern').value = '';
-        document.getElementById('qTargetTableField').value = '';
+        document.getElementById('qCustomPattern').value = '';
         document.getElementById('qDescription').value = '';
         document.getElementById('qDisplayOrder').value = '100';
         document.getElementById('qIsActive').checked = true;
         queryEditorTitle.textContent = 'Add Query';
         document.getElementById('qSaveBtn').textContent = 'Save Query';
+        updatePatternForType();
         setQueryStatus('Ready.', false);
     }
 
     function loadQueryIntoForm(query) {
         if (!query) return;
         document.getElementById('qId').value = query.id || '';
-        document.getElementById('qQueryType').value = query.query_type || 'table_pattern';
-        document.getElementById('qPattern').value = query.pattern || '';
-        document.getElementById('qTargetTableField').value = query.target_table_field || '';
+
+        /* Determine if this is a standard or custom pattern */
+        var isStandardTable = (query.query_type === 'table_pattern' && query.pattern === deriveTablePattern());
+        var isStandardKeyword = (query.query_type === 'keyword_pattern' && query.pattern === deriveKeywordPattern());
+
+        if (isStandardTable) {
+            document.getElementById('qQueryType').value = 'table_pattern';
+        } else if (isStandardKeyword) {
+            document.getElementById('qQueryType').value = 'keyword_pattern';
+        } else {
+            document.getElementById('qQueryType').value = 'custom';
+            document.getElementById('qCustomPattern').value = query.pattern || '';
+        }
+
         document.getElementById('qDescription').value = query.description || '';
         document.getElementById('qDisplayOrder').value = query.display_order != null ? query.display_order : '100';
         document.getElementById('qIsActive').checked = !!query.is_active;
         queryEditorTitle.textContent = 'Edit Query';
         document.getElementById('qSaveBtn').textContent = 'Save Query';
+        updatePatternForType();
         showQueryEditor();
     }
 
     function queryPayloadFromForm() {
+        var qType = document.getElementById('qQueryType').value;
+        var pattern;
+        var storedType = qType;
+        var targetTableField = null;
+
+        if (qType === 'table_pattern') {
+            pattern = deriveTablePattern();
+            // Derive the full ref path for target_table_field
+            var ttf = String(document.getElementById('fcTargetTableField').value || '').trim();
+            if (ttf && selectedClassName) {
+                targetTableField = 'ref_' + selectedClassName + '.' + ttf;
+            }
+        } else if (qType === 'keyword_pattern') {
+            pattern = deriveKeywordPattern();
+        } else {
+            pattern = String(document.getElementById('qCustomPattern').value || '').trim();
+            storedType = 'custom';
+        }
+
         return {
-            query_type: String(document.getElementById('qQueryType').value || '').trim(),
-            pattern: String(document.getElementById('qPattern').value || '').trim(),
-            target_table_field: String(document.getElementById('qTargetTableField').value || '').trim() || null,
+            query_type: storedType,
+            pattern: pattern || '',
+            target_table_field: targetTableField,
             description: String(document.getElementById('qDescription').value || '').trim() || null,
             display_order: parseInt(document.getElementById('qDisplayOrder').value || '100', 10),
             is_active: !!document.getElementById('qIsActive').checked,
@@ -374,8 +520,8 @@ hr {
                 if (!res.ok) throw new Error('Failed to load queries: ' + res.status);
                 return res.json();
             })
-            .then(function (queries) {
-                renderQueryList(queries, selectedClassName);
+            .then(function (data) {
+                renderQueryList(data.queries || [], selectedClassName);
             })
             .catch(function (err) {
                 queryListContainer.innerHTML =
@@ -550,6 +696,7 @@ hr {
             .then(function (saved) {
                 loadRowIntoForm(saved);
                 setStatus('Saved ' + (saved.label || saved.sys_class_name || ('ID ' + saved.id)) + '.', false);
+                loadInstanceTypeOptions(); // refresh dropdown to remove newly added
                 return dt.refresh();
             })
             .catch(function (err) {
@@ -618,6 +765,8 @@ hr {
     });
 
     /* ── Init ───────────────────────────────────────── */
+
+    loadInstanceTypeOptions();
 
     dt.init()
         .then(function () {

@@ -8,7 +8,7 @@ from sqlmodel import select
 
 from .models import (
     GlobalApp, AppFileClass, NumberSequence, BestPractice, BestPracticeCategory,
-    AppFileClassQuery, AssessmentTypeConfig, ScanKindConfig,
+    AppFileClassQuery, AssessmentTypeConfig,
 )
 from .app_file_class_catalog import app_file_class_seed_rows
 
@@ -817,56 +817,6 @@ def seed_assessment_type_configs(session: Session):
     print(f"Seeded {len(configs)} assessment type configs")
 
 
-def seed_scan_kind_configs(session: Session):
-    """Seed the ScanKindConfig table from scan_rules.yaml scan_kinds.
-
-    Idempotent — skips rows where name already exists.
-    """
-
-    kinds = [
-        {
-            "name": "metadata_index",
-            "target_table": "sys_metadata",
-            "description": "Base index of config records in scope",
-            "display_order": 10,
-        },
-        {
-            "name": "update_xml",
-            "target_table": "sys_update_xml",
-            "description": "Customer update XML records matching app/table",
-            "display_order": 20,
-        },
-        {
-            "name": "metadata_customization",
-            "target_table": "sys_metadata_customization",
-            "description": "OOTB customization signals",
-            "display_order": 30,
-        },
-        {
-            "name": "version_history",
-            "target_table": "sys_update_version",
-            "description": "Version history for origin classification",
-            "display_order": 40,
-        },
-        {
-            "name": "artifact_detail",
-            "target_table": "varies",
-            "description": "Optional per-table detail fetch",
-            "display_order": 50,
-        },
-    ]
-
-    for kind_data in kinds:
-        existing = session.query(ScanKindConfig).filter(
-            ScanKindConfig.name == kind_data["name"]
-        ).first()
-        if not existing:
-            session.add(ScanKindConfig(**kind_data))
-
-    session.commit()
-    print(f"Seeded {len(kinds)} scan kind configs")
-
-
 def run_seed():
     """Run all seed operations"""
     with Session(engine) as session:
@@ -877,7 +827,6 @@ def run_seed():
         seed_best_practices(session)
         seed_app_file_class_queries(session)
         seed_assessment_type_configs(session)
-        seed_scan_kind_configs(session)
         print("Seed complete!")
 
 

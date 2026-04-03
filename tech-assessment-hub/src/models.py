@@ -433,24 +433,6 @@ class AssessmentTypeConfig(SQLModel, table=True):
     display_order: int = 0
 
 
-# ============================================
-# TABLE: ScanKindConfig (Scan kind definitions)
-# ============================================
-
-class ScanKindConfig(SQLModel, table=True):
-    """Configuration for each scan kind (metadata_index, update_xml, etc.).
-
-    Replaces the ``scan_kinds`` section of scan_rules.yaml.
-    """
-    __tablename__ = "scan_kind_config"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    name: str = Field(unique=True, index=True)  # metadata_index, update_xml, etc.
-    target_table: str  # sys_metadata, sys_update_xml, etc.
-    description: Optional[str] = None
-    is_active: bool = True
-    display_order: int = 0
-
 
 # ============================================
 # TABLE: InstanceAppFileType (sys_app_file_type cached)

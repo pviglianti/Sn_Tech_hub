@@ -167,10 +167,10 @@
         document.getElementById('atName').disabled = true;
         document.getElementById('atLabel').value = row.label || '';
         document.getElementById('atDescription').value = row.description || '';
-        document.getElementById('atRequiredFields').value = jsonArrayToLines(row.required_fields);
-        document.getElementById('atDefaultScans').value = jsonArrayToLines(row.default_scans);
-        document.getElementById('atScopeOptions').value = jsonArrayToLines(row.scope_options);
-        document.getElementById('atDrivers').value = jsonArrayToLines(row.drivers);
+        document.getElementById('atRequiredFields').value = jsonArrayToLines(row.required_fields_json);
+        document.getElementById('atDefaultScans').value = jsonArrayToLines(row.default_scans_json);
+        document.getElementById('atScopeOptions').value = jsonArrayToLines(row.scope_options_json);
+        document.getElementById('atDrivers').value = jsonArrayToLines(row.drivers_json);
         document.getElementById('atDisplayOrder').value = (row.display_order != null) ? row.display_order : 0;
         document.getElementById('atIsActive').checked = !!row.is_active;
         editorTitle.textContent = 'Edit: ' + (row.name || row.id);
@@ -184,10 +184,10 @@
             name: String(document.getElementById('atName').value || '').trim(),
             label: String(document.getElementById('atLabel').value || '').trim(),
             description: String(document.getElementById('atDescription').value || '').trim() || null,
-            required_fields: linesToJsonArray(document.getElementById('atRequiredFields').value),
-            default_scans: linesToJsonArray(document.getElementById('atDefaultScans').value),
-            scope_options: linesToJsonArray(document.getElementById('atScopeOptions').value),
-            drivers: linesToJsonArray(document.getElementById('atDrivers').value),
+            required_fields_json: JSON.stringify(linesToJsonArray(document.getElementById('atRequiredFields').value)),
+            default_scans_json: JSON.stringify(linesToJsonArray(document.getElementById('atDefaultScans').value)),
+            scope_options_json: JSON.stringify(linesToJsonArray(document.getElementById('atScopeOptions').value)),
+            drivers_json: JSON.stringify(linesToJsonArray(document.getElementById('atDrivers').value)),
             display_order: parseInt(document.getElementById('atDisplayOrder').value || '0', 10) || 0,
             is_active: !!document.getElementById('atIsActive').checked,
         };

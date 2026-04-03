@@ -32,7 +32,3 @@ async def admin_assessment_types_page(request: Request):
     return templates.TemplateResponse("admin_assessment_types.html", {"request": request})
 
 
-@scan_config_admin_router.get("/admin/scan-config/scan-kinds", response_class=HTMLResponse)
-async def admin_scan_kinds_page(request: Request):
-    """Scan Kinds admin page."""
-    return templates.TemplateResponse("admin_scan_kinds.html", {"request": request})
