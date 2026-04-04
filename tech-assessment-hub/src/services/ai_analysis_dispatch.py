@@ -104,6 +104,21 @@ Use `update_scan_result`:
     ]
   }
 
+## Context from other artifacts (use when needed)
+
+You are processing artifacts one at a time. If you need context about what
+other customized artifacts exist in this assessment — their scope decisions,
+what tables they sit on, patterns already identified — use `get_customizations`
+to see the full list with their current scope flags and observations.
+
+**Do NOT call this for every artifact.** Most scope decisions are straightforward
+(a business rule on the target table is obviously in scope). Only look when:
+- You are unsure about scope and need to see if similar artifacts were marked
+  in/out/adjacent
+- The artifact references something and you need to check if that something
+  is also a customized scan result in this assessment
+- You need to identify related artifact IDs for `directly_related_result_ids`
+
 Rules:
 - The assessment's target application/tables are the scope anchor.
 - Never set disposition — that is a human decision.

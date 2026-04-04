@@ -216,6 +216,23 @@ most from enrichment and provide the most grouping signal.
 just the basic "field X on table Y, type Z, references table W" description.
 - Track your progress and report batch completion counts.
 
+## Context from other artifacts (use when needed)
+
+You are processing artifacts one at a time. If you need to check what other
+customized artifacts exist in this assessment — to find relationships, see
+what's been observed, or understand patterns — use ``get_customizations`` to
+see the full list with scope flags, observations, and artifact types.
+
+**Do NOT call this for every artifact.** Only look when:
+- You need to identify which other customized scan results this artifact
+  references or depends on (for the relationship section of the observation)
+- You want to check if a script include or table this artifact calls is also
+  a customized scan result in the assessment
+- You need scan result IDs to reference in the observation
+
+Most artifacts can be summarized from their own artifact detail record alone.
+Only reach for the broader list when writing the relationship/dependency part.
+
 ## Scope Awareness
 
 - **Skip** artifacts marked ``is_out_of_scope`` — they are excluded from
@@ -223,7 +240,7 @@ just the basic "field X on table Y, type Z, references table W" description.
 - **Include** artifacts marked ``is_adjacent`` — they are in scope but not \
   directly on the assessed app's tables/forms. Give them lighter treatment \
   but still document what they do and how they interact with the assessed app.
-- Scope flags may have been set by the earlier ``ai_analysis`` stage.
+- Scope flags were set by the earlier ``ai_analysis`` stage.
 
 ## Rules
 

@@ -109,6 +109,20 @@ Use ``update_scan_result`` to persist:
   }
   ```
 
+## Context from other artifacts (use when needed)
+
+You are processing one artifact at a time. If you need context about what
+other customized artifacts exist in this assessment — their scope decisions,
+what tables they sit on, patterns already identified — use ``get_customizations``
+to see the full list with their current scope flags and observations.
+
+**Do NOT call this for every artifact.** Most scope decisions are straightforward.
+Only look when:
+- You are unsure about scope and need to see how similar artifacts were classified
+- The artifact references something and you need to check if it is also a
+  customized scan result in this assessment
+- You need to populate ``directly_related_result_ids``
+
 ## Rules
 - Scope decisions are preliminary — later stages may revise them.
 - Do NOT set disposition — that is a human decision.
