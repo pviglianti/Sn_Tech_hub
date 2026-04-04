@@ -88,29 +88,72 @@ or ``review_in_progress``:
 1. **Read the existing observation** — check ``observations`` text and \
 ``ai_observations`` JSON for context.
 
-2. **Enrich the functional description** if the baseline is generic or missing \
-detail:
-   - **Scriptable artifacts** (Business Rule, Script Include, Client Script, \
-UI Action, ACL): Read the code snippet (``code_body`` or ``meta_code_body``) \
-and describe the behavior concretely — what fields does it set? What tables \
-does it query or write to? What conditions trigger it? What GlideRecord \
-queries does it run and with what encodedQuery / ref qualifiers?
-   - **Fields** (dictionary entries): What table is this field on? What type \
-is it (reference, choice, string, etc.)? If it's a reference field, what table \
-does it reference and with what reference qualifier?
-   - **UI Policies / Client Scripts**: What fields do they show/hide/make \
-mandatory? What form conditions trigger them?
-   - **Check structural relationships** — parent/child signals indicate direct \
-dependencies (UI Policy → UI Policy Actions, etc.)
+2. **Read the artifact detail record** by calling ``get_result_detail`` with \
+the result_id. The response includes an ``artifact_detail`` field — this is \
+the actual ServiceNow configuration record with the field settings, code, \
+conditions, and configuration that tell you exactly what this artifact does. \
+Use this to write a concrete functional summary:
+   - **Business Rules** (sys_script): Read the artifact detail for the script, \
+when it fires (before/after/async), what operations trigger it (insert/update/ \
+delete), the order, conditions, filter conditions, and what table (collection). \
+Describe what the script does in functional terms.
+   - **Script Includes** (sys_script_include): Read the class code, what \
+methods it exposes, what tables it queries, what it returns.
+   - **Client Scripts** (sys_script_client): What form behavior it controls, \
+what fields it manipulates, what conditions trigger it.
+   - **UI Policies** (sys_ui_policy): What fields it shows/hides/makes \
+mandatory, what conditions trigger it, whether reverse_if_false is set.
+   - **Dictionary Entries** (sys_dictionary): What table, what field, what \
+type (reference, choice, string), if reference what table it points to.
+   - **ACLs** (sys_security_acl): What access it controls, what conditions, \
+what roles are required.
+   - **UI Actions** (sys_ui_action): What the button/link does when clicked.
+   - **Notifications** (sysevent_email_action): What triggers it, who receives it.
+   - **Scheduled Jobs** (sysauto_script): What it does and how often.
 
-3. **Call out connections to other customized artifacts**: This is critical for \
-grouping. If this artifact calls, references, queries, or is called by another \
-customized scan result in this assessment, name it explicitly. These connections \
-are definitive grouping signals:
-   - A business rule that calls a custom script include → name it
-   - A client script that references a custom field → name it
-   - An ACL that checks a custom role → name it
-   - A scheduled job that queries an in-scope table → note the table
+   Your observation should read like a knowledgeable ServiceNow developer \
+explaining what this artifact does. Example observations:
+
+   - "This on-insert business rule on incident (order 200, before) appends \
+the caller's department name to the short_description field when category \
+is 'network'. Condition: category=network AND caller_id is not empty."
+   - "This UI policy on the incident form makes business_service mandatory \
+and visible when priority is 1-Critical. Reverse if false is enabled, so \
+the field returns to optional when priority changes."
+   - "This script include exposes the class IncidentEscalation with methods \
+escalateToManager() and notifyOnCall(). It queries sys_user_grmember to \
+find the on-call rotation and creates notification events via \
+gs.eventQueue('incident.escalated')."
+   - "This dictionary entry adds a custom reference field u_parent_incident \
+to the incident table, referencing incident itself (self-referential). \
+Max length 32, not mandatory. Used for parent-child incident linking."
+
+3. **Call out relationships to other customized artifacts**: This is critical \
+for grouping. Not every field or table a script touches matters here — what \
+matters is when this artifact references, calls, or depends on ANOTHER \
+customized scan result that is in scope for this assessment (customer-created \
+or OOTB-modified). Those are the relationships that inform feature grouping.
+
+   For example: a business rule's script may call `current.setValue('state', 2)` \
+— that is just setting a field, not a relationship to another customized artifact. \
+But if that same script does `new IncidentRoutingHelper()` and IncidentRoutingHelper \
+is a customized script include that is also a scan result in this assessment — THAT \
+is a relationship worth noting. Similarly, if a dictionary entry has a reference \
+field type pointing to a table where other customized artifacts live, that is a \
+dependency between customized records.
+
+   What to look for:
+   - A business rule that calls a custom script include (also a scan result) → name it
+   - A client script that references a custom field (also a scan result) → name it
+   - A dictionary entry with a reference field pointing to a table with other \
+     customized artifacts → note the dependency
+   - A UI policy that controls fields added by customized dictionary entries → note it
+   - Any artifact whose behavior depends on or feeds into another customized \
+     scan result in this assessment
+
+   These cross-artifact dependencies between customized results are what drive \
+feature grouping — they tell us which artifacts work together as part of a \
+solution. Include them in the observation alongside what the artifact does.
 
 4. **Update the observation** using ``update_scan_result`` with the \
 ``observations`` field. Keep ``review_status`` as ``review_in_progress``.
@@ -119,19 +162,24 @@ are definitive grouping signals:
 
 Observations evolve across pipeline iterations:
 
-**Early passes (basic):** "This business rule fires on incident insert when \
-priority is 1. It queries cmdb_ci_service and sets assignment_group."
+**Early passes (basic):** "This before-update business rule on incident \
+(order 200) sets assignment_group based on category. Condition: category \
+changes."
 
-**Later passes (with feature context):** "This business rule fires on incident \
-insert when priority is critical. It calls the custom script include \
-'IncidentRoutingHelper' (also in this assessment) to determine the escalation \
-group based on the affected CI's support group. Part of the Critical Incident \
-Routing feature along with the UI policy 'Critical Incident Fields' and the \
-client script 'Priority Escalation Warning'."
+**Enriched (with artifact detail + relationships):** "This before-update \
+business rule on incident (order 200) fires when category changes. It calls \
+the customized script include 'IncidentRoutingHelper' (scan result ID 3045, \
+also in this assessment) to look up the category-to-group mapping, then sets \
+assignment_group to the returned value. The script also references the \
+customized dictionary entry 'u_escalation_tier' (scan result ID 3102) on \
+the incident table. Related to the UI policy 'Critical Incident Fields' \
+(scan result ID 3078) which controls visibility of the same escalation \
+fields on the form."
 
-When enriching, build on what's already there. If an observation already has \
-good functional detail, add relationship context. If it already has relationship \
-context, verify accuracy and add any missing connections.
+When enriching, build on what's already there. The key additions are:
+- Concrete details from the artifact detail record (order, when, conditions)
+- Relationships to OTHER customized scan results in the assessment
+- What the code actually does in functional terms (not code reproduction)
 
 ## What NOT to Include
 
