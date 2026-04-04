@@ -26,6 +26,7 @@ from .llm.dispatcher_router import ResolvedConfig
 from ..mcp.bridge.config_store import load_bridge_config
 from ..mcp.registry import PROMPT_REGISTRY
 from .query_builder import parse_list, resolve_assessment_drivers
+from .ai_observation_history import load_ai_observation_payload, merge_ai_observation_payload
 
 _MCP_SERVER_ID = "tech_assessment_hub"
 _MCP_TOOL_PREFIX = "mcp__tech-assessment-hub__"
@@ -43,6 +44,23 @@ detail record (the actual ServiceNow configuration record). Use `get_result_deta
 to retrieve both — the artifact detail is in the `artifact_detail` field and
 contains the script, conditions, field settings, and configuration you need to
 make an informed scope decision.
+
+## Multi-Pass Awareness
+
+This stage may run multiple times across the assessment lifecycle. When you
+read an artifact via `get_result_detail`:
+
+- **If observations, scope flags, or ai_observations are EMPTY** — this is a
+  first pass. Do your initial scope triage from scratch.
+- **If observations or scope flags already exist** — this is a refinement pass.
+  Read what was written in prior passes. Your job is now to VERIFY and REFINE:
+  - Is the scope decision still correct given what you now know?
+  - Did later passes uncover relationships that change how this artifact should
+    be classified? (e.g., an artifact marked out_of_scope that actually references
+    an in-scope table discovered during observation enrichment)
+  - Tighten the scope rationale if needed.
+  - Do NOT discard prior work — build on it. If the existing classification
+    looks correct, leave it and move on quickly.
 
 ## Your Primary Goal: Scope Triage
 
@@ -497,15 +515,7 @@ def _merge_ai_trace(
     total_batches: int,
     registered_prompt_name: Optional[str],
 ) -> None:
-    existing: Dict[str, Any] = {}
-    if row.ai_observations:
-        try:
-            loaded = json.loads(row.ai_observations)
-            if isinstance(loaded, dict):
-                existing = loaded
-        except Exception:
-            existing = {"raw_ai_observations": row.ai_observations}
-
+    existing = load_ai_observation_payload(row.ai_observations)
     existing.setdefault("analysis_stage", "ai_analysis")
     existing["dispatch_trace"] = {
         "provider_kind": resolved.provider_kind,
@@ -516,7 +526,10 @@ def _merge_ai_trace(
         "registered_prompt": registered_prompt_name,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    row.ai_observations = json.dumps(existing, sort_keys=True)
+    row.ai_observations = json.dumps(
+        merge_ai_observation_payload(row.ai_observations, existing),
+        sort_keys=True,
+    )
 
 
 def run_ai_analysis_dispatch(

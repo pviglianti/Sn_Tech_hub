@@ -123,6 +123,16 @@ Only look when:
   customized scan result in this assessment
 - You need to populate ``directly_related_result_ids``
 
+## Multi-Pass Awareness
+
+This stage may run multiple times. When you read an artifact:
+
+- **If observations and scope flags are empty** — first pass. Triage from scratch.
+- **If observations or scope flags already exist** — refinement pass. Read what's
+  there. Verify the scope decision is still correct. If later exploration revealed
+  new relationships or context, update the classification. If it looks right,
+  leave it and move on. Do NOT discard prior work — refine it.
+
 ## Rules
 - Scope decisions are preliminary — later stages may revise them.
 - Do NOT set disposition — that is a human decision.

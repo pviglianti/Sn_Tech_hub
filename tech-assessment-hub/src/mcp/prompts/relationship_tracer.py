@@ -73,6 +73,20 @@ revision.  If relationship tracing reveals new context:
 - Do NOT set a final ``disposition`` — suggest one in observations text only.
   Disposition is confirmed by a human after all analysis is complete.
 
+## Multi-Pass Awareness
+
+Relationship tracing may run multiple times as the assessment progresses.
+
+- **First pass:** Observations and feature groupings may be sparse. Focus on
+  what the injected context tells you about structural and code relationships.
+- **Refinement passes:** Observations will be richer, features may already
+  exist, and scope flags will be set. Use this additional context to:
+  - Trace deeper relationships that weren't visible in earlier passes
+  - Validate existing feature boundaries — does the relationship map confirm
+    or contradict the current grouping?
+  - Identify cross-feature dependencies that may suggest features should merge
+  - Note any scope changes needed based on newly discovered connections
+
 ## Rules
 
 - Ground every statement in the injected context below — do NOT fabricate.

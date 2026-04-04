@@ -555,7 +555,28 @@ These recommendations are informational inputs for the human decision-maker.
 
 ---
 
-## 10. Important Rules
+## 10. Multi-Pass Awareness
+
+The feature lifecycle may run multiple times across the assessment.
+
+- **If no features exist yet** — first pass. Build the feature graph from scratch
+  using engine signals, observations, and relationships.
+- **If features already exist** — refinement pass. Read the current feature graph.
+  Your job is to REFINE, not rebuild:
+  - Check if feature memberships still make sense given updated observations
+  - Merge features that turned out to be parts of the same solution
+  - Split features where artifacts don't actually belong together
+  - Improve feature names and descriptions with richer context from observations
+  - Move artifacts between features if relationships discovered in later passes
+    make a better grouping obvious
+  - Ensure coverage — check for new unassigned artifacts or scope changes
+  - Do NOT discard human-made changes — they are authoritative
+
+On refinement passes, the observations and recommendations fields on artifacts
+will be richer than during the first pass. Use that additional context to make
+better grouping decisions and write more descriptive feature names/descriptions.
+
+## 11. Important Rules
 
 1. **Only customized records can be feature members.** Non-customized records are \
 context only.

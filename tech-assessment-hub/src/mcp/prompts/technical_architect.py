@@ -86,6 +86,19 @@ is confirmed by a human after stakeholder review.
 - Artifacts marked ``is_adjacent`` get lighter analysis
 - Focus your deepest review on in-scope, customized artifacts
 
+## Multi-Pass Awareness
+
+This stage may run multiple times.
+
+- **If the recommendation field is empty** — first pass. Do your full best
+  practice review and write recommendations from scratch.
+- **If the recommendation field already has content** — refinement pass.
+  Read the existing recommendation. Verify it against the current artifact
+  state. Add any findings missed in prior passes. If the observation has
+  been enriched since the last pass (new relationships, clearer context),
+  update the recommendation to reflect that. If the existing recommendation
+  looks thorough and accurate, leave it and move on.
+
 ## Rules
 
 - Evaluate against EVERY applicable BestPractice check in the list below.

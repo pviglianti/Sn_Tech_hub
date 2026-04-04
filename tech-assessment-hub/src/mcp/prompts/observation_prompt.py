@@ -51,6 +51,17 @@ customizations are form-level changes that may have OOTB replacements").
 tool (or upsert approach) — overwrite the baseline description with your \
 enriched version. Preserve the category as ``landscape_summary``.
 
+## Multi-Pass Awareness
+
+The landscape summary may be rewritten across multiple passes.
+
+- **If the landscape summary is just a baseline** — first pass. Write the
+  enriched summary from scratch based on your analysis.
+- **If it already has a detailed summary** — refinement pass. Read it,
+  verify the numbers and patterns are still accurate, and update with
+  any new insights from more detailed artifact observations or feature
+  grouping that has happened since the last pass.
+
 ## Rules
 
 - Keep the summary concise — 3 to 6 sentences max.
@@ -157,6 +168,23 @@ solution. Include them in the observation alongside what the artifact does.
 
 4. **Update the observation** using ``update_scan_result`` with the \
 ``observations`` field. Keep ``review_status`` as ``review_in_progress``.
+
+## Multi-Pass Awareness
+
+This stage may run multiple times across the assessment lifecycle.
+
+- **If the observation is empty or just a baseline** — first pass. Write the
+  initial functional summary from the artifact detail record. Describe what it
+  does, when it fires, what conditions, what fields, what code does.
+- **If the observation already has a functional summary** — refinement pass.
+  Read what's there. Your job is now to:
+  - Polish or correct the existing summary if needed
+  - Add relationships to other customized artifacts discovered since the last pass
+  - Note feature connections if grouping has happened ("Part of the Incident
+    Auto-Routing feature along with script include X and UI policy Y")
+  - Tighten the description as the bigger picture becomes clearer — maybe this
+    artifact is part of a larger solution that wasn't obvious in pass 1
+  - Do NOT discard prior work — build on it and refine it
 
 ## Observation Evolution
 
