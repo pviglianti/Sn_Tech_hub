@@ -1,19 +1,22 @@
 """MCP tool: get_result_detail — deep dive on a single scan result.
 
-Returns the full ScanResult including raw_data_json and related records
-(version history, update set, customer update XML). This is the "expensive"
-call — use sparingly after triaging with get_assessment_results.
+Returns the full ScanResult including raw_data_json, related records
+(version history, update set, customer update XML), and the matching
+artifact detail record (e.g., the actual business rule with script,
+conditions, and configuration).
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 import json
 
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from ...registry import ToolSpec
 from ....models import (
     ScanResult, Scan, Assessment, VersionHistory, CustomerUpdateXML, UpdateSet,
 )
+from ....artifact_detail_defs import ARTIFACT_DETAIL_DEFS
 
 
 INPUT_SCHEMA: Dict[str, Any] = {
@@ -116,20 +119,71 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
                     "sys_recorded_at": vh.sys_recorded_at.isoformat() if vh.sys_recorded_at else None,
                 })
 
+    # Artifact detail record (the actual business rule, script include, etc.)
+    artifact_detail = _get_artifact_detail(session, result)
+
     return {
         "success": True,
         "result": result_dict,
+        "artifact_detail": artifact_detail,
         "update_set": update_set_info,
         "customer_update_xml": update_xml_info,
         "version_history": version_history,
     }
 
 
+def _get_artifact_detail(
+    session: Session, result: ScanResult
+) -> Optional[Dict[str, Any]]:
+    """Look up the matching artifact detail record for this scan result.
+
+    Joins via sys_id to the appropriate asmt_* table (e.g., asmt_business_rule
+    for sys_script). Returns all columns as a dict, or None if no match.
+    """
+    table_name = result.table_name
+    if not table_name:
+        return None
+
+    defn = ARTIFACT_DETAIL_DEFS.get(table_name)
+    if not defn:
+        return None
+
+    local_table = defn["local_table"]
+    sys_id = result.sys_id
+    if not sys_id:
+        return None
+
+    try:
+        row = session.exec(
+            text(f"SELECT * FROM {local_table} WHERE sys_id = :sid LIMIT 1")
+            .bindparams(sid=sys_id)
+        ).first()
+        if not row:
+            return None
+
+        # Convert row to dict — row is a Row/RowMapping
+        if hasattr(row, "_mapping"):
+            return dict(row._mapping)
+        if hasattr(row, "_asdict"):
+            return row._asdict()
+        # Fallback: use column names from the definition
+        columns = ["_row_id", "_instance_id", "sys_id"] + [
+            f[0] for f in defn["fields"]
+        ]
+        if isinstance(row, tuple):
+            return dict(zip(columns[:len(row)], row))
+        return None
+    except Exception:
+        return None
+
+
 TOOL_SPEC = ToolSpec(
     name="get_result_detail",
     description=(
-        "Get full details for a single scan result including raw ServiceNow data "
-        "and related records (version history, update set, customer update XML). "
+        "Get full details for a single scan result including the matching artifact "
+        "detail record (e.g., business rule script/conditions, UI policy actions, "
+        "script include code), raw ServiceNow data, and related records (version "
+        "history, update set, customer update XML). "
         "This is token-expensive — use after triaging with get_assessment_results."
     ),
     input_schema=INPUT_SCHEMA,

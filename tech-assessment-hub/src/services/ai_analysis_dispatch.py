@@ -8,11 +8,13 @@ relationship-aware observations through ``update_scan_result``.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from sqlmodel import Session
@@ -31,28 +33,67 @@ _DEFAULT_HOST = (os.getenv("TECH_ASSESSMENT_HUB_HOST") or "127.0.0.1").strip()
 _DEFAULT_PORT = int((os.getenv("TECH_ASSESSMENT_HUB_PORT") or "8080").strip())
 
 _AI_ANALYSIS_FALLBACK_GUIDANCE = """\
-You are running the first true AI review pass after preflight/data collection.
+You are running the AI analysis stage of a ServiceNow technical assessment.
+You are looking at each customized artifact (each customized scan result) one
+at a time. For each artifact, you also have access to its related artifact
+detail record — this is the actual ServiceNow configuration record with the
+best details for summarizing what the artifact does.
 
-For the single artifact in this dispatch, work in this order:
-1. Read the artifact with `get_result_detail`.
-2. Decide whether it is `in_scope`, `adjacent`, `out_of_scope`, or `needs_review`
-   relative to the assessment target application and tables.
-3. Write a concrete functional observation in plain language:
-   what triggers it, what tables/fields it reads or writes, what records it
-   creates or updates, what conditions matter, and what downstream behavior it causes.
-4. Only after the observation is grounded, identify other customized artifacts in
-   this same assessment that are directly related to this artifact's behavior.
-   Use `get_customizations` and follow up with `get_result_detail` as needed.
-5. If you need extra product context about the target application itself, you may
-   use `search_servicenow_docs` and `fetch_web_document` to confirm ServiceNow
-   product terminology or capabilities. Treat that as supplemental context only.
+For each artifact, follow these steps:
 
-Persist your findings with `update_scan_result` using:
+## Step 1: Read the artifact
+Call `get_result_detail` with the artifact's result_id. This returns:
+- The scan result metadata (name, table, origin, scope flags)
+- The `artifact_detail` — the actual configuration record (e.g., a business
+  rule's script, conditions, when it fires, what table, order, etc.)
+
+## Step 2: Determine scope
+Check whether this artifact is related to the assessment's target tables.
+
+**In scope:** The artifact directly relates to the target tables/application.
+
+**Out of scope:** The artifact does not relate to the target tables at all.
+The scan picks up some results that are not applicable. If it does not
+actually relate to the target tables or touch anything related to them,
+mark it out of scope (`is_out_of_scope=true`) with a brief reason.
+
+**Adjacent:** The artifact is NOT directly on the in-scope tables but DOES
+have a connection to them. For example:
+- A business rule on `change_request` has script that references the `incident`
+  table (when incident is in scope)
+- A dictionary entry on another table has a reference field type pointing to
+  an in-scope table
+- A script include that queries or writes to in-scope tables
+Adjacent artifacts are still in scope but sit outside the direct target tables.
+Mark `is_adjacent=true`.
+
+## Step 3: Summarize what it does
+Look at the artifact detail record to understand what this artifact actually
+does. Read the field settings, code, conditions — everything available to you.
+Write a concrete functional observation.
+
+Example observations:
+- "This on-insert business rule on incident (order 200, before) appends the
+  caller's department name to the short_description field when category is
+  'network'. Condition: category=network AND caller_id is not empty."
+- "This UI policy on the incident form makes business_service mandatory when
+  priority is 1-Critical. Reverse if false is enabled."
+- "This script include exposes IncidentUtils with methods getActiveCount()
+  and autoAssign(). It queries incident and sys_user_grmember tables."
+
+## Step 4: Identify related artifacts
+Use `get_customizations` to see other customized artifacts in this assessment.
+Identify any that are directly related to this artifact's behavior — script
+includes it calls, business rules on the same table, UI policies that control
+the same fields. Record their IDs in `directly_related_result_ids`.
+
+## Step 5: Persist findings
+Use `update_scan_result` to write back:
 - `review_status="review_in_progress"`
-- `observations`
-- `is_adjacent`
-- `is_out_of_scope`
-- `ai_observations` as a JSON object with this schema:
+- `observations` — your functional summary
+- `is_out_of_scope` — true if out of scope
+- `is_adjacent` — true if adjacent
+- `ai_observations` — JSON object:
   {
     "analysis_stage": "ai_analysis",
     "scope_decision": "in_scope|adjacent|out_of_scope|needs_review",
@@ -64,15 +105,11 @@ Persist your findings with `update_scan_result` using:
   }
 
 Rules:
-- Engine signals and existing metadata are hints, not the source of truth.
-- The assessment's configured target application/tables are the formal scope anchor.
-- Never set final disposition, severity, or category in this stage.
-- Out-of-scope artifacts still need a brief observation explaining why they are out.
+- The assessment's configured target application/tables are the scope anchor.
+- Never set final disposition — that is a human decision made later.
+- Out-of-scope artifacts still need a brief observation explaining why.
 - Adjacent artifacts remain in scope and may be grouped with direct artifacts.
-- Reserve `adjacent` for artifacts that sit outside the direct target tables/forms
-  but still support them. Tableless artifacts such as script includes are not
-  adjacent by default; judge them as `in_scope` or `out_of_scope` based on behavior.
-- Use actual customized artifact IDs when writing `directly_related_result_ids`.
+- Use actual customized artifact IDs in `directly_related_result_ids`.
 """
 
 
@@ -228,6 +265,17 @@ def _resolve_rpc_url(session: Session) -> str:
     management_base = str(bridge_cfg.get("management_base_url") or "").strip().rstrip("/")
     if management_base:
         return f"{management_base}/mcp"
+
+    # Read the actual running server URL from data/server.url (written by
+    # daemon_start.py).  The server auto-selects a free port, so the default
+    # 8080 may not match the real port.
+    _url_file = Path(__file__).resolve().parents[2] / "data" / "server.url"
+    try:
+        live_url = _url_file.read_text().strip().rstrip("/")
+        if live_url:
+            return f"{live_url}/mcp"
+    except (OSError, ValueError):
+        pass
 
     return f"http://{_DEFAULT_HOST}:{_DEFAULT_PORT}/mcp"
 
