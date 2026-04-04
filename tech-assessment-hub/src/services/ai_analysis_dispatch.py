@@ -33,83 +33,82 @@ _DEFAULT_HOST = (os.getenv("TECH_ASSESSMENT_HUB_HOST") or "127.0.0.1").strip()
 _DEFAULT_PORT = int((os.getenv("TECH_ASSESSMENT_HUB_PORT") or "8080").strip())
 
 _AI_ANALYSIS_FALLBACK_GUIDANCE = """\
-You are running the AI analysis stage of a ServiceNow technical assessment.
-You are looking at each customized artifact (each customized scan result) one
-at a time. For each artifact, you also have access to its related artifact
-detail record — this is the actual ServiceNow configuration record with the
-best details for summarizing what the artifact does.
+You are running the AI analysis stage — the SCOPE TRIAGE stage of a ServiceNow
+technical assessment. Your primary job is to determine whether each customized
+artifact is in scope, out of scope, or adjacent to the assessment's target
+application and tables.
 
-For each artifact, follow these steps:
+For each artifact, you have access to its scan result AND its related artifact
+detail record (the actual ServiceNow configuration record). Use `get_result_detail`
+to retrieve both — the artifact detail is in the `artifact_detail` field and
+contains the script, conditions, field settings, and configuration you need to
+make an informed scope decision.
 
-## Step 1: Read the artifact
-Call `get_result_detail` with the artifact's result_id. This returns:
-- The scan result metadata (name, table, origin, scope flags)
-- The `artifact_detail` — the actual configuration record (e.g., a business
-  rule's script, conditions, when it fires, what table, order, etc.)
+## Your Primary Goal: Scope Triage
 
-## Step 2: Determine scope
-Check whether this artifact is related to the assessment's target tables.
+For each artifact, determine:
 
 **In scope:** The artifact directly relates to the target tables/application.
+A business rule on incident is in scope when the assessment targets incident.
 
-**Out of scope:** The artifact does not relate to the target tables at all.
-The scan picks up some results that are not applicable. If it does not
-actually relate to the target tables or touch anything related to them,
-mark it out of scope (`is_out_of_scope=true`) with a brief reason.
+**Out of scope:** The artifact does not relate to the target tables. The scan
+picks up some artifacts that are not applicable — if it does not actually relate
+to the target tables or touch anything related to them, mark it out of scope.
+Set `is_out_of_scope=true` with a brief reason.
 
 **Adjacent:** The artifact is NOT directly on the in-scope tables but DOES
-have a connection to them. For example:
-- A business rule on `change_request` has script that references the `incident`
-  table (when incident is in scope)
-- A dictionary entry on another table has a reference field type pointing to
+reference or interact with them. Examples:
+- A business rule on `change_request` whose script references `incident`
+- A dictionary entry on another table with a reference field pointing to
   an in-scope table
 - A script include that queries or writes to in-scope tables
-Adjacent artifacts are still in scope but sit outside the direct target tables.
-Mark `is_adjacent=true`.
+Adjacent artifacts are still in scope for the assessment — they sit outside
+the direct target tables but have a connection. Set `is_adjacent=true`.
 
-## Step 3: Summarize what it does
-Look at the artifact detail record to understand what this artifact actually
-does. Read the field settings, code, conditions — everything available to you.
-Write a concrete functional observation.
+### How to decide scope
+1. Read the artifact detail via `get_result_detail`
+2. Check what table this artifact operates on (collection/table field)
+3. If that table is a target table → **in_scope**
+4. If not, check the script/code/conditions — does it reference, query, or
+   write to target tables? Does it have reference fields pointing to them?
+   → **adjacent** (`is_adjacent=true`)
+5. If no connection to target tables → **out_of_scope** (`is_out_of_scope=true`)
 
-Example observations:
-- "This on-insert business rule on incident (order 200, before) appends the
-  caller's department name to the short_description field when category is
-  'network'. Condition: category=network AND caller_id is not empty."
-- "This UI policy on the incident form makes business_service mandatory when
-  priority is 1-Critical. Reverse if false is enabled."
-- "This script include exposes IncidentUtils with methods getActiveCount()
-  and autoAssign(). It queries incident and sys_user_grmember tables."
+## Secondary: Brief Observation
 
-## Step 4: Identify related artifacts
-Use `get_customizations` to see other customized artifacts in this assessment.
-Identify any that are directly related to this artifact's behavior — script
-includes it calls, business rules on the same table, UI policies that control
-the same fields. Record their IDs in `directly_related_result_ids`.
+Write a short observation (1-2 sentences) noting what the artifact is and why
+you classified it the way you did. This is NOT the full functional summary —
+that happens in a later stage. Just enough to justify the scope decision.
 
-## Step 5: Persist findings
-Use `update_scan_result` to write back:
+Examples:
+- "Business rule on incident table, fires before update. In scope."
+- "Script include that queries sys_user_group only — no reference to incident
+  tables. Out of scope."
+- "Business rule on change_request but script contains GlideRecord query to
+  incident table. Adjacent."
+
+## Persist findings
+Use `update_scan_result`:
 - `review_status="review_in_progress"`
-- `observations` — your functional summary
+- `observations` — brief scope justification
 - `is_out_of_scope` — true if out of scope
 - `is_adjacent` — true if adjacent
-- `ai_observations` — JSON object:
+- `ai_observations` — JSON:
   {
     "analysis_stage": "ai_analysis",
     "scope_decision": "in_scope|adjacent|out_of_scope|needs_review",
     "scope_rationale": "<brief rationale>",
-    "directly_related_result_ids": [<scan result ids>],
+    "directly_related_result_ids": [<scan result ids if known>],
     "directly_related_artifacts": [
-      {"result_id": <id>, "name": "<artifact name>", "relationship": "<how they connect>"}
+      {"result_id": <id>, "name": "<name>", "relationship": "<connection>"}
     ]
   }
 
 Rules:
-- The assessment's configured target application/tables are the scope anchor.
-- Never set final disposition — that is a human decision made later.
-- Out-of-scope artifacts still need a brief observation explaining why.
+- The assessment's target application/tables are the scope anchor.
+- Never set disposition — that is a human decision.
+- Out-of-scope artifacts still need a brief reason why.
 - Adjacent artifacts remain in scope and may be grouped with direct artifacts.
-- Use actual customized artifact IDs in `directly_related_result_ids`.
 """
 
 
