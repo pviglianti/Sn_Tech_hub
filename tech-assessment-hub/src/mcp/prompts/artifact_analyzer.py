@@ -129,9 +129,10 @@ This stage may run multiple times. When you read an artifact:
 
 - **If observations and scope flags are empty** — first pass. Triage from scratch.
 - **If observations or scope flags already exist** — refinement pass. Read what's
-  there. Verify the scope decision is still correct. If later exploration revealed
-  new relationships or context, update the classification. If it looks right,
-  leave it and move on. Do NOT discard prior work — refine it.
+  there. If the scope decision looks correct, **leave it untouched and move on**.
+  Only update if you have a concrete reason — e.g., a new relationship discovered
+  that changes the classification. Never blank out or overwrite existing content
+  unless you are specifically correcting an error or adding to it.
 
 ## Rules
 - Scope decisions are preliminary — later stages may revise them.

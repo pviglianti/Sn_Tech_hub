@@ -86,6 +86,8 @@ Relationship tracing may run multiple times as the assessment progresses.
     or contradict the current grouping?
   - Identify cross-feature dependencies that may suggest features should merge
   - Note any scope changes needed based on newly discovered connections
+  - **If the existing relationship map looks accurate, leave it.** Only update
+    when you find something new or incorrect.
 
 ## Rules
 

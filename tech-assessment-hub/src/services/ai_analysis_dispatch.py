@@ -59,8 +59,10 @@ read an artifact via `get_result_detail`:
     be classified? (e.g., an artifact marked out_of_scope that actually references
     an in-scope table discovered during observation enrichment)
   - Tighten the scope rationale if needed.
-  - Do NOT discard prior work — build on it. If the existing classification
-    looks correct, leave it and move on quickly.
+  - **Do NOT overwrite existing values unless you are specifically correcting
+    something.** If the scope decision looks right, leave it untouched and
+    move on. Only update if you have a concrete reason to change it.
+  - Never blank out a field that already has content.
 
 ## Your Primary Goal: Scope Triage
 

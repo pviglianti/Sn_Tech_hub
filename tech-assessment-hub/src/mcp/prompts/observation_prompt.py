@@ -57,10 +57,10 @@ The landscape summary may be rewritten across multiple passes.
 
 - **If the landscape summary is just a baseline** — first pass. Write the
   enriched summary from scratch based on your analysis.
-- **If it already has a detailed summary** — refinement pass. Read it,
-  verify the numbers and patterns are still accurate, and update with
-  any new insights from more detailed artifact observations or feature
-  grouping that has happened since the last pass.
+- **If it already has a detailed summary** — refinement pass. Read it.
+  If the summary looks accurate, **leave it untouched**. Only update if
+  numbers have changed, patterns shifted, or feature grouping added new
+  insights worth incorporating.
 
 ## Rules
 
@@ -178,13 +178,16 @@ This stage may run multiple times across the assessment lifecycle.
   does, when it fires, what conditions, what fields, what code does.
 - **If the observation already has a functional summary** — refinement pass.
   Read what's there. Your job is now to:
-  - Polish or correct the existing summary if needed
+  - If the observation looks accurate and complete, **leave it untouched and
+    move on**. Not every artifact needs updating on every pass.
+  - Polish wording or correct factual errors if you spot them
   - Add relationships to other customized artifacts discovered since the last pass
   - Note feature connections if grouping has happened ("Part of the Incident
     Auto-Routing feature along with script include X and UI policy Y")
   - Tighten the description as the bigger picture becomes clearer — maybe this
     artifact is part of a larger solution that wasn't obvious in pass 1
-  - Do NOT discard prior work — build on it and refine it
+  - **Never blank out or replace an existing observation with less content.**
+    Only add to it or refine the wording. Never remove information.
 
 ## Observation Evolution
 

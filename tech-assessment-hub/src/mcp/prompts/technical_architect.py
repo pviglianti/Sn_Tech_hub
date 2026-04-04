@@ -93,11 +93,13 @@ This stage may run multiple times.
 - **If the recommendation field is empty** — first pass. Do your full best
   practice review and write recommendations from scratch.
 - **If the recommendation field already has content** — refinement pass.
-  Read the existing recommendation. Verify it against the current artifact
-  state. Add any findings missed in prior passes. If the observation has
-  been enriched since the last pass (new relationships, clearer context),
-  update the recommendation to reflect that. If the existing recommendation
-  looks thorough and accurate, leave it and move on.
+  Read the existing recommendation. If it looks thorough and accurate,
+  **leave it untouched and move on**. Only update if:
+  - You find a best practice violation that was missed
+  - The observation has been enriched with new context that changes the
+    recommendation
+  - The existing recommendation has a factual error
+  Never blank out or replace a recommendation with less content.
 
 ## Rules
 

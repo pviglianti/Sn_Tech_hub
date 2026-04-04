@@ -563,13 +563,19 @@ The feature lifecycle may run multiple times across the assessment.
   using engine signals, observations, and relationships.
 - **If features already exist** — refinement pass. Read the current feature graph.
   Your job is to REFINE, not rebuild:
+  - If features look well-structured and complete, **leave them alone** and
+    focus only on what needs attention
   - Check if feature memberships still make sense given updated observations
   - Merge features that turned out to be parts of the same solution
   - Split features where artifacts don't actually belong together
-  - Improve feature names and descriptions with richer context from observations
-  - Move artifacts between features if relationships discovered in later passes
-    make a better grouping obvious
+  - Polish feature names and descriptions as you see what the grouped
+    artifacts actually do and who they serve — names should get more
+    descriptive across passes
+  - Move artifacts between features only if relationships discovered in
+    later passes make a better grouping obvious
   - Ensure coverage — check for new unassigned artifacts or scope changes
+  - **Do NOT discard or rebuild what's already working.** Only touch what
+    needs refinement. Never delete a feature that has human edits.
   - Do NOT discard human-made changes — they are authoritative
 
 On refinement passes, the observations and recommendations fields on artifacts
