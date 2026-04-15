@@ -10,8 +10,17 @@ env/
 
 # Database
 data/*.db
+data/*.db-wal
+data/*.db-shm
 data/*.jsonl
 data/.encryption_key
+*.db
+*.db-wal
+*.db-shm
+snapshot_*.db
+assessment_*.db
+ta_hub.db
+test_debug.db
 
 # IDE
 .idea/

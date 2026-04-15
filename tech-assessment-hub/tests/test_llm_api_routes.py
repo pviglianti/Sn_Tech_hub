@@ -33,6 +33,29 @@ def test_get_provider_models(client: TestClient, db_session: Session):
     assert "claude-sonnet-4-6" in names
 
 
+def test_get_openai_provider_models_returns_curated_codex_list(
+    client: TestClient,
+    db_session: Session,
+):
+    seed_default_catalog(db_session)
+    providers = client.get("/api/llm/providers").json()
+    openai = next(p for p in providers if p["provider"]["provider_kind"] == "openai")
+
+    resp = client.get(f"/api/llm/providers/{openai['provider']['id']}/models")
+    assert resp.status_code == 200
+    models = resp.json()
+
+    assert [m["model_name"] for m in models] == [
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-5.2",
+        "gpt-5.1-codex-max",
+        "gpt-5.1-codex-mini",
+    ]
+
+
 def test_detect_clis(client: TestClient):
     with patch("src.services.llm.auth_manager.shutil.which", return_value=None):
         resp = client.get("/api/llm/detect-clis")

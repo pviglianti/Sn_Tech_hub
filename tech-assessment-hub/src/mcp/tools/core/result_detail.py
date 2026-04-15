@@ -115,7 +115,7 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
                     "id": vh.id,
                     "state": vh.state,
                     "source_table": vh.source_table,
-                    "source": vh.source,
+                    "source_display": vh.source_display,
                     "sys_recorded_at": vh.sys_recorded_at.isoformat() if vh.sys_recorded_at else None,
                 })
 

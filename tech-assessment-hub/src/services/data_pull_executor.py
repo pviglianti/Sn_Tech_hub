@@ -1148,6 +1148,11 @@ def _pull_app_file_types(
             app_file_type.last_refreshed_at = pulled_at
             app_file_type.sync_batch_id = batch_id
 
+            # Auto-provision AppFileClass + link when row is assessment-available
+            if app_file_type.is_available_for_assessment:
+                from .app_file_class_sync import ensure_app_file_class_for_instance_type
+                ensure_app_file_class_for_instance_type(session, app_file_type, commit=False)
+
             if is_new:
                 consecutive_unchanged = 0
             else:

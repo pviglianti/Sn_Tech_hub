@@ -14,6 +14,7 @@ from .models import LLMProvider, LLMAuthSlot
 from .claude_dispatcher import ClaudeDispatcher
 from .gemini_dispatcher import GeminiDispatcher
 from .codex_dispatcher import CodexDispatcher
+from .provider_catalog import sync_fetched_provider_models
 
 logger = logging.getLogger(__name__)
 
@@ -177,3 +178,43 @@ class AuthManager:
                 LLMAuthSlot.is_active == True,  # noqa: E712
             )
         ).first()
+
+    def refresh_provider_models(self, provider_id: int) -> list[dict[str, Any]]:
+        """Refresh legacy provider models from the provider API without changing runtime wiring."""
+        provider = self._session.get(LLMProvider, provider_id)
+        if not provider:
+            raise ValueError("Provider not found")
+
+        slot = self.get_active_auth(provider_id)
+        if not slot:
+            raise ValueError(f"No active auth configured for {provider.name}")
+
+        dispatcher_cls = _DISPATCHER_MAP.get(provider.provider_kind)
+        if not dispatcher_cls:
+            raise ValueError(f"No dispatcher for {provider.provider_kind}")
+
+        dispatcher = dispatcher_cls()
+        fetched_models = dispatcher.fetch_models(slot)
+        if not fetched_models:
+            raise RuntimeError(
+                f"{provider.name} did not return any refreshable models for this auth slot"
+            )
+
+        refreshed = sync_fetched_provider_models(
+            self._session,
+            provider,
+            fetched_models,
+        )
+        self._session.commit()
+        return [
+            {
+                "id": model.id,
+                "model_name": model.model_name,
+                "display_name": model.display_name,
+                "context_window": model.context_window,
+                "supports_effort": model.supports_effort,
+                "is_default": model.is_default,
+                "source": model.source,
+            }
+            for model in refreshed
+        ]

@@ -110,9 +110,11 @@ def create_db_and_tables():
         "app_file_class",
         "app_file_class_query",
         "assessment_type_config",
+        "assessment_type_file_class",
     ])
     _ensure_assessment_pipeline_defaults()
     _ensure_instance_app_file_type_defaults()
+    _backfill_instance_app_file_class_ids()
     _ensure_indexes()
     # Create / update per-class artifact detail tables from ARTIFACT_DETAIL_DEFS.
     from .services.artifact_ddl import ensure_artifact_tables
@@ -199,11 +201,15 @@ def _ensure_app_config_instance_scope() -> None:
         for idx in index_rows:
             idx_name = idx[1]
             is_unique = bool(idx[2])
+            is_partial = bool(idx[4]) if len(idx) > 4 else False
             if not is_unique:
                 continue
             idx_cols = conn.execute(text(f"PRAGMA index_info('{idx_name}')")).fetchall()
             col_names = [c[2] for c in idx_cols]
-            if col_names == ["key"]:
+            # Only treat a non-partial unique index on key as the legacy schema.
+            # The migrated schema intentionally keeps a partial unique index on key
+            # for global defaults where instance_id IS NULL.
+            if col_names == ["key"] and not is_partial:
                 has_legacy_unique_key = True
                 break
 
@@ -237,6 +243,27 @@ def _ensure_app_config_instance_scope() -> None:
         conn.execute(text("ALTER TABLE app_config_new RENAME TO app_config"))
         conn.execute(text("PRAGMA foreign_keys=ON"))
         conn.commit()
+
+
+def _backfill_instance_app_file_class_ids() -> None:
+    """Backfill app_file_class_id on InstanceAppFileType where sys_class_name matches."""
+    with engine.connect() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='instance_app_file_type'")
+        ).first()
+        if not table_exists:
+            return
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(instance_app_file_type)")).fetchall()}
+        if "app_file_class_id" not in cols:
+            return
+    # Use the service-layer helper for proper logic
+    from sqlmodel import Session as _Session
+    from .services.app_file_class_sync import backfill_app_file_class_ids
+    with _Session(engine) as session:
+        updated = backfill_app_file_class_ids(session)
+        if updated:
+            import logging
+            logging.getLogger(__name__).info("Backfilled app_file_class_id on %d instance_app_file_type rows", updated)
 
 
 def _ensure_model_table_columns(table_names: Iterable[str]) -> None:

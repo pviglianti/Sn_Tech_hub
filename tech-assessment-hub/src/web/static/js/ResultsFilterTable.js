@@ -56,6 +56,7 @@ window.ResultsFilterTable = (function () {
         this.resultsApiUrl = opts.resultsApiUrl;
         this.optionsApiUrl = opts.optionsApiUrl || '/api/results/options';
         this.optionsApiBaseParams = opts.optionsApiBaseParams || {};
+        this.fixedParams = opts.fixedParams || {};
         this.bodyId = opts.bodyId;
         this.emptyId = opts.emptyId;
         this.loadingId = opts.loadingId;
@@ -121,7 +122,7 @@ window.ResultsFilterTable = (function () {
         if (!classFilter) return Promise.resolve(null);
 
         var classVal = this._getClassificationValue();
-        var baseParams = Object.assign({}, this.optionsApiBaseParams, classificationToParams(classVal));
+        var baseParams = Object.assign({}, this.optionsApiBaseParams, this.fixedParams, classificationToParams(classVal));
         var params = new URLSearchParams(baseParams);
 
         var currentValue = classFilter.value;
@@ -157,7 +158,7 @@ window.ResultsFilterTable = (function () {
         this._loadClassOptions()
             .then(function (scopedCount) {
                 var classVal = self._getClassificationValue();
-                var apiParams = Object.assign({ limit: '500' }, classificationToParams(classVal));
+                var apiParams = Object.assign({ limit: '500' }, self.fixedParams, classificationToParams(classVal));
                 if (classFilter.value) {
                     apiParams.app_file_classes = classFilter.value;
                 }

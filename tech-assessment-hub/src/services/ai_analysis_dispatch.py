@@ -13,11 +13,14 @@ import os
 import shutil
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from sqlmodel import Session
+
+logger = logging.getLogger(__name__)
 
 from ..models import Assessment, GlobalApp, ReviewStatus, ScanResult
 from .ai_stage_tool_sets import STAGE_TOOL_SETS, build_batch_prompt
@@ -27,6 +30,14 @@ from ..mcp.bridge.config_store import load_bridge_config
 from ..mcp.registry import PROMPT_REGISTRY
 from .query_builder import parse_list, resolve_assessment_drivers
 from .ai_observation_history import load_ai_observation_payload, merge_ai_observation_payload
+from .ai_swarm import (
+    build_ai_analysis_swarm_prompt,
+    build_claude_swarm_agents,
+    build_claude_swarm_append_system_prompt,
+    build_codex_swarm_config_overrides,
+    effective_ai_analysis_batch_size,
+    swarm_enabled,
+)
 
 _MCP_SERVER_ID = "tech_assessment_hub"
 _MCP_TOOL_PREFIX = "mcp__tech-assessment-hub__"
@@ -34,116 +45,55 @@ _DEFAULT_HOST = (os.getenv("TECH_ASSESSMENT_HUB_HOST") or "127.0.0.1").strip()
 _DEFAULT_PORT = int((os.getenv("TECH_ASSESSMENT_HUB_PORT") or "8080").strip())
 
 _AI_ANALYSIS_FALLBACK_GUIDANCE = """\
-You are running the AI analysis stage — the SCOPE TRIAGE stage of a ServiceNow
-technical assessment. Your primary job is to determine whether each customized
-artifact is in scope, out of scope, or adjacent to the assessment's target
-application and tables.
+## Scope Triage
 
-For each artifact, you have access to its scan result AND its related artifact
-detail record (the actual ServiceNow configuration record). Use `get_result_detail`
-to retrieve both — the artifact detail is in the `artifact_detail` field and
-contains the script, conditions, field settings, and configuration you need to
-make an informed scope decision.
+You are reviewing ONLY customized results (Modified OOTB or Customer Created).
+Not every customized result is in scope — scans pick up out-of-scope items too.
+Your job is to classify each artifact as in_scope, adjacent, or out_of_scope.
+Both in_scope and adjacent are IN SCOPE for the assessment — only out_of_scope
+is excluded. Adjacent just means "in scope but on a different table."
 
-## Multi-Pass Awareness
+### How to decide
 
-This stage may run multiple times across the assessment lifecycle. When you
-read an artifact via `get_result_detail`:
+**Step 1: Check the artifact's table.**
+Call `get_result_detail` for the artifact. Look at its table (collection field).
 
-- **If observations, scope flags, or ai_observations are EMPTY** — this is a
-  first pass. Do your initial scope triage from scratch.
-- **If observations or scope flags already exist** — this is a refinement pass.
-  Read what was written in prior passes. Your job is now to VERIFY and REFINE:
-  - Is the scope decision still correct given what you now know?
-  - Did later passes uncover relationships that change how this artifact should
-    be classified? (e.g., an artifact marked out_of_scope that actually references
-    an in-scope table discovered during observation enrichment)
-  - Tighten the scope rationale if needed.
-  - **Do NOT overwrite existing values unless you are specifically correcting
-    something.** If the scope decision looks right, leave it untouched and
-    move on. Only update if you have a concrete reason to change it.
-  - Never blank out a field that already has content.
+**Step 2: Is the table one of the assessment's target tables?**
+- YES → **in_scope**. Done. A customized artifact directly on a target table
+  is automatically in scope.
 
-## Your Primary Goal: Scope Triage
+**Step 3: No table field (e.g. script includes)?**
+- Check if something related to the target tables calls this script, OR if
+  the script itself does something with the target tables (queries, creates,
+  updates records on them).
+- YES → **in_scope**
+- NO connection to target tables → **out_of_scope**
 
-For each artifact, determine:
+**Step 4: Table exists but is NOT a target table?**
+- Check if the artifact references, queries, creates, or updates records on
+  the target tables. Examples:
+  - A dictionary entry on `change_request` that is a reference field pointing
+    to `incident` → **adjacent**
+  - A business rule on `change_request` whose script queries or creates
+    incident records → **adjacent**
+  - A dictionary override on a non-target table for a field that references
+    a target table → **adjacent**
+- If NO reference to target tables at all → **out_of_scope**
 
-**In scope:** The artifact directly relates to the target tables/application.
-A business rule on incident is in scope when the assessment targets incident.
+### What to write
+Call `update_scan_result`:
+- `review_status` = `review_in_progress`
+- `observations` = ONE sentence: what it is + why you classified it
+- `is_out_of_scope` = true if out of scope
+- `is_adjacent` = true if adjacent (leave both false for in_scope)
+- `ai_observations` = `{"analysis_stage":"ai_analysis","scope_decision":"in_scope|adjacent|out_of_scope","scope_rationale":"<1 sentence>"}`
 
-**Out of scope:** The artifact does not relate to the target tables. The scan
-picks up some artifacts that are not applicable — if it does not actually relate
-to the target tables or touch anything related to them, mark it out of scope.
-Set `is_out_of_scope=true` with a brief reason.
-
-**Adjacent:** The artifact is NOT directly on the in-scope tables but DOES
-reference or interact with them. Examples:
-- A business rule on `change_request` whose script references `incident`
-- A dictionary entry on another table with a reference field pointing to
-  an in-scope table
-- A script include that queries or writes to in-scope tables
-Adjacent artifacts are still in scope for the assessment — they sit outside
-the direct target tables but have a connection. Set `is_adjacent=true`.
-
-### How to decide scope
-1. Read the artifact detail via `get_result_detail`
-2. Check what table this artifact operates on (collection/table field)
-3. If that table is a target table → **in_scope**
-4. If not, check the script/code/conditions — does it reference, query, or
-   write to target tables? Does it have reference fields pointing to them?
-   → **adjacent** (`is_adjacent=true`)
-5. If no connection to target tables → **out_of_scope** (`is_out_of_scope=true`)
-
-## Secondary: Brief Observation
-
-Write a short observation (1-2 sentences) noting what the artifact is and why
-you classified it the way you did. This is NOT the full functional summary —
-that happens in a later stage. Just enough to justify the scope decision.
-
-Examples:
-- "Business rule on incident table, fires before update. In scope."
-- "Script include that queries sys_user_group only — no reference to incident
-  tables. Out of scope."
-- "Business rule on change_request but script contains GlideRecord query to
-  incident table. Adjacent."
-
-## Persist findings
-Use `update_scan_result`:
-- `review_status="review_in_progress"`
-- `observations` — brief scope justification
-- `is_out_of_scope` — true if out of scope
-- `is_adjacent` — true if adjacent
-- `ai_observations` — JSON:
-  {
-    "analysis_stage": "ai_analysis",
-    "scope_decision": "in_scope|adjacent|out_of_scope|needs_review",
-    "scope_rationale": "<brief rationale>",
-    "directly_related_result_ids": [<scan result ids if known>],
-    "directly_related_artifacts": [
-      {"result_id": <id>, "name": "<name>", "relationship": "<connection>"}
-    ]
-  }
-
-## Context from other artifacts (use when needed)
-
-You are processing artifacts one at a time. If you need context about what
-other customized artifacts exist in this assessment — their scope decisions,
-what tables they sit on, patterns already identified — use `get_customizations`
-to see the full list with their current scope flags and observations.
-
-**Do NOT call this for every artifact.** Most scope decisions are straightforward
-(a business rule on the target table is obviously in scope). Only look when:
-- You are unsure about scope and need to see if similar artifacts were marked
-  in/out/adjacent
-- The artifact references something and you need to check if that something
-  is also a customized scan result in this assessment
-- You need to identify related artifact IDs for `directly_related_result_ids`
-
-Rules:
-- The assessment's target application/tables are the scope anchor.
-- Never set disposition — that is a human decision.
-- Out-of-scope artifacts still need a brief reason why.
-- Adjacent artifacts remain in scope and may be grouped with direct artifacts.
+### Speed rules
+- ONE call to `get_result_detail` per artifact. That's it.
+- Do NOT call `get_customizations` unless you genuinely need cross-artifact context.
+- Do NOT do deep code analysis — just enough to determine scope.
+- If already triaged (observations exist), skip it entirely.
+- Never set disposition. Never set review_status to "reviewed".
 """
 
 
@@ -290,6 +240,45 @@ def _build_artifact_stage_instructions(
     return "\n\n---\n\n".join(section for section in sections if section)
 
 
+def _build_batch_stage_instructions(
+    session: Session,
+    *,
+    assessment: Assessment,
+    rows: Sequence[ScanResult],
+    methodology_prompt_text: Optional[str],
+    runtime_props: AIRuntimeProperties,
+    provider_kind: str,
+) -> str:
+    # Scope triage uses a thin, focused prompt — skip the full methodology
+    # document to keep the context small and the model fast.
+    if len(rows) == 1:
+        sections = [
+            _build_assessment_scope_context(session, assessment),
+            _AI_ANALYSIS_FALLBACK_GUIDANCE.strip(),
+        ]
+    else:
+        sections = [_build_assessment_scope_context(session, assessment)]
+        sections.append(_AI_ANALYSIS_FALLBACK_GUIDANCE.strip())
+        sections.append(
+            """\
+## Multi-Artifact Batch Rules
+This session is responsible for multiple artifacts. Treat each artifact independently:
+- read each artifact with `get_result_detail` before updating it,
+- persist the scope decision for each artifact separately,
+- never assume one artifact's decision automatically applies to another,
+- do not end the run until every artifact in the batch has been triaged or explicitly marked `needs_review`.
+""".strip()
+        )
+    if swarm_enabled(runtime_props):
+        sections.append(
+            build_ai_analysis_swarm_prompt(
+                provider_kind=provider_kind,
+                max_workers=max(1, runtime_props.max_concurrent_sessions),
+            ).strip()
+        )
+    return "\n\n---\n\n".join(section for section in sections if section)
+
+
 def _resolve_rpc_url(session: Session) -> str:
     bridge_cfg = load_bridge_config(session)
     rpc_url = str(bridge_cfg.get("rpc_url") or "").strip()
@@ -374,6 +363,9 @@ def _build_claude_command(
     effort_level: str,
     allowed_tools: List[str],
     rpc_url: str,
+    runtime_props: AIRuntimeProperties,
+    stage: str,
+    pass_key: Optional[str] = None,
 ) -> List[str]:
     claude_bin = shutil.which("claude")
     if not claude_bin:
@@ -383,9 +375,8 @@ def _build_claude_command(
         {
             "mcpServers": {
                 "tech-assessment-hub": {
+                    "type": "http",
                     "url": rpc_url,
-                    "transport": "http",
-                    "description": "ServiceNow Tech Assessment Hub MCP",
                 }
             }
         }
@@ -400,7 +391,6 @@ def _build_claude_command(
         "--permission-mode",
         "bypassPermissions",
         "--no-session-persistence",
-        "--strict-mcp-config",
         "--mcp-config",
         mcp_config,
     ]
@@ -408,6 +398,19 @@ def _build_claude_command(
         cmd.extend(["--effort", effort_level])
     if allowed_tools:
         cmd.extend(["--allowedTools", ",".join(allowed_tools)])
+    if swarm_enabled(runtime_props):
+        cmd.extend(
+            [
+                "--agents",
+                build_claude_swarm_agents(stage=stage, pass_key=pass_key),
+                "--append-system-prompt",
+                build_claude_swarm_append_system_prompt(
+                    stage=stage,
+                    pass_key=pass_key,
+                    max_workers=max(1, runtime_props.max_concurrent_sessions),
+                ),
+            ]
+        )
     return cmd
 
 
@@ -418,6 +421,7 @@ def _build_codex_command(
     enabled_tools: List[str],
     rpc_url: str,
     force_api_login: bool,
+    runtime_props: AIRuntimeProperties,
 ) -> List[str]:
     codex_bin = shutil.which("codex")
     if not codex_bin:
@@ -448,6 +452,8 @@ def _build_codex_command(
         overrides.append(f'model_reasoning_effort="{effort_level}"')
     if force_api_login:
         overrides.append('forced_login_method="api"')
+    if swarm_enabled(runtime_props):
+        overrides.extend(build_codex_swarm_config_overrides(runtime_props))
 
     for override in overrides:
         cmd.extend(["-c", override])
@@ -463,6 +469,8 @@ def _run_cli_batch(
     allowed_tools: List[str],
     rpc_url: str,
     auth_slot: Any,
+    pass_key: Optional[str] = None,
+    cli_timeout_seconds: int = 900,
 ) -> Dict[str, Any]:
     env = os.environ.copy()
     if runtime_props.mode == "api_key":
@@ -474,6 +482,9 @@ def _run_cli_batch(
             effort_level=resolved.effort_level,
             allowed_tools=allowed_tools,
             rpc_url=rpc_url,
+            runtime_props=runtime_props,
+            stage=stage,
+            pass_key=pass_key,
         )
     elif resolved.provider_kind == "openai":
         cmd = _build_codex_command(
@@ -482,11 +493,20 @@ def _run_cli_batch(
             enabled_tools=_plain_tool_names(stage),
             rpc_url=rpc_url,
             force_api_login=runtime_props.mode == "api_key",
+            runtime_props=runtime_props,
         )
     else:
         raise RuntimeError(
             f"Connected MCP ai_analysis dispatch is not implemented for provider '{resolved.provider_kind}'."
         )
+
+    # Write prompt to a debug file for inspection, but always pipe the full
+    # prompt via stdin.  --strict-mcp-config blocks local file reads, so the
+    # model cannot read a bootstrap file reference.
+    prompt_dir = Path(__file__).resolve().parents[2] / "data" / "ai_prompts"
+    prompt_dir.mkdir(parents=True, exist_ok=True)
+    prompt_file = prompt_dir / f"prompt_{stage}_{os.getpid()}_{int(time.time())}.md"
+    prompt_file.write_text(prompt, encoding="utf-8")
 
     started = time.monotonic()
     completed = subprocess.run(
@@ -494,10 +514,11 @@ def _run_cli_batch(
         input=prompt,
         capture_output=True,
         text=True,
-        timeout=600,
+        timeout=cli_timeout_seconds,
         env=env,
     )
     duration = time.monotonic() - started
+
     if completed.returncode != 0:
         stderr = (completed.stderr or "").strip()
         raise RuntimeError(
@@ -534,6 +555,157 @@ def _merge_ai_trace(
     )
 
 
+def _build_artifact_context(session: Session, result: ScanResult) -> str:
+    """Read artifact data from DB and format as prompt context. No MCP needed."""
+    from ..mcp.tools.core.result_detail import handle as get_result_detail_handle
+
+    try:
+        detail = get_result_detail_handle(
+            {"result_id": int(result.id)}, session
+        )
+    except Exception:
+        detail = {"result": {"id": result.id, "name": result.name, "table_name": result.table_name}}
+
+    r = detail.get("result", {})
+    artifact = detail.get("artifact_detail") or {}
+
+    # Extract just the fields needed for scope decision
+    lines = [
+        f"ID: {r.get('id')}",
+        f"Name: {r.get('name')}",
+        f"Table: {r.get('table_name')}",
+        f"Target Table: {r.get('meta_target_table', '')}",
+        f"Class: {r.get('sys_class_name')}",
+        f"Origin: {r.get('origin_type')}",
+        f"Scope: {r.get('sys_scope', '')}",
+    ]
+
+    # Add script snippet if present (truncated for speed)
+    script = None
+    for key in ("script", "code_body", "condition", "template"):
+        val = artifact.get(key)
+        if val and isinstance(val, str) and val.strip():
+            script = val.strip()
+            break
+    if not script and r.get("raw_data"):
+        for key in ("script", "code_body", "meta_code_body", "condition"):
+            val = r["raw_data"].get(key)
+            if val and isinstance(val, str) and val.strip():
+                script = val.strip()
+                break
+    if script:
+        if len(script) > 2000:
+            script = script[:2000] + "\n... (truncated)"
+        lines.append(f"Script/Code:\n```\n{script}\n```")
+
+    # Add collection/table from artifact detail
+    for key in ("collection", "table", "name"):
+        val = artifact.get(key)
+        if val and key not in ("name",):
+            lines.append(f"Artifact {key}: {val}")
+
+    return "\n".join(lines)
+
+
+def _parse_scope_response(stdout: str) -> Optional[Dict[str, Any]]:
+    """Parse CLI JSON output to extract scope decision."""
+    stdout = (stdout or "").strip()
+    if not stdout:
+        return None
+
+    # Claude -p --output-format json wraps in {"result": "..."}
+    try:
+        wrapper = json.loads(stdout)
+        text = wrapper.get("result", stdout)
+    except json.JSONDecodeError:
+        text = stdout
+
+    # Look for JSON in the response text
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("{") and "scope_decision" in line:
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+    # Try to find JSON block in markdown code fence
+    if "```" in text:
+        parts = text.split("```")
+        for part in parts:
+            cleaned = part.strip()
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:].strip()
+            if cleaned.startswith("{") and "scope_decision" in cleaned:
+                try:
+                    return json.loads(cleaned)
+                except json.JSONDecodeError:
+                    continue
+
+    # Last resort: try whole text as JSON
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict) and "scope_decision" in parsed:
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    return None
+
+
+def _build_triage_cli_command(
+    resolved: ResolvedConfig,
+    runtime_props: AIRuntimeProperties,
+) -> List[str]:
+    """Build a tool-free CLI command for scope triage (no MCP)."""
+    if resolved.provider_kind == "anthropic":
+        claude_bin = shutil.which("claude")
+        if not claude_bin:
+            raise RuntimeError("Claude CLI not found on PATH.")
+        cmd = [
+            claude_bin,
+            "-p",
+            "--output-format",
+            "json",
+            "--model",
+            resolved.model_name,
+            "--permission-mode",
+            "bypassPermissions",
+            "--no-session-persistence",
+        ]
+        if resolved.effort_level:
+            cmd.extend(["--effort", resolved.effort_level])
+        return cmd
+
+    elif resolved.provider_kind == "openai":
+        codex_bin = shutil.which("codex")
+        if not codex_bin:
+            raise RuntimeError("Codex CLI not found on PATH.")
+        cmd = [
+            codex_bin,
+            "exec",
+            "--model",
+            resolved.model_name,
+            "--json",
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+        ]
+        if resolved.effort_level:
+            cmd.extend(["-c", f'model_reasoning_effort="{resolved.effort_level}"'])
+        return cmd
+
+    elif resolved.provider_kind == "google":
+        gemini_bin = shutil.which("gemini")
+        if not gemini_bin:
+            raise RuntimeError("Gemini CLI not found on PATH.")
+        cmd = [gemini_bin, "-p", "--output-format", "json"]
+        if resolved.model_name:
+            cmd.extend(["--model", resolved.model_name])
+        return cmd
+
+    raise RuntimeError(f"Unsupported provider: {resolved.provider_kind}")
+
+
 def run_ai_analysis_dispatch(
     session: Session,
     *,
@@ -545,8 +717,11 @@ def run_ai_analysis_dispatch(
     registered_prompt_name: Optional[str],
     registered_prompt_text: Optional[str],
     registered_prompt_error: Optional[str],
+    cli_timeout_seconds: int = 900,
 ) -> AIDispatchSummary:
-    """Run the connected-tool ai_analysis stage across customized artifacts."""
+    """Tool-free AI scope triage. Reads artifact data from DB, sends to CLI
+    as prompt context, parses JSON response, writes result back to DB.
+    No MCP connection needed — fast and reliable."""
 
     if runtime_props.mode == "disabled":
         raise RuntimeError("AI runtime mode is disabled.")
@@ -562,11 +737,21 @@ def run_ai_analysis_dispatch(
             "AI runtime mode is api_key, but the active auth slot is not an API key."
         )
 
-    rpc_url = _resolve_rpc_url(session)
-    full_tool_names = list(STAGE_TOOL_SETS.get("ai_analysis", []))
+    # Build scope context once
+    scope_ctx = _build_assessment_scope_context(session, assessment)
 
+    # Build tool-free CLI command (no MCP, no tool calls)
+    env = os.environ.copy()
+    if runtime_props.mode == "api_key":
+        env.update(_api_key_env(resolved.provider_kind, auth_slot))
+    cmd = _build_triage_cli_command(resolved, runtime_props)
+
+    # Skip already-triaged artifacts
     processed_count = 0
-    rows = list(customized_results)
+    rows = [r for r in customized_results if not _artifact_processed(r)]
+    already_done = len(customized_results) - len(rows)
+    if already_done:
+        logger.info("Skipping %d already-triaged artifacts, %d remaining.", already_done, len(rows))
     total_rows = len(rows)
     if total_rows == 0:
         return AIDispatchSummary(
@@ -574,58 +759,87 @@ def run_ai_analysis_dispatch(
             model_name=resolved.model_name,
             runtime_mode=runtime_props.mode,
             batch_count=0,
-            processed_count=0,
+            processed_count=already_done,
             registered_prompt_name=registered_prompt_name,
             registered_prompt_error=registered_prompt_error,
         )
 
-    for batch_index, row in enumerate(rows):
-        stage_instructions = _build_artifact_stage_instructions(
-            session,
-            assessment=assessment,
-            row=row,
-            methodology_prompt_text=registered_prompt_text,
-        )
-        prompt = build_batch_prompt(
-            stage_instructions=stage_instructions,
-            assessment_id=int(assessment.id),
-            stage="ai_analysis",
-            batch_index=batch_index,
-            total_batches=total_rows,
-            artifact_ids=[int(row.id)],
-            artifact_names=[row.name or f"result_{row.id}"],
+    prompt_dir = Path(__file__).resolve().parents[2] / "data" / "ai_prompts"
+    prompt_dir.mkdir(parents=True, exist_ok=True)
+
+    for idx, row in enumerate(rows):
+        # Read artifact data from DB (no MCP call)
+        artifact_ctx = _build_artifact_context(session, row)
+
+        prompt = (
+            f"{scope_ctx}\n\n"
+            f"{_AI_ANALYSIS_FALLBACK_GUIDANCE}\n\n"
+            f"## Artifact to Classify (#{idx + 1} of {total_rows})\n\n"
+            f"{artifact_ctx}\n\n"
+            '## Required Output\n'
+            'Respond with ONLY a JSON object, no other text:\n'
+            '{"scope_decision": "in_scope|adjacent|out_of_scope", '
+            '"scope_rationale": "<1 sentence>", '
+            '"observations": "<1 sentence: what it is + why you classified it>"}\n'
         )
 
-        _run_cli_batch(
-            prompt=prompt,
-            resolved=resolved,
-            runtime_props=runtime_props,
-            stage="ai_analysis",
-            allowed_tools=full_tool_names,
-            rpc_url=rpc_url,
-            auth_slot=auth_slot,
-        )
+        # Debug file
+        prompt_file = prompt_dir / f"triage_{os.getpid()}_{row.id}.md"
+        prompt_file.write_text(prompt, encoding="utf-8")
 
-        session.expire_all()
-        refreshed = session.get(ScanResult, int(row.id))
-        if refreshed is None or not _artifact_processed(refreshed):
-            session.rollback()
-            raise RuntimeError(
-                f"AI analysis dispatch did not persist scope triage for result ID {int(row.id)}."
+        try:
+            started = time.monotonic()
+            completed = subprocess.run(
+                cmd, input=prompt, capture_output=True,
+                text=True, timeout=cli_timeout_seconds, env=env,
             )
+            duration = time.monotonic() - started
 
-        _merge_ai_trace(
-            refreshed,
-            resolved=resolved,
-            runtime_props=runtime_props,
-            batch_index=batch_index,
-            total_batches=total_rows,
-            registered_prompt_name=registered_prompt_name,
-        )
-        session.add(refreshed)
-        processed_count += 1
+            if completed.returncode != 0:
+                logger.warning("CLI failed for artifact %s (exit %s): %s",
+                    row.id, completed.returncode, (completed.stderr or "")[:200])
+                continue
 
-        session.commit()
+            parsed = _parse_scope_response(completed.stdout)
+            if not parsed or "scope_decision" not in parsed:
+                logger.warning("No scope decision in output for artifact %s", row.id)
+                continue
+
+            # Write to DB directly — no MCP needed
+            scope = parsed["scope_decision"]
+            row.review_status = ReviewStatus.review_in_progress
+            row.observations = parsed.get("observations", parsed.get("scope_rationale", ""))
+            row.is_out_of_scope = scope == "out_of_scope"
+            row.is_adjacent = scope == "adjacent"
+
+            ai_obs = load_ai_observation_payload(row.ai_observations)
+            ai_obs.update({
+                "analysis_stage": "ai_analysis",
+                "scope_decision": scope,
+                "scope_rationale": parsed.get("scope_rationale", ""),
+                "dispatch_trace": {
+                    "provider_kind": resolved.provider_kind,
+                    "model_name": resolved.model_name,
+                    "duration_seconds": round(duration, 1),
+                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                },
+            })
+            row.ai_observations = json.dumps(
+                merge_ai_observation_payload(row.ai_observations, ai_obs),
+                sort_keys=True,
+            )
+            session.add(row)
+            session.commit()
+            processed_count += 1
+            logger.info("Triaged %s/%s (id=%s): %s [%.1fs]",
+                idx + 1, total_rows, row.id, scope, duration)
+
+        except subprocess.TimeoutExpired:
+            logger.warning("Timeout for artifact %s after %ss", row.id, cli_timeout_seconds)
+            continue
+        except Exception as exc:
+            logger.warning("Error triaging artifact %s: %s", row.id, exc)
+            continue
 
     return AIDispatchSummary(
         provider_kind=resolved.provider_kind,

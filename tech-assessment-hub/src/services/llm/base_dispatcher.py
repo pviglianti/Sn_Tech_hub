@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import time
 from abc import ABC, abstractmethod
@@ -36,6 +37,30 @@ class BaseDispatcher(ABC):
     """
 
     provider_kind: str
+
+    def resolve_api_key(
+        self,
+        auth_slot: Any,
+        *,
+        fallback_env_vars: Optional[List[str]] = None,
+    ) -> str:
+        """Resolve an API key from the auth slot or a provider fallback env var."""
+        env_var_name = str(getattr(auth_slot, "env_var_name", "") or "").strip()
+        if env_var_name:
+            value = str(os.environ.get(env_var_name) or "").strip()
+            if value:
+                return value
+
+        slot_key = str(getattr(auth_slot, "api_key", "") or "").strip()
+        if slot_key:
+            return slot_key
+
+        for env_name in fallback_env_vars or []:
+            value = str(os.environ.get(env_name) or "").strip()
+            if value:
+                return value
+
+        raise RuntimeError("No API key configured for live model refresh")
 
     @abstractmethod
     def build_cli_command(

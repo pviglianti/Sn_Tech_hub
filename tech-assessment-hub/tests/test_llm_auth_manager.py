@@ -6,7 +6,7 @@ from datetime import datetime
 
 from sqlmodel import Session, select
 
-from src.services.llm.models import LLMProvider, LLMAuthSlot
+from src.services.llm.models import LLMProvider, LLMAuthSlot, LLMModel
 from src.services.llm.provider_catalog import seed_default_catalog
 from src.services.llm.auth_manager import AuthManager
 
@@ -95,3 +95,36 @@ def test_store_api_key_deactivates_previous(db_session: Session):
     db_session.refresh(slot1)
     assert slot1.is_active is False
     assert slot2.is_active is True
+
+
+def test_refresh_provider_models_stores_fetched_rows(db_session: Session):
+    _seed(db_session)
+    mgr = AuthManager(db_session)
+
+    provider = db_session.exec(
+        select(LLMProvider).where(LLMProvider.provider_kind == "openai")
+    ).one()
+    mgr.store_api_key(provider.id, "sk-test-refresh-1234")
+
+    with patch(
+        "src.services.llm.auth_manager.CodexDispatcher.fetch_models",
+        return_value=[
+            {
+                "name": "gpt-refresh-test",
+                "display": "GPT Refresh Test",
+                "effort": True,
+            }
+        ],
+    ):
+        models = mgr.refresh_provider_models(provider.id)
+
+    fetched = db_session.exec(
+        select(LLMModel).where(
+            LLMModel.provider_id == provider.id,
+            LLMModel.model_name == "gpt-refresh-test",
+        )
+    ).first()
+
+    assert fetched is not None
+    assert fetched.source == "fetched"
+    assert any(model["model_name"] == "gpt-refresh-test" for model in models)

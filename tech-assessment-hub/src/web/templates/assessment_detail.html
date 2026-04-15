@@ -144,6 +144,12 @@
             <div class="pipeline-step-label">AI Analysis</div>
             <div class="pipeline-step-status" data-step-status></div>
             <div class="pipeline-step-action" data-step-action></div>
+            <div class="triage-progress" data-triage-progress style="display:none; font-size:0.78em; margin-top:4px; color:var(--text-secondary);">
+                <span data-triage-count></span>
+                <div style="background:var(--bg-tertiary); border-radius:3px; height:4px; width:100%; margin-top:2px;">
+                    <div data-triage-fill style="background:var(--primary); height:100%; border-radius:3px; transition:width 0.3s;"></div>
+                </div>
+            </div>
         </div>
         <div class="pipeline-step" data-pipeline-step="observations">
             <div class="pipeline-step-circle" data-step-circle>4</div>
@@ -410,6 +416,9 @@
             <button class="tab-btn" data-tab-btn="customizations" onclick="openTab(event, 'customizations')" id="customizationsTabBtn">
                 Customizations <span class="badge" id="customizationsTabBadge">{{ assessment.records_customized }}</span>
             </button>
+            <button class="tab-btn" data-tab-btn="out-of-scope" onclick="openTab(event, 'out-of-scope')" id="outOfScopeTabBtn">
+                Out of Scope <span class="badge" id="outOfScopeTabBadge">0</span>
+            </button>
             <button class="tab-btn" data-tab-btn="features" onclick="openTab(event, 'features')">
                 Features <span class="badge" id="featuresTabBadge">{{ assessment.features | length }}</span>
             </button>
@@ -552,6 +561,67 @@
                 <div class="is-hidden" id="customizationsEmpty">
                     <p class="text-muted-plain">No customizations found.</p>
                 </div>
+            </div>
+        </div>
+
+        <!-- Out of Scope Tab -->
+        <div id="out-of-scope" class="tab-content">
+            <div class="card result-filter-card">
+                <div class="result-filter-grid">
+                    <div class="filter-group">
+                        <label for="outOfScopeClassification">Classification</label>
+                        <select id="outOfScopeClassification" class="form-control">
+                            <option value="all" selected>All Out of Scope</option>
+                            <option value="customized">Customized</option>
+                            <option value="uncustomized">Uncustomized</option>
+                            <option value="modified_ootb">Modified OOTB</option>
+                            <option value="net_new_customer">Net New Customer</option>
+                            <option value="ootb_untouched">OOTB Untouched</option>
+                            <option value="unknown">Unknown</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="outOfScopeClassFilter">App File Class</label>
+                        <select id="outOfScopeClassFilter" class="form-control">
+                            <option value="">All Classes</option>
+                        </select>
+                    </div>
+                    <div class="filter-group filter-actions-inline">
+                        <label>Actions</label>
+                        <div class="inline-actions">
+                            <button id="outOfScopeApply" class="btn btn-sm btn-primary" type="button">Apply</button>
+                            <button id="outOfScopeReset" class="btn btn-sm btn-secondary" type="button">Reset</button>
+                        </div>
+                        <div id="outOfScopeMeta" class="filter-meta muted">Loading out-of-scope records...</div>
+                    </div>
+                </div>
+            </div>
+            <div class="table-scroll">
+                <div id="outOfScopeLoading" class="table-loading-overlay is-hidden">
+                    <div class="table-loading-pill">
+                        <span class="table-spinner"></span>
+                        Loading out-of-scope records...
+                    </div>
+                </div>
+                <table class="related-table" id="outOfScopeTable">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>App File Class</th>
+                            <th>Scan</th>
+                            <th>Customized</th>
+                            <th>Classification</th>
+                            <th>Review</th>
+                            <th>Disposition</th>
+                            <th>Updated</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="outOfScopeBody"></tbody>
+                </table>
+            </div>
+            <div id="outOfScopeEmpty" class="empty-state is-hidden p-2">
+                <p class="text-muted-plain">No out-of-scope records match the current filters.</p>
             </div>
         </div>
 
@@ -789,6 +859,39 @@ var assessmentResultsTable = new ResultsFilterTable({
     },
 });
 assessmentResultsTable.bindControls('assessmentResultsApply', 'assessmentResultsReset');
+
+function setOutOfScopeCount(total) {
+    var badge = document.getElementById('outOfScopeTabBadge');
+    if (badge) badge.textContent = typeof total === 'number' ? String(total) : '0';
+}
+
+var outOfScopeTable = new ResultsFilterTable({
+    resultsApiUrl: '/api/assessments/' + assessmentId + '/results',
+    optionsApiBaseParams: { instance_id: String(assessmentInstanceId), assessment_ids: String(assessmentId) },
+    fixedParams: { scope_state: 'out_of_scope', customized_only: 'false' },
+    bodyId: 'outOfScopeBody',
+    emptyId: 'outOfScopeEmpty',
+    loadingId: 'outOfScopeLoading',
+    metaId: 'outOfScopeMeta',
+    classificationId: 'outOfScopeClassification',
+    classFilterId: 'outOfScopeClassFilter',
+    showScanColumn: true,
+    onCounts: function (payload) {
+        setOutOfScopeCount(payload ? Number(payload.total || 0) : 0);
+    },
+    onMeta: function (payload, scopedCount) {
+        if (!payload) return 'Failed to load out-of-scope records.';
+        var shown = Number(payload.count || 0);
+        var total = Number(payload.total || 0);
+        var classFilter = document.getElementById('outOfScopeClassFilter');
+        var scopeTotal = Number.isFinite(scopedCount) ? Number(scopedCount) : total;
+        if (classFilter && classFilter.value) {
+            return 'Showing ' + shown + ' of ' + total + ' out-of-scope records (filtered from ' + scopeTotal + ')';
+        }
+        return 'Showing ' + shown + ' of ' + total + ' out-of-scope records';
+    },
+});
+outOfScopeTable.bindControls('outOfScopeApply', 'outOfScopeReset');
 
 // Whether a scan is actively running — gates preflight status updates in pending-all mode
 let _scanIsActive = false;
@@ -1396,6 +1499,7 @@ function refreshCustomizations() {
     if (meta) meta.textContent = 'Loading...';
 
     var params = new URLSearchParams({ limit: '500' });
+    params.set('scope_state', 'in_scope');
     if (typeFilter && typeFilter.value) params.set('origin_type', typeFilter.value);
     if (classFilter && classFilter.value) params.set('table_name', classFilter.value);
 
@@ -1453,8 +1557,11 @@ artifactList.bindControls('artifactApply', 'artifactReset');
 
 // Eagerly load badges for all tabs, re-fetch table data on first tab open
 refreshCustomizations();
+outOfScopeTable.refresh();
 artifactList.refresh();
+_customizationsLoaded = true;
 let _artifactsLoaded = true;
+let _outOfScopeLoaded = true;
 
 // ── Feature Hierarchy Tree ──────────────────────────────────────────
 var featureTree = new FeatureHierarchyTree({
@@ -1563,6 +1670,10 @@ document.addEventListener('tab:activated', function(e) {
         _artifactsLoaded = true;
         artifactList.refresh();
     }
+    if (e.detail.tabName === 'out-of-scope' && !_outOfScopeLoaded) {
+        _outOfScopeLoaded = true;
+        outOfScopeTable.refresh();
+    }
     if (e.detail.tabName === 'features' && !_featuresLoaded) {
         _featuresLoaded = true;
         featureTree.refresh();
@@ -1598,6 +1709,7 @@ const _PIPELINE_ACTIONS = {
     recommendations: { label: 'Run Recommendations', target: 'recommendations' },
     report: { label: 'Generate Report', target: 'report' },
 };
+const _AI_LOOP_RERUN_STAGES = new Set(['ai_analysis', 'observations', 'review', 'grouping', 'ai_refinement', 'recommendations', 'report', 'complete']);
 const _CHECK_SVG = '<svg class="pipeline-step-check" viewBox="0 0 14 14" fill="none"><path d="M2.5 7.5L5.5 10.5L11.5 3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 let _pipelineAdvancing = false;
@@ -1664,6 +1776,28 @@ function updatePipelineFlowBar(pipeline) {
             actionEl.innerHTML = '';
         }
 
+        // Triage progress (for ai_analysis step)
+        const triageEl = stepEl.querySelector('[data-triage-progress]');
+        if (triageEl && stage === 'ai_analysis') {
+            const tp = pipeline.triage_progress || {};
+            const total = tp.total_customized || 0;
+            const triaged = tp.triaged || 0;
+            if (total > 0 && triaged > 0) {
+                triageEl.style.display = '';
+                const pct = tp.percent || 0;
+                triageEl.querySelector('[data-triage-fill]').style.width = pct + '%';
+                const inScope = tp.in_scope || 0;
+                const oos = tp.out_of_scope || 0;
+                const adj = tp.adjacent || 0;
+                triageEl.querySelector('[data-triage-count]').textContent =
+                    `${triaged}/${total} triaged (${inScope} in, ${oos} out, ${adj} adj)`;
+            } else {
+                triageEl.style.display = 'none';
+            }
+        } else if (triageEl) {
+            triageEl.style.display = 'none';
+        }
+
         // Review gate progress bar (only for review step)
         if (reviewProgressEl) {
             if (stage === 'review' && (currentStage === 'review' || currentIndex > _PIPELINE_STAGES.indexOf('review'))) {
@@ -1706,22 +1840,30 @@ function _renderStepActions(stage, actionEl, currentStage, isRunning, reviewGate
     actionEl.innerHTML = '';
     if (isRunning) return; // No buttons while running
 
+    const appendAiLoopRerunButton = function() {
+        if (!_AI_LOOP_RERUN_STAGES.has(currentStage) || stage !== currentStage) return;
+        const rerunBtn = document.createElement('button');
+        rerunBtn.className = 'btn-pipeline btn-pipeline-rerun';
+        rerunBtn.textContent = 'Re-run AI Loop';
+        rerunBtn.disabled = _pipelineAdvancing;
+        rerunBtn.addEventListener('click', () => advancePipelineRerun());
+        actionEl.appendChild(rerunBtn);
+    };
+
     // The next stage to advance to
     const currentIndex = _PIPELINE_STAGES.indexOf(currentStage);
     const nextStage = currentIndex < _PIPELINE_STAGES.length - 1 ? _PIPELINE_STAGES[currentIndex + 1] : null;
 
-    // Re-run button when pipeline is complete
+    // Re-run button remains available when the pipeline is complete.
     if (currentStage === 'complete' && stage === 'complete') {
-        const rerunBtn = document.createElement('button');
-        rerunBtn.className = 'btn-pipeline btn-pipeline-rerun';
-        rerunBtn.textContent = 'Re-run Analysis';
-        rerunBtn.disabled = _pipelineAdvancing;
-        rerunBtn.addEventListener('click', () => advancePipelineRerun());
-        actionEl.appendChild(rerunBtn);
+        appendAiLoopRerunButton();
         return;
     }
 
-    if (!nextStage || nextStage === 'complete') return;
+    if (!nextStage || nextStage === 'complete') {
+        appendAiLoopRerunButton();
+        return;
+    }
     if (currentStage === 'complete') return;
 
     const actionDef = _PIPELINE_ACTIONS[nextStage];
@@ -1746,6 +1888,7 @@ function _renderStepActions(stage, actionEl, currentStage, isRunning, reviewGate
             skipBtn.addEventListener('click', () => advancePipelineStage('grouping', true));
             actionEl.appendChild(skipBtn);
         }
+        appendAiLoopRerunButton();
         return;
     }
 
@@ -1764,6 +1907,7 @@ function _renderStepActions(stage, actionEl, currentStage, isRunning, reviewGate
     btn.disabled = _pipelineAdvancing;
     btn.addEventListener('click', () => advancePipelineStage(actionDef.target));
     actionEl.appendChild(btn);
+    appendAiLoopRerunButton();
 }
 
 async function advancePipelineStage(targetStage, skipReview, manualOverride) {
@@ -1798,7 +1942,7 @@ async function advancePipelineStage(targetStage, skipReview, manualOverride) {
 
 async function advancePipelineRerun() {
     if (_pipelineAdvancing) return;
-    if (!confirm('Re-run the analysis pipeline from AI Analysis? All AI-generated data will be refreshed while preserving human edits.')) return;
+    if (!confirm('Re-run the AI loop from AI Analysis? Prior AI passes will be preserved for refinement while human edits stay in place.')) return;
     _pipelineAdvancing = true;
 
     try {

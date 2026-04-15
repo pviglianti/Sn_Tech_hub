@@ -11,6 +11,7 @@ from sqlmodel import Session
 
 from ...registry import ToolSpec
 from ....models import Disposition, FindingCategory, ReviewStatus, ScanResult, Severity
+from ....services.ai_observation_history import merge_ai_observation_payload
 from ....services.customization_sync import sync_single_result
 
 
@@ -112,7 +113,33 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
         if raw_value is None:
             result.ai_observations = None
         elif isinstance(raw_value, str):
-            result.ai_observations = raw_value
+            try:
+                loaded = json.loads(raw_value)
+            except Exception:
+                result.ai_observations = raw_value
+            else:
+                if isinstance(loaded, dict):
+                    result.ai_observations = json.dumps(
+                        merge_ai_observation_payload(
+                            result.ai_observations,
+                            loaded,
+                            stage=str(loaded.get("analysis_stage") or "").strip() or None,
+                            replace_current=True,
+                        ),
+                        sort_keys=True,
+                    )
+                else:
+                    result.ai_observations = raw_value
+        elif isinstance(raw_value, dict):
+            result.ai_observations = json.dumps(
+                merge_ai_observation_payload(
+                    result.ai_observations,
+                    raw_value,
+                    stage=str(raw_value.get("analysis_stage") or "").strip() or None,
+                    replace_current=True,
+                ),
+                sort_keys=True,
+            )
         else:
             result.ai_observations = json.dumps(raw_value, sort_keys=True)
         updated_fields.append("ai_observations")

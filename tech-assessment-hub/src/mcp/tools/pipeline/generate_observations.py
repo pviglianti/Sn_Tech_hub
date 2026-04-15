@@ -31,6 +31,7 @@ from ....services.assessment_phase_progress import (
     complete_phase_progress,
     start_phase_progress,
 )
+from ....services.ai_observation_history import load_ai_observation_payload, merge_ai_observation_payload
 from ....services.integration_properties import load_observation_properties
 from ....services.customization_sync import sync_single_result
 from ..core.get_usage_count import handle as get_usage_count_handle
@@ -354,16 +355,7 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
             if not (result.observations or "").strip():
                 result.observations = observation_text
 
-            existing_ai_observations: Dict[str, Any] = {}
-            if result.ai_observations:
-                try:
-                    loaded = json.loads(result.ai_observations)
-                    if isinstance(loaded, dict):
-                        existing_ai_observations = loaded
-                except Exception:
-                    existing_ai_observations = {
-                        "raw_ai_observations": result.ai_observations
-                    }
+            existing_ai_observations = load_ai_observation_payload(result.ai_observations)
             existing_ai_observations["deterministic_observation_baseline"] = {
                 "generated_at": datetime.utcnow().isoformat(),
                 "generator": "deterministic_pipeline_v1",
@@ -371,7 +363,10 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
                 "structural_signal_count": structural_count,
                 "update_set_signal_count": update_set_count,
             }
-            result.ai_observations = json.dumps(existing_ai_observations, sort_keys=True)
+            result.ai_observations = json.dumps(
+                merge_ai_observation_payload(result.ai_observations, existing_ai_observations),
+                sort_keys=True,
+            )
             if result.review_status == ReviewStatus.pending_review:
                 result.review_status = ReviewStatus.review_in_progress
             result.ai_pass_count = int(result.ai_pass_count or 0) + 1

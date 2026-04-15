@@ -51,7 +51,49 @@ def _build_customization_payload(row: Customization) -> Dict[str, Any]:
         "recommendation": row.recommendation,
         "observations": row.observations,
         "sys_updated_on": row.sys_updated_on.isoformat() if row.sys_updated_on else None,
+        "is_out_of_scope": bool(row.is_out_of_scope),
     }
+
+
+def _normalize_scope_state(value: Optional[str]) -> str:
+    normalized = str(value or "all").strip().lower()
+    if normalized in {"all", "in_scope", "out_of_scope"}:
+        return normalized
+    return "all"
+
+
+def _apply_scope_state_filter(stmt: Any, scope_state: str) -> Any:
+    if scope_state == "in_scope":
+        return stmt.where(Customization.is_out_of_scope == False)  # noqa: E712
+    if scope_state == "out_of_scope":
+        return stmt.where(Customization.is_out_of_scope == True)  # noqa: E712
+    return stmt
+
+
+def _customization_class_breakdown(
+    session: Session,
+    scan_ids: List[int],
+    *,
+    origin_type: Optional[str] = None,
+    scope_state: str = "all",
+) -> List[Dict[str, Any]]:
+    stmt = select(Customization.table_name).where(
+        Customization.scan_id.in_(scan_ids)  # type: ignore[attr-defined]
+    )
+    if origin_type:
+        stmt = stmt.where(Customization.origin_type == origin_type)
+    stmt = _apply_scope_state_filter(stmt, scope_state)
+
+    counts: Dict[str, int] = defaultdict(int)
+    for value in session.exec(stmt).all():
+        key = str(value or "").strip()
+        if key:
+            counts[key] += 1
+
+    return [
+        {"table_name": table_name, "label": table_name, "count": count}
+        for table_name, count in sorted(counts.items())
+    ]
 
 
 def _heal_missing_customization_rows(session: Session, scan_ids: List[int]) -> int:
@@ -113,6 +155,7 @@ def _query_customizations(
     scan_ids: List[int],
     origin_type: Optional[str] = None,
     table_name: Optional[str] = None,
+    scope_state: str = "all",
     limit: int = 500,
     offset: int = 0,
 ) -> Tuple[List[Dict[str, Any]], int]:
@@ -131,6 +174,7 @@ def _query_customizations(
         stmt = stmt.where(Customization.origin_type == origin_type)
     if table_name:
         stmt = stmt.where(Customization.table_name == table_name)
+    stmt = _apply_scope_state_filter(stmt, scope_state)
 
     # Count query (same filters, no limit/offset)
     count_stmt = select(Customization.id).where(
@@ -140,6 +184,7 @@ def _query_customizations(
         count_stmt = count_stmt.where(Customization.origin_type == origin_type)
     if table_name:
         count_stmt = count_stmt.where(Customization.table_name == table_name)
+    count_stmt = _apply_scope_state_filter(count_stmt, scope_state)
     total = len(session.exec(count_stmt).all())
 
     # Data query with ordering and pagination
@@ -160,6 +205,7 @@ async def api_assessment_customizations(
     assessment_id: int,
     origin_type: Optional[str] = Query(default=None),
     table_name: Optional[str] = Query(default=None),
+    scope_state: str = Query(default="all"),
     limit: int = Query(default=500, le=2000),
     offset: int = Query(default=0),
     session: Session = Depends(get_session),
@@ -177,15 +223,23 @@ async def api_assessment_customizations(
 
     _heal_missing_customization_rows(session, scan_ids)
 
+    resolved_scope_state = _normalize_scope_state(scope_state)
     rows, total = _query_customizations(
         session, scan_ids,
         origin_type=origin_type,
         table_name=table_name,
+        scope_state=resolved_scope_state,
         limit=limit,
         offset=offset,
     )
+    classes = _customization_class_breakdown(
+        session,
+        scan_ids,
+        origin_type=origin_type,
+        scope_state=resolved_scope_state,
+    )
 
-    return {"customizations": rows, "total": total}
+    return {"customizations": rows, "total": total, "classes": classes}
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +252,7 @@ async def api_scan_customizations(
     scan_id: int,
     origin_type: Optional[str] = Query(default=None),
     table_name: Optional[str] = Query(default=None),
+    scope_state: str = Query(default="all"),
     limit: int = Query(default=500, le=2000),
     offset: int = Query(default=0),
     session: Session = Depends(get_session),
@@ -209,15 +264,23 @@ async def api_scan_customizations(
 
     _heal_missing_customization_rows(session, [scan_id])
 
+    resolved_scope_state = _normalize_scope_state(scope_state)
     rows, total = _query_customizations(
         session, [scan_id],
         origin_type=origin_type,
         table_name=table_name,
+        scope_state=resolved_scope_state,
         limit=limit,
         offset=offset,
     )
+    classes = _customization_class_breakdown(
+        session,
+        [scan_id],
+        origin_type=origin_type,
+        scope_state=resolved_scope_state,
+    )
 
-    return {"customizations": rows, "total": total}
+    return {"customizations": rows, "total": total, "classes": classes}
 
 
 # ---------------------------------------------------------------------------

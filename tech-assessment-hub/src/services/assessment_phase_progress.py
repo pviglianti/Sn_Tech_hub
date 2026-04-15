@@ -251,3 +251,36 @@ def fail_phase_progress(
         commit=commit,
     )
 
+
+def reset_phase_progress(
+    session: Session,
+    assessment_id: int,
+    phase: str,
+    *,
+    checkpoint: Optional[Dict[str, Any]] = None,
+    commit: bool = False,
+) -> Optional[AssessmentPhaseProgress]:
+    """Clear resumable state so a completed phase can run again from the start."""
+    row = _get_row(session, assessment_id, phase)
+    if not row:
+        return None
+
+    now = datetime.utcnow()
+    row.status = "pending"
+    row.total_items = 0
+    row.completed_items = 0
+    row.resume_from_index = 0
+    row.last_item_id = None
+    row.last_error = None
+    row.completed_at = None
+    row.started_at = None
+    row.last_checkpoint_at = None
+    row.updated_at = now
+    row.run_attempt = int(row.run_attempt or 0) + 1
+    row.checkpoint_json = _json_dumps(checkpoint or {}) if checkpoint else None
+
+    session.add(row)
+    if commit:
+        session.commit()
+        session.refresh(row)
+    return row

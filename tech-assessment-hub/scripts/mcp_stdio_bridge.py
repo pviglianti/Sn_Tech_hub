@@ -18,13 +18,29 @@ import urllib.request
 import urllib.error
 
 
+def _detect_server_url() -> str:
+    """Read the actual running server URL from data/server.url."""
+    from pathlib import Path
+    url_file = Path(__file__).resolve().parent.parent / "data" / "server.url"
+    try:
+        live = url_file.read_text().strip().rstrip("/")
+        if live:
+            return f"{live}/mcp"
+    except (OSError, ValueError):
+        pass
+    return "http://127.0.0.1:8080/mcp"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="MCP stdio-to-HTTP bridge")
-    parser.add_argument("--port", type=int, default=8080, help="App port (default: 8080)")
+    parser.add_argument("--port", type=int, default=None, help="App port (auto-detected from server.url if omitted)")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="App host (default: 127.0.0.1)")
     args = parser.parse_args()
 
-    url = f"http://{args.host}:{args.port}/mcp"
+    if args.port:
+        url = f"http://{args.host}:{args.port}/mcp"
+    else:
+        url = _detect_server_url()
 
     for line in sys.stdin:
         line = line.strip()

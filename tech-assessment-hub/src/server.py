@@ -38,7 +38,7 @@ from .models import (
     CodeReference, StructuralRelationship, UpdateSetOverlap,
     TemporalCluster, NamingCluster, TableColocationSummary, UpdateSetArtifactLink,
     BestPractice, BestPracticeCategory,
-    AppFileClassQuery, AssessmentTypeConfig,
+    AppFileClassQuery, AssessmentTypeConfig, AssessmentTypeFileClass,
 )
 from .services.encryption import encrypt_password, decrypt_password
 from .services.sn_client import ServiceNowClient, ServiceNowClientError
@@ -69,7 +69,13 @@ from .services.assessment_phase_progress import (
     checkpoint_phase_progress,
     complete_phase_progress,
     fail_phase_progress,
+    reset_phase_progress,
     start_phase_progress,
+)
+from .services.ai_observation_history import (
+    archive_ai_observations_for_rerun,
+    load_ai_observation_payload,
+    merge_ai_observation_payload,
 )
 from .services.contextual_lookup import gather_artifact_context
 from .services.condition_query_builder import conditions_to_sql_where
@@ -119,8 +125,8 @@ from .web.routes.preferences import create_preferences_router
 from .web.routes.assessment_runtime_usage import create_assessment_runtime_usage_router
 from .web.routes.customizations import customizations_router
 from .services.llm import (
-    seed_default_catalog, get_providers_with_models,
-    AuthManager, LLMAuthSlot, LLMModel,
+    seed_default_catalog, get_provider_models, get_providers_with_models,
+    AuthManager, LLMAuthSlot, LLMModel, LLMProvider,
 )
 from .services.llm.dispatcher_router import DispatcherRouter
 from .web.routes.pulls import create_pulls_router
@@ -493,6 +499,24 @@ _PIPELINE_STAGE_AUTONEXT: Dict[str, str] = {
     # Empty: every stage requires a manual button press to advance.
     # The advance-pipeline endpoint sets the next stage when the user clicks.
 }
+_AI_LOOP_RERUN_STAGES = {
+    PipelineStage.ai_analysis.value,
+    PipelineStage.observations.value,
+    PipelineStage.review.value,
+    PipelineStage.grouping.value,
+    PipelineStage.ai_refinement.value,
+    PipelineStage.recommendations.value,
+    PipelineStage.report.value,
+    PipelineStage.complete.value,
+}
+_AI_LOOP_RESET_PHASES = (
+    PipelineStage.ai_analysis.value,
+    PipelineStage.observations.value,
+    PipelineStage.grouping.value,
+    PipelineStage.ai_refinement.value,
+    PipelineStage.recommendations.value,
+    PipelineStage.report.value,
+)
 
 
 def _assessment_scan_progress_percent(
@@ -553,6 +577,51 @@ def _pipeline_stage_index(stage_value: str) -> int:
         return _PIPELINE_STAGE_ORDER.index(_pipeline_stage_value(stage_value))
     except ValueError:
         return 0
+
+
+def _prepare_assessment_ai_loop_rerun(session: Session, assessment_id: int) -> Dict[str, Any]:
+    archived_at = datetime.utcnow().isoformat()
+    archived_count = 0
+
+    rows = session.exec(
+        select(ScanResult)
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .where(Scan.assessment_id == assessment_id)
+        .where(ScanResult.ai_observations.isnot(None))
+        .order_by(ScanResult.id.asc())
+    ).all()
+    for row in rows:
+        previous_raw = row.ai_observations
+        updated_payload = archive_ai_observations_for_rerun(
+            previous_raw,
+            reason="ai_loop_rerun",
+            archived_at=archived_at,
+        )
+        if previous_raw and updated_payload != load_ai_observation_payload(previous_raw):
+            archived_count += 1
+        row.ai_observations = json.dumps(updated_payload, sort_keys=True) if updated_payload else None
+        session.add(row)
+
+    reset_count = 0
+    for phase in _AI_LOOP_RESET_PHASES:
+        reset_row = reset_phase_progress(
+            session,
+            assessment_id,
+            phase,
+            checkpoint={
+                "reset_reason": "ai_loop_rerun",
+                "reset_at": archived_at,
+            },
+            commit=False,
+        )
+        if reset_row is not None:
+            reset_count += 1
+
+    return {
+        "archived_observation_rows": archived_count,
+        "reset_phase_rows": reset_count,
+        "reset_at": archived_at,
+    }
 
 
 def _assessment_pipeline_job_status_to_run_status(status: str) -> JobRunStatus:
@@ -853,6 +922,54 @@ def _set_assessment_pipeline_stage(
         assessment.updated_at = now
         run_session.add(assessment)
         run_session.commit()
+
+
+def _assessment_triage_progress(session: Session, assessment_id: int) -> Dict[str, Any]:
+    """Count how many customized artifacts have been triaged vs total."""
+    total = int(session.exec(
+        select(func.count(ScanResult.id))
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .where(Scan.assessment_id == assessment_id)
+        .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
+    ).one() or 0)
+    triaged = int(session.exec(
+        select(func.count(ScanResult.id))
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .where(Scan.assessment_id == assessment_id)
+        .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
+        .where(ScanResult.review_status != ReviewStatus.pending_review)
+    ).one() or 0)
+    in_scope = int(session.exec(
+        select(func.count(ScanResult.id))
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .where(Scan.assessment_id == assessment_id)
+        .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
+        .where(ScanResult.review_status != ReviewStatus.pending_review)
+        .where(ScanResult.is_out_of_scope != True)
+    ).one() or 0)
+    out_of_scope = int(session.exec(
+        select(func.count(ScanResult.id))
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .where(Scan.assessment_id == assessment_id)
+        .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
+        .where(ScanResult.is_out_of_scope == True)
+    ).one() or 0)
+    adjacent = int(session.exec(
+        select(func.count(ScanResult.id))
+        .join(Scan, ScanResult.scan_id == Scan.id)
+        .where(Scan.assessment_id == assessment_id)
+        .where(ScanResult.origin_type.in_(list(_CUSTOMIZED_ORIGIN_VALUES)))
+        .where(ScanResult.is_adjacent == True)
+    ).one() or 0)
+    return {
+        "total_customized": total,
+        "triaged": triaged,
+        "remaining": total - triaged,
+        "in_scope": in_scope,
+        "out_of_scope": out_of_scope,
+        "adjacent": adjacent,
+        "percent": round(triaged / total * 100) if total > 0 else 0,
+    }
 
 
 def _assessment_review_gate_summary(session: Session, assessment_id: int) -> Dict[str, Any]:
@@ -1798,6 +1915,7 @@ def _run_assessment_pipeline_stage(
                         runtime_props=runtime_props,
                         customized_results=customized[resume_from:],
                         batch_size=ai_props.batch_size,
+                        cli_timeout_seconds=ai_props.cli_timeout_seconds,
                         registered_prompt_name=registered_prompt_name,
                         registered_prompt_text=registered_prompt_text,
                         registered_prompt_error=registered_prompt_error,
@@ -1954,7 +2072,15 @@ def _run_assessment_pipeline_stage(
                                 if prompt_error:
                                     analysis_result["registered_prompt_error"] = prompt_error
 
-                            sr.ai_observations = json.dumps(analysis_result, sort_keys=True)
+                            sr.ai_observations = json.dumps(
+                                merge_ai_observation_payload(
+                                    sr.ai_observations,
+                                    analysis_result,
+                                    stage=PipelineStage.ai_analysis.value,
+                                    replace_current=True,
+                                ),
+                                sort_keys=True,
+                            )
                             session.add(sr)
                             analyzed_count += 1
 
@@ -2281,10 +2407,7 @@ def _run_assessment_pipeline_stage(
                 .where(ScanResult.ai_observations.isnot(None))
             ).all()
             for sr in flagged_artifacts:
-                try:
-                    existing_obs = json.loads(sr.ai_observations) if sr.ai_observations else {}
-                except (json.JSONDecodeError, TypeError):
-                    existing_obs = {}
+                existing_obs = load_ai_observation_payload(sr.ai_observations)
                 if "technical_review" in existing_obs:
                     continue
                 feat_links = session.exec(
@@ -2301,7 +2424,9 @@ def _run_assessment_pipeline_stage(
                     "artifact_table": sr.table_name,
                     "feature_memberships": feature_names,
                     "has_prior_analysis": bool(existing_obs),
-                    "prior_analysis_keys": sorted(existing_obs.keys()),
+                    "prior_analysis_keys": sorted(
+                        key for key in existing_obs.keys() if key != "pass_history"
+                    ),
                 }
                 if pipeline_prompt_props_refinement.use_registered_prompts:
                     prompt_text, prompt_error = _try_registered_prompt_text(
@@ -2317,7 +2442,13 @@ def _run_assessment_pipeline_stage(
                         existing_obs["technical_review"]["prompt_context"] = prompt_text
                     if prompt_error:
                         existing_obs["technical_review"]["registered_prompt_error"] = prompt_error
-                sr.ai_observations = json.dumps(existing_obs, sort_keys=True)
+                sr.ai_observations = json.dumps(
+                    merge_ai_observation_payload(
+                        sr.ai_observations,
+                        existing_obs,
+                    ),
+                    sort_keys=True,
+                )
                 session.add(sr)
 
             existing_rollups = session.exec(
@@ -3270,6 +3401,7 @@ def _results_option_app_file_classes(
     scan_ids: Optional[List[int]] = None,
     customized_only: bool = True,
     customization_type: str = "all",
+    scope_state: str = "all",
 ) -> List[str]:
     selected_assessment_ids = list(assessment_ids or [])
     selected_scan_ids = list(scan_ids or [])
@@ -3280,6 +3412,7 @@ def _results_option_app_file_classes(
         scan_ids=selected_scan_ids,
         customized_only=customized_only,
         customization_type=customization_type,
+        scope_state=scope_state,
     )
     class_stmt = (
         select(ScanResult.table_name)
@@ -3455,6 +3588,13 @@ def _normalize_customization_type(value: Optional[str]) -> str:
     return "all"
 
 
+def _normalize_scope_state(value: Optional[str]) -> str:
+    normalized = str(value or "all").strip().lower()
+    if normalized in {"all", "in_scope", "out_of_scope"}:
+        return normalized
+    return "all"
+
+
 def _scan_result_conditions(
     *,
     instance_id: Optional[int] = None,
@@ -3462,6 +3602,7 @@ def _scan_result_conditions(
     scan_ids: Optional[List[int]] = None,
     customized_only: bool = True,
     customization_type: str = "all",
+    scope_state: str = "all",
     table_names: Optional[List[str]] = None,
 ) -> List[Any]:
     conditions: List[Any] = []
@@ -3483,6 +3624,12 @@ def _scan_result_conditions(
             conditions.append(ScanResult.origin_type == resolved_customization_type)
     elif resolved_customization_type != "all":
         conditions.append(ScanResult.origin_type == resolved_customization_type)
+
+    resolved_scope_state = _normalize_scope_state(scope_state)
+    if resolved_scope_state == "in_scope":
+        conditions.append(ScanResult.is_out_of_scope == False)  # noqa: E712
+    elif resolved_scope_state == "out_of_scope":
+        conditions.append(ScanResult.is_out_of_scope == True)  # noqa: E712
 
     if table_names:
         conditions.append(ScanResult.table_name.in_(table_names))
@@ -3524,6 +3671,7 @@ def _build_scan_result_payload(
         "origin_type": origin_value,
         "is_customized": is_customized,
         "customization_classification": origin_value if is_customized else None,
+        "is_out_of_scope": bool(result.is_out_of_scope),
         "review_status": result.review_status.value if result.review_status else None,
         "disposition": result.disposition.value if result.disposition else None,
         "severity": result.severity.value if result.severity else None,
@@ -3574,6 +3722,7 @@ def _query_scan_results_payload(
     scan_ids: Optional[List[int]] = None,
     customized_only: bool = True,
     customization_type: str = "all",
+    scope_state: str = "all",
     table_names: Optional[List[str]] = None,
     limit: int = 500,
     offset: int = 0,
@@ -3584,6 +3733,7 @@ def _query_scan_results_payload(
         scan_ids=scan_ids,
         customized_only=customized_only,
         customization_type=customization_type,
+        scope_state=scope_state,
         table_names=table_names,
     )
 
@@ -8507,6 +8657,12 @@ def _set_instance_app_file_type_assessment_flags(
         is_default_for_assessment=is_default_for_assessment,
     )
     session.add(row)
+
+    # Auto-provision AppFileClass when a file type becomes assessment-available
+    if row.is_available_for_assessment:
+        from .services.app_file_class_sync import ensure_app_file_class_for_instance_type
+        ensure_app_file_class_for_instance_type(session, row, commit=False)
+
     if commit:
         session.commit()
         session.refresh(row)
@@ -8604,7 +8760,12 @@ async def instance_assessment_app_file_options_page(
 
 @app.post("/mcp")
 async def mcp_endpoint(request: Request, session: Session = Depends(get_session)):
-    """MCP JSON-RPC endpoint."""
+    """MCP Streamable HTTP endpoint.
+
+    Handles both JSON-RPC requests (with 'id') and notifications (without 'id').
+    Notifications like 'initialized' and 'notifications/cancelled' are acknowledged
+    with 202 Accepted per the MCP Streamable HTTP transport spec.
+    """
     payload = await request.json()
     request_context = {
         "actor": request.headers.get("x-mcp-actor")
@@ -8612,9 +8773,35 @@ async def mcp_endpoint(request: Request, session: Session = Depends(get_session)
         or (request.client.host if request.client else "unknown"),
         "client_host": request.client.host if request.client else None,
     }
+
+    # Handle batch requests
     if isinstance(payload, list):
-        return [handle_mcp_request(item, session, request_context=request_context) for item in payload]
+        results = []
+        for item in payload:
+            if "id" not in item:
+                # Notification in batch — skip (no response)
+                continue
+            results.append(handle_mcp_request(item, session, request_context=request_context))
+        if not results:
+            return Response(status_code=202)
+        return results
+
+    # Handle notifications (no 'id' field) — acknowledge with 202
+    if "id" not in payload:
+        return Response(status_code=202)
+
     return handle_mcp_request(payload, session, request_context=request_context)
+
+
+@app.get("/mcp")
+async def mcp_sse_endpoint(request: Request):
+    """MCP Streamable HTTP GET endpoint for SSE session establishment.
+
+    Returns 405 — this server uses POST-only Streamable HTTP transport
+    (no server-initiated SSE streams). Clients should use POST for all
+    JSON-RPC communication.
+    """
+    return Response(status_code=405, content="SSE sessions not supported. Use POST.")
 
 
 # ============================================
@@ -10107,6 +10294,7 @@ async def api_assessment_scan_status(
             "active_run": pipeline_run,
             "review_gate": review_gate,
             "feature_status": feature_status,
+            "triage_progress": _assessment_triage_progress(session, assessment_id),
         },
         "last_updated": datetime.utcnow().isoformat(),
     }
@@ -10161,9 +10349,21 @@ async def api_advance_pipeline_stage(
     current_index = _pipeline_stage_index(current_stage)
     target_index = _pipeline_stage_index(target_stage)
 
-    # Re-run: allow reset from complete back to ai_analysis
-    if rerun and current_stage == PipelineStage.complete.value and target_stage == PipelineStage.ai_analysis.value:
-        _set_assessment_pipeline_stage(assessment_id, PipelineStage.scans.value, session=session)
+    # Re-run: allow restarting the AI loop from ai_analysis while preserving human edits.
+    if rerun and target_stage == PipelineStage.ai_analysis.value and current_stage in _AI_LOOP_RERUN_STAGES:
+        existing_pipeline_run = _get_assessment_pipeline_job_snapshot(assessment_id, session=session)
+        if existing_pipeline_run and str(existing_pipeline_run.get("status") or "").strip().lower() == "running":
+            raise HTTPException(
+                status_code=409,
+                detail="A pipeline stage run is already active for this assessment.",
+            )
+        rerun_details = _prepare_assessment_ai_loop_rerun(session, assessment_id)
+        reset_stage = (
+            PipelineStage.scans.value
+            if current_stage == PipelineStage.complete.value
+            else PipelineStage.ai_analysis.value
+        )
+        _set_assessment_pipeline_stage(assessment_id, reset_stage, session=session)
         started = _start_assessment_pipeline_job(
             assessment_id,
             target_stage=target_stage,
@@ -10182,8 +10382,11 @@ async def api_advance_pipeline_stage(
             "requested_stage": target_stage,
             "current_stage": _pipeline_stage_value(refreshed.pipeline_stage if refreshed else assessment.pipeline_stage),
             "rerun": True,
+            "rerun_mode": "ai_loop",
+            "rerun_details": rerun_details,
             "pipeline_run": pipeline_run,
             "review_gate": _assessment_review_gate_summary(session, assessment_id),
+            "feature_status": build_feature_assignment_summary(session, assessment_id=assessment_id),
         }
 
     if not force:
@@ -10312,12 +10515,14 @@ async def api_results_options(
     scan_ids: str = Query(default=""),
     customized_only: bool = Query(default=True),
     customization_type: str = Query(default="all"),
+    scope_state: str = Query(default="all"),
     session: Session = Depends(get_session),
 ):
     """Return cascading filter options for the Results pages."""
     selected_assessment_ids = _parse_csv_ints(assessment_ids)
     selected_scan_ids = _parse_csv_ints(scan_ids)
     resolved_customization_type = _normalize_customization_type(customization_type)
+    resolved_scope_state = _normalize_scope_state(scope_state)
 
     instances = session.exec(select(Instance).order_by(Instance.name.asc())).all()
     assessments_stmt = select(Assessment)
@@ -10341,6 +10546,7 @@ async def api_results_options(
         assessment_ids=selected_assessment_ids,
         customized_only=customized_only,
         customization_type=resolved_customization_type,
+        scope_state=resolved_scope_state,
     )
     scans_stmt = (
         select(Scan)
@@ -10358,6 +10564,7 @@ async def api_results_options(
         scan_ids=selected_scan_ids,
         customized_only=customized_only,
         customization_type=resolved_customization_type,
+        scope_state=resolved_scope_state,
     )
     app_file_classes = _results_option_app_file_classes(
         session,
@@ -10366,6 +10573,7 @@ async def api_results_options(
         scan_ids=selected_scan_ids,
         customized_only=customized_only,
         customization_type=resolved_customization_type,
+        scope_state=resolved_scope_state,
     )
 
     count_stmt = _scan_results_count_stmt()
@@ -10380,6 +10588,7 @@ async def api_results_options(
         "selected_scan_ids": selected_scan_ids,
         "customized_only": customized_only,
         "customization_type": resolved_customization_type,
+        "scope_state": resolved_scope_state,
         "scoped_count": scoped_count,
         "instances": [
             {
@@ -10426,6 +10635,7 @@ async def api_results_query(
     scan_ids: str = Query(default=""),
     customized_only: bool = Query(default=True),
     customization_type: str = Query(default="all"),
+    scope_state: str = Query(default="all"),
     app_file_classes: str = Query(default=""),
     limit: int = Query(default=500, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
@@ -10439,6 +10649,7 @@ async def api_results_query(
         scan_ids=_parse_csv_ints(scan_ids),
         customized_only=customized_only,
         customization_type=_normalize_customization_type(customization_type),
+        scope_state=_normalize_scope_state(scope_state),
         table_names=_parse_csv_strings(app_file_classes),
         limit=limit,
         offset=offset,
@@ -10496,6 +10707,7 @@ async def api_assessment_results(
     assessment_id: int,
     customized_only: bool = Query(default=True),
     customization_type: str = Query(default="all"),
+    scope_state: str = Query(default="all"),
     app_file_classes: str = Query(default=""),
     scan_ids: str = Query(default=""),
     limit: int = Query(default=500, ge=1, le=5000),
@@ -10514,6 +10726,7 @@ async def api_assessment_results(
         scan_ids=selected_scan_ids,
         customized_only=customized_only,
         customization_type=_normalize_customization_type(customization_type),
+        scope_state=_normalize_scope_state(scope_state),
         table_names=_parse_csv_strings(app_file_classes),
         limit=limit,
         offset=offset,
@@ -10527,6 +10740,7 @@ async def api_scan_results(
     scan_id: int,
     customized_only: bool = Query(default=True),
     customization_type: str = Query(default="all"),
+    scope_state: str = Query(default="all"),
     app_file_classes: str = Query(default=""),
     limit: int = Query(default=500, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
@@ -10542,6 +10756,7 @@ async def api_scan_results(
         scan_ids=[scan_id],
         customized_only=customized_only,
         customization_type=_normalize_customization_type(customization_type),
+        scope_state=_normalize_scope_state(scope_state),
         table_names=_parse_csv_strings(app_file_classes),
         limit=limit,
         offset=offset,
@@ -11504,6 +11719,7 @@ async def api_create_file_class_query(class_id: int, payload: Dict[str, Any] = B
         raise HTTPException(status_code=404, detail="App file class not found")
     obj = AppFileClassQuery(
         app_file_class_id=class_id,
+        assessment_type_config_id=payload.get("assessment_type_config_id"),
         query_type=payload["query_type"],
         pattern=payload["pattern"],
         target_table_field=payload.get("target_table_field"),
@@ -11522,7 +11738,8 @@ async def api_update_file_class_query(query_id: int, payload: Dict[str, Any] = B
     obj = session.get(AppFileClassQuery, query_id)
     if not obj:
         raise HTTPException(status_code=404, detail="Query not found")
-    for key in ("query_type", "pattern", "target_table_field", "description", "is_active", "display_order"):
+    for key in ("query_type", "pattern", "target_table_field", "description",
+                "is_active", "display_order", "assessment_type_config_id"):
         if key in payload:
             setattr(obj, key, payload[key])
     session.add(obj)
@@ -11601,6 +11818,66 @@ async def api_update_assessment_type(type_id: int, payload: Dict[str, Any] = Bod
     return _model_to_dict(obj)
 
 
+# -- Assessment Type ↔ File Class junction API ---------------------------------
+
+@app.get("/api/scan-config/assessment-types/{type_id}/file-classes")
+async def api_assessment_type_file_classes(type_id: int, session: Session = Depends(get_session)):
+    """Return file classes linked to an assessment type, with join to AppFileClass for labels."""
+    links = session.exec(
+        select(AssessmentTypeFileClass)
+        .where(AssessmentTypeFileClass.assessment_type_config_id == type_id)
+        .order_by(AssessmentTypeFileClass.display_order, AssessmentTypeFileClass.id)
+    ).all()
+    result = []
+    for link in links:
+        fc = session.get(AppFileClass, link.app_file_class_id)
+        result.append({
+            "id": link.id,
+            "assessment_type_config_id": link.assessment_type_config_id,
+            "app_file_class_id": link.app_file_class_id,
+            "sys_class_name": fc.sys_class_name if fc else None,
+            "label": fc.label if fc else None,
+            "is_default": link.is_default,
+            "display_order": link.display_order,
+        })
+    return {"file_classes": result}
+
+
+@app.put("/api/scan-config/assessment-types/{type_id}/file-classes")
+async def api_set_assessment_type_file_classes(
+    type_id: int,
+    payload: Dict[str, Any] = Body(...),
+    session: Session = Depends(get_session),
+):
+    """Replace the file-class links for an assessment type.
+
+    Expects ``{"file_classes": [{"app_file_class_id": 1, "is_default": true}, ...]}``
+    """
+    parent = session.get(AssessmentTypeConfig, type_id)
+    if not parent:
+        raise HTTPException(status_code=404, detail="Assessment type not found")
+
+    # Remove existing links
+    existing = session.exec(
+        select(AssessmentTypeFileClass)
+        .where(AssessmentTypeFileClass.assessment_type_config_id == type_id)
+    ).all()
+    for link in existing:
+        session.delete(link)
+
+    # Create new links
+    entries = payload.get("file_classes", [])
+    for idx, entry in enumerate(entries):
+        session.add(AssessmentTypeFileClass(
+            assessment_type_config_id=type_id,
+            app_file_class_id=entry["app_file_class_id"],
+            is_default=entry.get("is_default", True),
+            display_order=entry.get("display_order", idx * 10),
+        ))
+    session.commit()
+    return {"ok": True, "count": len(entries)}
+
+
 @app.get("/settings/llm-providers", response_class=HTMLResponse)
 def page_llm_settings(request: Request, session: Session = Depends(get_session)):
     """LLM provider settings page."""
@@ -11663,9 +11940,12 @@ def api_llm_provider_models(
     provider_id: int, session: Session = Depends(get_session)
 ):
     """List models for a provider."""
-    models = session.exec(
-        select(LLMModel).where(LLMModel.provider_id == provider_id)
-    ).all()
+    seed_default_catalog(session)
+    provider = session.get(LLMProvider, provider_id)
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    models = get_provider_models(session, provider)
     return [
         {
             "id": m.id,

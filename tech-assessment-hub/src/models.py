@@ -267,6 +267,11 @@ class Assessment(SQLModel, table=True):
 
     # Assessment type and state
     assessment_type: AssessmentType = AssessmentType.global_app
+    # FK to the admin-defined config row for this assessment type.
+    # Populated at creation from AssessmentTypeConfig.name matching assessment_type.
+    assessment_type_config_id: Optional[int] = Field(
+        default=None, foreign_key="assessment_type_config.id", index=True,
+    )
     state: AssessmentState = AssessmentState.pending
 
     # Target selection (based on assessment_type)
@@ -376,38 +381,6 @@ class AppFileClass(SQLModel, table=True):
 
 
 # ============================================
-# TABLE: AppFileClassQuery (Query patterns per file class)
-# ============================================
-
-class AppFileClassQuery(SQLModel, table=True):
-    """Query patterns for scanning a specific application file class.
-
-    Each AppFileClass can have multiple query patterns (e.g., a table-based
-    pattern AND a keyword pattern).  If no queries are defined for a class,
-    the scan engine falls back to a default metadata query:
-    ``sys_class_name={class}^123TEXTQUERY321={keyword}``
-    """
-    __tablename__ = "app_file_class_query"
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    app_file_class_id: int = Field(foreign_key="app_file_class.id", index=True)
-
-    # "table_pattern", "keyword_pattern", or "text_search"
-    query_type: str
-
-    # Encoded query template with {table}, {keyword}, {base} placeholders
-    pattern: str
-
-    # The SN metadata ref field used for artifact detail pulls
-    # e.g., "ref_sys_script.collection"
-    target_table_field: Optional[str] = None
-
-    description: Optional[str] = None
-    is_active: bool = True
-    display_order: int = 0
-
-
-# ============================================
 # TABLE: AssessmentTypeConfig (Assessment type definitions)
 # ============================================
 
@@ -433,6 +406,76 @@ class AssessmentTypeConfig(SQLModel, table=True):
     display_order: int = 0
 
 
+# ============================================
+# TABLE: AssessmentTypeFileClass (junction: assessment type ↔ file class)
+# ============================================
+
+class AssessmentTypeFileClass(SQLModel, table=True):
+    """Many-to-many link between AssessmentTypeConfig and AppFileClass.
+
+    Defines which file classes are relevant (and optionally default-selected)
+    for each assessment type.  When creating an assessment the UI can use this
+    to pre-select file classes appropriate for the chosen type.
+    """
+    __tablename__ = "assessment_type_file_class"
+    __table_args__ = (
+        UniqueConstraint(
+            "assessment_type_config_id", "app_file_class_id",
+            name="uq_atfc_type_class",
+        ),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    assessment_type_config_id: int = Field(foreign_key="assessment_type_config.id", index=True)
+    app_file_class_id: int = Field(foreign_key="app_file_class.id", index=True)
+
+    # If True this file class is selected by default when the user picks this assessment type
+    is_default: bool = True
+    display_order: int = 0
+
+
+# ============================================
+# TABLE: AppFileClassQuery (Query patterns per file class)
+# ============================================
+
+class AppFileClassQuery(SQLModel, table=True):
+    """Query patterns for scanning a specific application file class.
+
+    Each AppFileClass can have multiple query patterns (e.g., a table-based
+    pattern AND a keyword pattern).  If no queries are defined for a class,
+    the scan engine falls back to a default metadata query:
+    ``sys_class_name={class}^123TEXTQUERY321={keyword}``
+
+    When ``assessment_type_config_id`` is NULL the pattern is universal
+    (applies to all assessment types).  When set, the pattern is only used
+    for that specific assessment type — allowing different query strategies
+    per type (e.g. plugin assessments filtering by sys_package).
+    """
+    __tablename__ = "app_file_class_query"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    app_file_class_id: int = Field(foreign_key="app_file_class.id", index=True)
+
+    # Optional: restrict this pattern to a specific assessment type.
+    # NULL = universal pattern (used by any assessment type).
+    assessment_type_config_id: Optional[int] = Field(
+        default=None, foreign_key="assessment_type_config.id", index=True,
+    )
+
+    # "table_pattern", "keyword_pattern", or "text_search"
+    query_type: str
+
+    # Encoded query template with {table}, {keyword}, {base} placeholders
+    pattern: str
+
+    # The SN metadata ref field used for artifact detail pulls
+    # e.g., "ref_sys_script.collection"
+    target_table_field: Optional[str] = None
+
+    description: Optional[str] = None
+    is_active: bool = True
+    display_order: int = 0
+
 
 # ============================================
 # TABLE: InstanceAppFileType (sys_app_file_type cached)
@@ -447,6 +490,9 @@ class InstanceAppFileType(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     instance_id: int = Field(foreign_key="instance.id", index=True)
+
+    # Link to admin-defined AppFileClass (populated during sync when sys_class_name matches)
+    app_file_class_id: Optional[int] = Field(default=None, foreign_key="app_file_class.id", index=True)
 
     # ServiceNow identity
     sn_sys_id: str = Field(index=True)

@@ -745,11 +745,169 @@ def get_sn_fields_for_class(sys_class_name: str, include_common: bool = True) ->
     """Return the list of SN field element names to request for a class.
 
     Always includes sys_id. Optionally appends COMMON_INHERITED_FIELDS.
+    Checks curated ARTIFACT_DETAIL_DEFS first, falls back to dynamic defs.
     """
     defn = ARTIFACT_DETAIL_DEFS.get(sys_class_name)
+    if not defn:
+        defn = build_dynamic_artifact_def(sys_class_name)
     if not defn:
         return ["sys_id"]
     fields = ["sys_id"] + [f[0] for f in defn["fields"]]
     if include_common:
         fields.extend(f[0] for f in COMMON_INHERITED_FIELDS)
     return fields
+
+
+# ---------------------------------------------------------------------------
+# Dynamic artifact definition builder
+# ---------------------------------------------------------------------------
+
+# SN internal_type → py_type mapping for column creation.
+_SN_TYPE_TO_PY: Dict[str, str] = {
+    # Text / code types → "text"
+    "script": "text",
+    "script_plain": "text",
+    "script_server": "text",
+    "json": "text",
+    "xml": "text",
+    "html": "text",
+    "translated_html": "text",
+    "conditions": "text",
+    "template_value": "text",
+    "translated_text": "text",
+    "journal": "text",
+    "journal_input": "text",
+    "journal_list": "text",
+    # Boolean
+    "boolean": "bool",
+    # Integer types
+    "integer": "int",
+    "longint": "int",
+    "decimal": "int",
+    "float": "int",
+    "metric_absolute": "int",
+    "metric_counter": "int",
+    "metric_gauge": "int",
+    "order_index": "int",
+}
+# Everything else (string, reference, glide_date_time, GUID, choice, etc.) → "str"
+
+# SN internal_types that indicate code/script content.
+_CODE_INTERNAL_TYPES = {"script", "script_plain", "script_server"}
+
+# Fields already in COMMON_INHERITED_FIELDS — skip when building dynamic defs.
+_COMMON_FIELD_NAMES = {f[0] for f in COMMON_INHERITED_FIELDS}
+
+# Internal element names that are infrastructure, not useful for assessment.
+_SKIP_ELEMENTS = {
+    "sys_id", "sys_tags", "sys_domain", "sys_domain_path",
+    "sys_class_name", "sys_class_path", "sys_mod_count",
+    "sys_created_by", "sys_created_on", "sys_updated_by", "sys_updated_on",
+    "sys_scope", "sys_package", "sys_policy",
+    "sys_replace_on_upgrade", "sys_customer_update",
+}
+
+
+# Module-level cache so we don't re-query for the same class within a process.
+_dynamic_def_cache: Dict[str, Dict[str, Any] | None] = {}
+
+
+def build_dynamic_artifact_def(
+    sys_class_name: str,
+    instance_id: int | None = None,
+) -> Dict[str, Any] | None:
+    """Build an ARTIFACT_DETAIL_DEFS-compatible dict from local dictionary data.
+
+    Queries asmt_dictionary_entry for the given class's fields, maps SN
+    internal_types to py_types, and identifies code fields.
+
+    Returns None if no dictionary entries are found (class unknown locally).
+    """
+    cache_key = f"{sys_class_name}:{instance_id or 'any'}"
+    if cache_key in _dynamic_def_cache:
+        return _dynamic_def_cache[cache_key]
+
+    try:
+        from .database import engine
+        from sqlalchemy import text as sa_text
+
+        with engine.connect() as conn:
+            # Check table exists
+            check = conn.execute(
+                sa_text("SELECT name FROM sqlite_master WHERE type='table' AND name='asmt_dictionary_entry'")
+            ).first()
+            if not check:
+                _dynamic_def_cache[cache_key] = None
+                return None
+
+            # Query dictionary entries for this class
+            if instance_id:
+                rows = conn.execute(
+                    sa_text(
+                        "SELECT element, column_label, internal_type "
+                        "FROM asmt_dictionary_entry "
+                        "WHERE name = :name AND _instance_id = :iid "
+                        "ORDER BY element"
+                    ),
+                    {"name": sys_class_name, "iid": instance_id},
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    sa_text(
+                        "SELECT DISTINCT element, column_label, internal_type "
+                        "FROM asmt_dictionary_entry "
+                        "WHERE name = :name "
+                        "ORDER BY element"
+                    ),
+                    {"name": sys_class_name},
+                ).fetchall()
+
+        if not rows:
+            _dynamic_def_cache[cache_key] = None
+            return None
+
+        fields: List[Tuple[str, str, str]] = []
+        code_fields: List[str] = []
+
+        for element, label, internal_type in rows:
+            if not element or element in _SKIP_ELEMENTS or element in _COMMON_FIELD_NAMES:
+                continue
+            py_type = _SN_TYPE_TO_PY.get(internal_type or "", "str")
+            display_label = label or element.replace("_", " ").title()
+            fields.append((element, display_label, py_type))
+
+            if internal_type in _CODE_INTERNAL_TYPES:
+                code_fields.append(element)
+
+        if not fields:
+            _dynamic_def_cache[cache_key] = None
+            return None
+
+        defn: Dict[str, Any] = {
+            "local_table": f"asmt_{sys_class_name}",
+            "code_fields": code_fields,
+            "fields": fields,
+            "_dynamic": True,  # Flag so callers can tell this is auto-generated
+        }
+        _dynamic_def_cache[cache_key] = defn
+        return defn
+
+    except Exception:
+        import logging as _log
+        _log.getLogger(__name__).warning(
+            "Failed to build dynamic artifact def for %s", sys_class_name, exc_info=True,
+        )
+        _dynamic_def_cache[cache_key] = None
+        return None
+
+
+def resolve_artifact_def(sys_class_name: str) -> Dict[str, Any] | None:
+    """Resolve artifact def: curated first, then dynamic from local dictionary.
+
+    This is the primary entry point for all code that needs an artifact
+    definition — it unifies the hardcoded and dynamic paths.
+    """
+    defn = ARTIFACT_DETAIL_DEFS.get(sys_class_name)
+    if defn:
+        return defn
+    return build_dynamic_artifact_def(sys_class_name)

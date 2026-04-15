@@ -1326,3 +1326,11 @@ def test_flow_bar_js_actions_has_new_stages():
     keys = _re.findall(r"(\w+)\s*:\s*\{", raw)
     for new_stage in ["ai_analysis", "ai_refinement", "report"]:
         assert new_stage in keys, f"Missing action for new stage '{new_stage}'"
+
+
+def test_assessment_related_lists_place_out_of_scope_tab_third():
+    html = _read_ui_template()
+    matches = _re.findall(r'data-tab-btn="([^"]+)"', html)
+    assert matches[:3] == ["scans", "customizations", "out-of-scope"], (
+        f"Expected out-of-scope tab to be third, found: {matches[:3]}"
+    )

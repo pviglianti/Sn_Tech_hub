@@ -92,6 +92,7 @@ def test_assessment_customizations_endpoint_auto_heals_missing_rows(client, db_s
     assert payload["total"] == 1
     assert len(payload["customizations"]) == 1
     assert payload["customizations"][0]["name"] == "Business Rule A"
+    assert payload["classes"] == [{"table_name": "sys_script", "label": "sys_script", "count": 1}]
 
     post_count = len(
         db_session.exec(
@@ -150,3 +151,32 @@ def test_assessment_customizations_endpoint_removes_stale_non_customized_rows(cl
         ).all()
     )
     assert post_count == 0
+
+
+def test_assessment_customizations_scope_state_filters_in_and_out_of_scope(client, db_session):
+    assessment_id, scan_id = _seed_assessment_with_stale_customizations(db_session)
+    result = db_session.exec(
+        select(ScanResult).where(ScanResult.scan_id == scan_id).where(ScanResult.sys_id == "customized-1")
+    ).first()
+    assert result is not None
+
+    sync_single_result(db_session, result)
+
+    result.is_out_of_scope = True
+    db_session.add(result)
+    db_session.commit()
+    sync_single_result(db_session, result)
+
+    in_scope_response = client.get(f"/api/assessments/{assessment_id}/customizations?scope_state=in_scope")
+    assert in_scope_response.status_code == 200
+    in_scope_payload = in_scope_response.json()
+    assert in_scope_payload["total"] == 0
+    assert in_scope_payload["customizations"] == []
+    assert in_scope_payload["classes"] == []
+
+    out_scope_response = client.get(f"/api/assessments/{assessment_id}/customizations?scope_state=out_of_scope")
+    assert out_scope_response.status_code == 200
+    out_scope_payload = out_scope_response.json()
+    assert out_scope_payload["total"] == 1
+    assert out_scope_payload["customizations"][0]["is_out_of_scope"] is True
+    assert out_scope_payload["classes"] == [{"table_name": "sys_script", "label": "sys_script", "count": 1}]

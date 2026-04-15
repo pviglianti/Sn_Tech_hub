@@ -19,6 +19,7 @@ from sqlalchemy.engine import Engine
 from ..artifact_detail_defs import (
     ARTIFACT_DETAIL_DEFS,
     COMMON_INHERITED_FIELDS,
+    resolve_artifact_def,
 )
 from .csdm_ddl import (
     create_mirror_table,
@@ -104,6 +105,38 @@ def ensure_artifact_tables(engine: Engine) -> list[str]:
     return touched
 
 
+def ensure_artifact_table_for_class(engine: Engine, sys_class_name: str) -> str | None:
+    """Ensure the artifact detail table exists for a given class.
+
+    Uses curated defs first, falls back to dynamic defs from local dictionary.
+    Creates the table if it doesn't exist, adds missing columns if it does.
+
+    Returns the local table name, or None if no definition is available.
+    """
+    defn = resolve_artifact_def(sys_class_name)
+    if not defn:
+        return None
+
+    local_table = defn["local_table"]
+    field_mappings = _build_field_mappings(defn["fields"])
+
+    if not table_exists(engine, local_table):
+        create_mirror_table(engine, local_table, field_mappings)
+        logger.info(
+            "Created artifact table %s for %s (%d columns)",
+            local_table, sys_class_name, len(field_mappings),
+        )
+    else:
+        added = alter_mirror_table(engine, local_table, field_mappings)
+        if added:
+            logger.info(
+                "Added %d columns to artifact table %s for %s",
+                len(added), local_table, sys_class_name,
+            )
+
+    return local_table
+
+
 def upsert_artifact_records(
     engine: Engine,
     sys_class_name: str,
@@ -111,6 +144,8 @@ def upsert_artifact_records(
     records: list[dict],
 ) -> tuple[int, int]:
     """Upsert SN API records into the artifact detail table for a class.
+
+    Uses curated defs first, falls back to dynamic defs from local dictionary.
 
     Args:
         engine: SQLAlchemy engine.
@@ -122,9 +157,14 @@ def upsert_artifact_records(
         Tuple of (inserted_count, updated_count).
 
     Raises:
-        KeyError: If sys_class_name is not in ARTIFACT_DETAIL_DEFS.
+        KeyError: If sys_class_name has no resolvable artifact definition.
     """
-    defn = ARTIFACT_DETAIL_DEFS[sys_class_name]
+    defn = resolve_artifact_def(sys_class_name)
+    if not defn:
+        raise KeyError(
+            f"No artifact definition for '{sys_class_name}' — not in curated "
+            "defs and no local dictionary entries found"
+        )
     local_table = defn["local_table"]
     field_mappings = _build_field_mappings(defn["fields"])
 

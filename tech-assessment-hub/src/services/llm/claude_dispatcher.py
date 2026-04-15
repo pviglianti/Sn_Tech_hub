@@ -126,4 +126,39 @@ class ClaudeDispatcher(BaseDispatcher):
             return False, f"error: {exc}"
 
     def fetch_models(self, auth_slot: Any) -> List[Dict[str, Any]]:
-        return []
+        if getattr(auth_slot, "slot_kind", None) != "api_key":
+            raise RuntimeError("Anthropic live model refresh currently requires an API key auth slot")
+
+        import httpx
+
+        api_key = self.resolve_api_key(auth_slot, fallback_env_vars=["ANTHROPIC_API_KEY"])
+        resp = httpx.get(
+            "https://api.anthropic.com/v1/models",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise RuntimeError("Anthropic returned an unexpected model catalog response")
+
+        models: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            model_name = str(row.get("id") or "").strip()
+            if not model_name or model_name in seen:
+                continue
+            seen.add(model_name)
+            models.append({
+                "name": model_name,
+                "display": str(row.get("display_name") or model_name).strip(),
+                "effort": True,
+            })
+
+        return sorted(models, key=lambda item: item["display"].lower())

@@ -27,6 +27,7 @@ from ..models import (
     ScanResult,
 )
 from .assessment_phase_progress import checkpoint_phase_progress, start_phase_progress, complete_phase_progress
+from .ai_observation_history import merge_ai_observation_payload
 from .customization_sync import sync_single_result
 from .relationship_graph import RelationshipGraph, EDGE_WEIGHTS
 
@@ -197,7 +198,15 @@ def run_depth_first_analysis(
             "cross_reference_summary": cross_ref_summary,
         }
 
-        sr.ai_observations = json.dumps(analysis_result, sort_keys=True)
+        sr.ai_observations = json.dumps(
+            merge_ai_observation_payload(
+                sr.ai_observations,
+                analysis_result,
+                stage="ai_analysis",
+                replace_current=True,
+            ),
+            sort_keys=True,
+        )
 
         # 3. Write human-visible observations
         #    Note relationships: non-customized items as context,

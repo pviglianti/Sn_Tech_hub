@@ -73,4 +73,56 @@ class GeminiDispatcher(BaseDispatcher):
             return False, f"error: {exc}"
 
     def fetch_models(self, auth_slot):
-        return []
+        if getattr(auth_slot, "slot_kind", None) != "api_key":
+            raise RuntimeError("Gemini live model refresh currently requires an API key auth slot")
+
+        import httpx
+
+        api_key = self.resolve_api_key(
+            auth_slot,
+            fallback_env_vars=["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        )
+
+        models: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        page_token: Optional[str] = None
+
+        while True:
+            params: Dict[str, Any] = {"key": api_key, "pageSize": 1000}
+            if page_token:
+                params["pageToken"] = page_token
+            resp = httpx.get(
+                "https://generativelanguage.googleapis.com/v1beta/models",
+                params=params,
+                timeout=20,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            rows = payload.get("models") if isinstance(payload, dict) else None
+            if not isinstance(rows, list):
+                raise RuntimeError("Gemini returned an unexpected model catalog response")
+
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                methods = row.get("supportedGenerationMethods") or []
+                if isinstance(methods, list) and methods and "generateContent" not in methods:
+                    continue
+                raw_name = str(row.get("name") or "").strip()
+                if not raw_name:
+                    continue
+                model_name = raw_name.split("/", 1)[-1]
+                if model_name in seen:
+                    continue
+                seen.add(model_name)
+                models.append({
+                    "name": model_name,
+                    "display": str(row.get("displayName") or model_name).strip(),
+                    "effort": False,
+                })
+
+            page_token = str(payload.get("nextPageToken") or "").strip() if isinstance(payload, dict) else ""
+            if not page_token:
+                break
+
+        return sorted(models, key=lambda item: item["display"].lower())

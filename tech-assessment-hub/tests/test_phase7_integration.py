@@ -11,6 +11,7 @@ Sections:
 """
 
 import json
+from datetime import datetime
 import pytest
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ from sqlmodel import select
 
 from src.models import (
     Assessment,
+    AssessmentPhaseProgress,
     AssessmentState,
     AssessmentType,
     Instance,
@@ -471,6 +473,97 @@ class TestRerunIntegration:
             select(GeneralRecommendation).where(GeneralRecommendation.assessment_id == asmt.id)
         ).all()
         assert len(remaining) >= 1, "GeneralRecommendations should be preserved during re-run"
+
+    @patch("src.server._get_assessment_pipeline_job_snapshot", return_value=None)
+    @patch("src.server._start_assessment_pipeline_job", return_value=True)
+    def test_rerun_from_recommendations_archives_ai_history_and_resets_ai_phase_progress(
+        self, mock_start, mock_snap, client, db_session
+    ):
+        asmt, inst, scan, customized_srs, features = _seed_full_pipeline_data(
+            db_session, pipeline_stage=PipelineStage.recommendations.value
+        )
+        first = customized_srs[0]
+        first.ai_observations = json.dumps(
+            {
+                "analysis_stage": "ai_analysis",
+                "ai_loop_iteration": 1,
+                "scope_decision": "in_scope",
+                "scope_rationale": "Initial pass found a direct relationship.",
+            },
+            sort_keys=True,
+        )
+        db_session.add(first)
+        db_session.add(
+            AssessmentPhaseProgress(
+                assessment_id=asmt.id,
+                instance_id=asmt.instance_id,
+                phase=PipelineStage.ai_analysis.value,
+                status="completed",
+                total_items=3,
+                completed_items=3,
+                resume_from_index=3,
+                run_attempt=1,
+                started_at=datetime.utcnow(),
+                completed_at=datetime.utcnow(),
+                last_checkpoint_at=datetime.utcnow(),
+            )
+        )
+        db_session.add(
+            AssessmentPhaseProgress(
+                assessment_id=asmt.id,
+                instance_id=asmt.instance_id,
+                phase=PipelineStage.recommendations.value,
+                status="completed",
+                total_items=2,
+                completed_items=2,
+                resume_from_index=2,
+                run_attempt=1,
+                started_at=datetime.utcnow(),
+                completed_at=datetime.utcnow(),
+                last_checkpoint_at=datetime.utcnow(),
+            )
+        )
+        db_session.commit()
+
+        resp = client.post(
+            f"/api/assessments/{asmt.id}/advance-pipeline",
+            json={"target_stage": "ai_analysis", "rerun": True},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["success"] is True
+        assert data["rerun"] is True
+        assert data["rerun_mode"] == "ai_loop"
+        assert data["current_stage"] == "ai_analysis"
+
+        refreshed_first = db_session.get(ScanResult, first.id)
+        assert refreshed_first is not None
+        parsed = json.loads(refreshed_first.ai_observations or "{}")
+        assert "scope_decision" not in parsed
+        history = parsed.get("pass_history") or []
+        assert len(history) == 1
+        assert history[0]["iteration"] == 1
+        assert history[0]["snapshot"]["scope_decision"] == "in_scope"
+
+        ai_phase = db_session.exec(
+            select(AssessmentPhaseProgress)
+            .where(AssessmentPhaseProgress.assessment_id == asmt.id)
+            .where(AssessmentPhaseProgress.phase == PipelineStage.ai_analysis.value)
+        ).first()
+        assert ai_phase is not None
+        assert ai_phase.status == "pending"
+        assert ai_phase.resume_from_index == 0
+        assert ai_phase.run_attempt == 2
+
+        reco_phase = db_session.exec(
+            select(AssessmentPhaseProgress)
+            .where(AssessmentPhaseProgress.assessment_id == asmt.id)
+            .where(AssessmentPhaseProgress.phase == PipelineStage.recommendations.value)
+        ).first()
+        assert reco_phase is not None
+        assert reco_phase.status == "pending"
+        assert reco_phase.resume_from_index == 0
+        assert reco_phase.run_attempt == 2
 
 
 # ===========================================================================

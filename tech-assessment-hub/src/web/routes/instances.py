@@ -561,6 +561,12 @@ def create_instances_router(
             session.add(row)
             updated_rows.append(row)
 
+        # Auto-provision AppFileClass for any rows now assessment-available
+        from ..services.app_file_class_sync import ensure_app_file_class_for_instance_type
+        for row in updated_rows:
+            if row.is_available_for_assessment:
+                ensure_app_file_class_for_instance_type(session, row, commit=False)
+
         session.commit()
         for row in updated_rows:
             session.refresh(row)
@@ -622,6 +628,12 @@ def create_instances_router(
             row.is_default_for_assessment = bool(baseline_default)
             session.add(row)
             updated_rows.append(row)
+
+        # Auto-provision AppFileClass for any rows now assessment-available
+        from ..services.app_file_class_sync import ensure_app_file_class_for_instance_type as _ensure_afc
+        for row in updated_rows:
+            if row.is_available_for_assessment:
+                _ensure_afc(session, row, commit=False)
 
         session.commit()
         for row in updated_rows:

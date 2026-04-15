@@ -26,9 +26,10 @@ from ..artifact_detail_defs import (
     ARTIFACT_DETAIL_DEFS,
     get_class_label,
     get_sn_fields_for_class,
+    resolve_artifact_def,
 )
 from ..models import Assessment, Scan, ScanResult
-from .artifact_ddl import upsert_artifact_records
+from .artifact_ddl import ensure_artifact_table_for_class, upsert_artifact_records
 from .sn_client import ServiceNowClient
 
 logger = logging.getLogger(__name__)
@@ -49,9 +50,9 @@ def _collect_artifact_targets(
 ) -> Dict[str, Set[str]]:
     """Collect distinct (sys_class_name → set of sys_ids) from scan results.
 
-    Only includes classes that exist in ARTIFACT_DETAIL_DEFS.
-    Uses table_name from scan_result as the class identifier (this is the
-    actual SN table name, e.g., "sys_script_include").
+    Includes any class that has a resolvable artifact definition — either
+    from the curated ARTIFACT_DETAIL_DEFS or dynamically built from local
+    dictionary data.
     """
     scans = session.exec(
         select(Scan).where(Scan.assessment_id == assessment_id)
@@ -66,13 +67,27 @@ def _collect_artifact_targets(
         )
     ).all()
 
-    targets: Dict[str, Set[str]] = defaultdict(set)
+    # First pass: collect all classes with sys_ids
+    raw_targets: Dict[str, Set[str]] = defaultdict(set)
     for table_name, sys_id in results:
         class_name = table_name or ""
-        if class_name in ARTIFACT_DETAIL_DEFS and sys_id:
-            targets[class_name].add(sys_id)
+        if class_name and sys_id:
+            raw_targets[class_name].add(sys_id)
 
-    return dict(targets)
+    # Second pass: keep only classes that have a resolvable artifact def
+    targets: Dict[str, Set[str]] = {}
+    for class_name, sys_ids in raw_targets.items():
+        defn = resolve_artifact_def(class_name)
+        if defn:
+            targets[class_name] = sys_ids
+        else:
+            logger.debug(
+                "Skipping %s (%d results) — no artifact definition available "
+                "(not in curated defs and no local dictionary entries)",
+                class_name, len(sys_ids),
+            )
+
+    return targets
 
 
 def _batch_pull_class(
@@ -183,6 +198,20 @@ def pull_artifact_details_for_assessment(
             "Pulling %d %s artifacts for assessment %d (instance %d)",
             total, label, assessment.id, instance_id,
         )
+
+        # Ensure the artifact detail table exists (creates dynamically if needed)
+        local_table = ensure_artifact_table_for_class(engine, class_name)
+        if not local_table:
+            logger.warning(
+                "Skipping %s — could not create artifact table (no definition)",
+                class_name,
+            )
+            summary["by_class"][class_name] = {
+                "label": label, "pulled": 0, "total": total, "status": "skipped",
+            }
+            if progress_callback:
+                progress_callback(class_name, label, "skipped", 0, total)
+            continue
 
         # Notify: running
         if progress_callback:

@@ -28,6 +28,7 @@ from .feature_governance import build_feature_assignment_summary, refresh_featur
 from .integration_properties import AIFeatureProperties, AIRuntimeProperties
 from .llm.dispatcher_router import DispatcherRouter, ResolvedConfig
 from .llm.models import LLMAuthSlot, LLMModel, LLMProvider
+from .ai_swarm import build_feature_stage_swarm_prompt, swarm_enabled
 
 
 _FEATURE_STAGE_TOOLSETS = {
@@ -164,6 +165,8 @@ def _build_feature_stage_prompt(
     *,
     assessment: Assessment,
     stage: str,
+    runtime_props: AIRuntimeProperties,
+    provider_kind: str,
     pass_plan_item: Dict[str, Any],
     feature_props: AIFeatureProperties,
     use_registered_prompts: bool,
@@ -256,6 +259,15 @@ Do not rename features or rebalance memberships in this stage.
 
     sections.append(pass_instructions.strip())
     sections.append(common_rules.strip())
+    if swarm_enabled(runtime_props):
+        sections.append(
+            build_feature_stage_swarm_prompt(
+                provider_kind=provider_kind,
+                stage=stage,
+                pass_key=pass_key,
+                max_workers=max(1, runtime_props.max_concurrent_sessions),
+            ).strip()
+        )
     return "\n\n---\n\n".join(section for section in sections if section)
 
 
@@ -371,6 +383,7 @@ def run_ai_feature_stage_dispatch(
         full_tool_names = list(STAGE_TOOL_SETS.get(stage, []))
         for index, pass_plan_item in enumerate(relevant_passes, start=1):
             coverage_summary = build_feature_assignment_summary(session, assessment_id=int(assessment.id))
+            pass_key = str(pass_plan_item.get("pass_key") or "").strip().lower()
             resolved = _resolve_pass_dispatch_config(
                 session,
                 stage=stage,
@@ -381,6 +394,8 @@ def run_ai_feature_stage_dispatch(
                 session,
                 assessment=assessment,
                 stage=stage,
+                runtime_props=runtime_props,
+                provider_kind=resolved.provider_kind,
                 pass_plan_item=pass_plan_item,
                 feature_props=feature_props,
                 use_registered_prompts=use_registered_prompts,
@@ -395,6 +410,7 @@ def run_ai_feature_stage_dispatch(
                 allowed_tools=full_tool_names,
                 rpc_url=_resolve_rpc_url_for_stage(session),
                 auth_slot=resolved.auth_slot,
+                pass_key=pass_key,
             )
             session.expire_all()
             refresh_feature_metadata(session, assessment_id=int(assessment.id), commit=False)

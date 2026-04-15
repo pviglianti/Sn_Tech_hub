@@ -555,8 +555,15 @@ def _existing_results_for_assessment(session: Session, assessment_id: int, sys_i
 def _load_queries_for_classes(
     session: Session,
     class_ids: List[int],
+    assessment_type_config_id: Optional[int] = None,
 ) -> Dict[int, List[AppFileClassQuery]]:
-    """Load AppFileClassQuery rows for a set of file class IDs, grouped by class."""
+    """Load AppFileClassQuery rows for a set of file class IDs, grouped by class.
+
+    Resolution order per file class:
+    1. If *assessment_type_config_id* is provided and type-specific patterns
+       exist for a given class, use **only** those.
+    2. Otherwise fall back to universal patterns (assessment_type_config_id IS NULL).
+    """
     if not class_ids:
         return {}
     all_queries = session.exec(
@@ -564,9 +571,23 @@ def _load_queries_for_classes(
         .where(AppFileClassQuery.app_file_class_id.in_(class_ids))
         .order_by(AppFileClassQuery.display_order, AppFileClassQuery.id)
     ).all()
-    result: Dict[int, List[AppFileClassQuery]] = {}
+
+    # Partition into type-specific and universal buckets
+    typed: Dict[int, List[AppFileClassQuery]] = {}
+    universal: Dict[int, List[AppFileClassQuery]] = {}
     for q in all_queries:
-        result.setdefault(q.app_file_class_id, []).append(q)
+        if q.assessment_type_config_id is not None and q.assessment_type_config_id == assessment_type_config_id:
+            typed.setdefault(q.app_file_class_id, []).append(q)
+        elif q.assessment_type_config_id is None:
+            universal.setdefault(q.app_file_class_id, []).append(q)
+
+    # Merge: prefer type-specific, fall back to universal
+    result: Dict[int, List[AppFileClassQuery]] = {}
+    for cid in class_ids:
+        if cid in typed:
+            result[cid] = typed[cid]
+        elif cid in universal:
+            result[cid] = universal[cid]
     return result
 
 
@@ -593,9 +614,10 @@ def create_scans_for_assessment(
     selected_classes = parse_list(assessment.app_file_classes_json)
     app_file_classes = _fetch_app_file_classes(session, selected_classes, instance_id=assessment.instance_id)
 
-    # Load query patterns from DB for all selected classes
+    # Load query patterns from DB for all selected classes, scoped to assessment type
     class_ids = [fc.id for fc in app_file_classes if fc.id is not None]
-    queries_by_class = _load_queries_for_classes(session, class_ids)
+    at_config_id = at_config.id if at_config else None
+    queries_by_class = _load_queries_for_classes(session, class_ids, assessment_type_config_id=at_config_id)
 
     scope_id = None
     if assessment.scope_filter == "global":

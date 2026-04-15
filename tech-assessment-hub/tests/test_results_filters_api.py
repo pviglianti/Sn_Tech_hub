@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timedelta
 
 import pytest
+from sqlmodel import select
 
 from src.models import (
     Assessment,
@@ -231,6 +232,38 @@ def test_assessment_scan_and_type_filters_cascade(results_ctx):
     assert row["instance"]["id"] == results_ctx.instance_a.id
 
 
+def test_scope_state_filters_results_payload(results_ctx):
+    out_of_scope = results_ctx.session.exec(
+        select(ScanResult).where(ScanResult.scan_id == results_ctx.scan_a2.id).where(ScanResult.sys_id == "sys_a_new")
+    ).first()
+    assert out_of_scope is not None
+    out_of_scope.is_out_of_scope = True
+    results_ctx.session.add(out_of_scope)
+    results_ctx.session.commit()
+
+    in_scope_payload = _query_scan_results_payload(
+        results_ctx.session,
+        assessment_ids=[results_ctx.assessment_a.id],
+        customized_only=False,
+        customization_type="all",
+        scope_state="in_scope",
+        limit=100,
+    )
+    assert {row["name"] for row in in_scope_payload["results"]} == {"A Modified", "A OOTB"}
+
+    out_scope_payload = _query_scan_results_payload(
+        results_ctx.session,
+        assessment_ids=[results_ctx.assessment_a.id],
+        customized_only=False,
+        customization_type="all",
+        scope_state="out_of_scope",
+        limit=100,
+    )
+    assert out_scope_payload["total"] == 1
+    assert out_scope_payload["results"][0]["name"] == "A New"
+    assert out_scope_payload["results"][0]["is_out_of_scope"] is True
+
+
 def test_results_option_classes_follow_assessment_selected_classes(results_ctx):
     classes = _results_option_app_file_classes(
         results_ctx.session,
@@ -242,6 +275,28 @@ def test_results_option_classes_follow_assessment_selected_classes(results_ctx):
     )
 
     assert classes == ["sys_script", "sys_script_include", "sys_ui_action"]
+
+
+def test_results_option_classes_respect_scope_state(results_ctx):
+    out_of_scope = results_ctx.session.exec(
+        select(ScanResult).where(ScanResult.scan_id == results_ctx.scan_a2.id).where(ScanResult.sys_id == "sys_a_new")
+    ).first()
+    assert out_of_scope is not None
+    out_of_scope.is_out_of_scope = True
+    results_ctx.session.add(out_of_scope)
+    results_ctx.session.commit()
+
+    classes = _results_option_app_file_classes(
+        results_ctx.session,
+        instance_id=results_ctx.instance_a.id,
+        assessment_ids=[results_ctx.assessment_a.id],
+        scan_ids=[],
+        customized_only=False,
+        customization_type="all",
+        scope_state="out_of_scope",
+    )
+
+    assert classes == ["sys_ui_action"]
 
 
 def test_results_option_classes_are_stable_across_customization_scope(results_ctx):

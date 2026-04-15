@@ -6,7 +6,12 @@ from .claude_dispatcher import ClaudeDispatcher
 from .gemini_dispatcher import GeminiDispatcher
 from .codex_dispatcher import CodexDispatcher
 from .dispatcher_router import DispatcherRouter, ResolvedConfig
-from .provider_catalog import seed_default_catalog, get_providers_with_models
+from .provider_catalog import (
+    seed_default_catalog,
+    get_provider_models,
+    get_providers_with_models,
+    sync_fetched_provider_models,
+)
 from .auth_manager import AuthManager
 
 __all__ = [
@@ -14,6 +19,7 @@ __all__ = [
     "BaseDispatcher", "DispatchResult",
     "ClaudeDispatcher", "GeminiDispatcher", "CodexDispatcher",
     "DispatcherRouter", "ResolvedConfig",
-    "seed_default_catalog", "get_providers_with_models",
+    "seed_default_catalog", "get_provider_models", "get_providers_with_models",
+    "sync_fetched_provider_models",
     "AuthManager",
 ]

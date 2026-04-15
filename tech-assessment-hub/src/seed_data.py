@@ -8,7 +8,7 @@ from sqlmodel import select
 
 from .models import (
     GlobalApp, AppFileClass, NumberSequence, BestPractice, BestPracticeCategory,
-    AppFileClassQuery, AssessmentTypeConfig,
+    AppFileClassQuery, AssessmentTypeConfig, AssessmentTypeFileClass,
 )
 from .app_file_class_catalog import app_file_class_seed_rows
 
@@ -817,6 +817,44 @@ def seed_assessment_type_configs(session: Session):
     print(f"Seeded {len(configs)} assessment type configs")
 
 
+def seed_assessment_type_file_classes(session: Session):
+    """Seed the AssessmentTypeFileClass junction table.
+
+    Links each assessment type to the file classes that are relevant/default
+    for that type.  Currently all active file classes are linked to
+    ``global_app`` (existing behaviour).  Other types get the same initial
+    set but can be customised later via the admin UI.
+
+    Idempotent — skips rows where (assessment_type_config_id, app_file_class_id)
+    already exists.
+    """
+    all_types = session.exec(select(AssessmentTypeConfig)).all()
+    type_map = {t.name: t.id for t in all_types}
+    all_classes = session.exec(
+        select(AppFileClass).where(AppFileClass.is_active == True)
+    ).all()
+
+    existing = session.exec(select(AssessmentTypeFileClass)).all()
+    existing_keys = {(r.assessment_type_config_id, r.app_file_class_id) for r in existing}
+
+    created = 0
+    for type_name, type_id in type_map.items():
+        for idx, fc in enumerate(all_classes):
+            key = (type_id, fc.id)
+            if key in existing_keys:
+                continue
+            session.add(AssessmentTypeFileClass(
+                assessment_type_config_id=type_id,
+                app_file_class_id=fc.id,
+                is_default=True,
+                display_order=idx * 10,
+            ))
+            created += 1
+
+    session.commit()
+    print(f"Seeded {created} assessment-type ↔ file-class links ({len(type_map)} types × {len(all_classes)} classes)")
+
+
 def run_seed():
     """Run all seed operations"""
     with Session(engine) as session:
@@ -827,6 +865,7 @@ def run_seed():
         seed_best_practices(session)
         seed_app_file_class_queries(session)
         seed_assessment_type_configs(session)
+        seed_assessment_type_file_classes(session)
         print("Seed complete!")
 
 

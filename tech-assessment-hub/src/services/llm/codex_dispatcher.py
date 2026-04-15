@@ -75,4 +75,55 @@ class CodexDispatcher(BaseDispatcher):
             return False, f"error: {exc}"
 
     def fetch_models(self, auth_slot):
-        return []
+        if getattr(auth_slot, "slot_kind", None) != "api_key":
+            raise RuntimeError("OpenAI live model refresh currently requires an API key auth slot")
+
+        import httpx
+
+        api_key = self.resolve_api_key(auth_slot, fallback_env_vars=["OPENAI_API_KEY"])
+        resp = httpx.get(
+            "https://api.openai.com/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise RuntimeError("OpenAI returned an unexpected model catalog response")
+
+        excluded_fragments = (
+            "audio",
+            "realtime",
+            "search",
+            "transcribe",
+            "tts",
+            "embedding",
+            "moderation",
+            "image",
+            "whisper",
+            "omni",
+            "chatgpt",
+        )
+
+        models: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            model_name = str(row.get("id") or "").strip()
+            if not model_name or model_name in seen:
+                continue
+            if not (model_name.startswith("gpt-") or model_name.startswith("o")):
+                continue
+            lowered = model_name.lower()
+            if any(fragment in lowered for fragment in excluded_fragments):
+                continue
+            seen.add(model_name)
+            models.append({
+                "name": model_name,
+                "display": model_name,
+                "effort": True,
+            })
+
+        return sorted(models, key=lambda item: item["name"].lower())

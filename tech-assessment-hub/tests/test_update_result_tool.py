@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 
 from sqlmodel import select
 
@@ -129,3 +130,47 @@ def test_update_result_tool_backfills_missing_customization_row(db_session):
     assert customization is not None
     assert customization.review_status == ReviewStatus.review_in_progress
     assert customization.recommendation == "New recommendation text"
+
+
+def test_update_result_tool_preserves_prior_pass_history(db_session):
+    result_id = _seed_customized_result(db_session, create_customization=True)
+    seeded = db_session.get(ScanResult, result_id)
+    assert seeded is not None
+    seeded.ai_observations = json.dumps(
+        {
+            "pass_history": [
+                {
+                    "iteration": 1,
+                    "stage": "ai_analysis",
+                    "reason": "ai_loop_rerun",
+                    "archived_at": "2026-04-04T00:00:00",
+                    "summary_keys": ["scope_decision"],
+                    "snapshot": {"scope_decision": "in_scope"},
+                }
+            ]
+        },
+        sort_keys=True,
+    )
+    db_session.add(seeded)
+    db_session.commit()
+
+    payload = {
+        "result_id": result_id,
+        "ai_observations": {
+            "analysis_stage": "ai_analysis",
+            "scope_decision": "adjacent",
+            "scope_rationale": "Touches the target table indirectly.",
+        },
+    }
+    response = handle(payload, db_session)
+
+    assert response["success"] is True
+
+    refreshed = db_session.get(ScanResult, result_id)
+    assert refreshed is not None
+    parsed = json.loads(refreshed.ai_observations or "{}")
+    assert parsed.get("ai_loop_iteration") == 2
+    assert parsed.get("scope_decision") == "adjacent"
+    history = parsed.get("pass_history") or []
+    assert len(history) == 1
+    assert history[0]["snapshot"]["scope_decision"] == "in_scope"

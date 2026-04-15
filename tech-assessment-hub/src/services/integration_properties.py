@@ -79,6 +79,7 @@ OBSERVATIONS_INCLUDE_USAGE_QUERIES = "observations.include_usage_queries"
 OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT = "observations.max_usage_queries_per_result"
 
 # AI Analysis pipeline keys
+AI_ANALYSIS_CLI_TIMEOUT = "ai_analysis.cli_timeout_seconds"
 AI_ANALYSIS_BATCH_SIZE = "ai_analysis.batch_size"
 AI_ANALYSIS_ENABLE_DEPTH_FIRST = "ai_analysis.enable_depth_first_traversal"
 AI_ANALYSIS_CONTEXT_ENRICHMENT = "ai_analysis.context_enrichment"
@@ -159,7 +160,8 @@ class ObservationProperties:
 @dataclass(frozen=True)
 class AIAnalysisProperties:
     """Typed AI analysis stage properties loaded from app_config."""
-    batch_size: int = 1  # Default to one artifact per connected AI dispatch
+    batch_size: int = 1  # Artifacts per connected AI dispatch (swarm may override)
+    cli_timeout_seconds: int = 900  # Per-artifact CLI dispatch timeout
     enable_depth_first: bool = True
     context_enrichment: str = "auto"  # "auto", "always", "never"
     max_rabbit_hole_depth: int = 10
@@ -291,9 +293,8 @@ AI_RUNTIME_PROVIDER_OPTIONS: List[Tuple[str, str]] = [
 ]
 
 AI_RUNTIME_EXECUTION_STRATEGY_OPTIONS: List[Tuple[str, str]] = [
-    ("single", "Single Session (one batch at a time)"),
-    ("concurrent", "Concurrent (parallel batches)"),
-    ("swarm", "Swarm (multi-role coordinated sessions)"),
+    ("single", "Single Session (one artifact at a time)"),
+    ("swarm", "Swarm (multi-agent coordinated sessions)"),
 ]
 
 PROPERTY_DEFAULTS: Dict[str, str] = {
@@ -305,7 +306,7 @@ PROPERTY_DEFAULTS: Dict[str, str] = {
     FETCH_MAX_BATCHES: "5000",
     # Pull optimization defaults
     PULL_ORDER_DESC: "true",
-    PULL_MAX_RECORDS: "5000",
+    PULL_MAX_RECORDS: "0",
     PULL_BAIL_UNCHANGED_RUN: "50",
     # Reasoning engine defaults
     REASONING_US_MIN_SHARED_RECORDS: "1",
@@ -328,6 +329,7 @@ PROPERTY_DEFAULTS: Dict[str, str] = {
     OBSERVATIONS_MAX_USAGE_QUERIES_PER_RESULT: "2",
     # AI Analysis pipeline defaults
     AI_ANALYSIS_BATCH_SIZE: "1",
+    AI_ANALYSIS_CLI_TIMEOUT: "900",
     AI_ANALYSIS_ENABLE_DEPTH_FIRST: "true",
     AI_ANALYSIS_CONTEXT_ENRICHMENT: "auto",
     AI_ANALYSIS_MAX_RABBIT_HOLE_DEPTH: "10",
@@ -465,14 +467,17 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         description=(
             "Maximum total records to retrieve per pull run across all batches. "
             "Acts as an independent safety cap. When reached, the pull stops "
-            "regardless of count or content gates."
+            "regardless of count or content gates. "
+            "Set to 0 for unlimited (no cap). Default is 0 — classification "
+            "accuracy requires complete supporting-data pulls (metadata_customization, "
+            "customer_update_xml, version_history, update_sets)."
         ),
         value_type="int",
         default=PROPERTY_DEFAULTS[PULL_MAX_RECORDS],
         scope=PROPERTY_SCOPE_APPLICATION,
         applies_to="all_sync",
         section=SECTION_FETCH,
-        min_value=100,
+        min_value=0,
         max_value=500000,
     ),
     PULL_BAIL_UNCHANGED_RUN: IntegrationPropertyDefinition(
@@ -743,16 +748,33 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         label="AI Analysis Batch Size",
         description=(
             "Number of artifacts to process per connected AI analysis dispatch. "
-            "Use 1 for strict artifact-by-artifact review; raise this only when "
-            "you intentionally want broader batches."
+            "Use 1 for strict artifact-by-artifact review; raise for broader batches "
+            "(swarm mode may override this upward)."
         ),
         value_type="int",
         default=PROPERTY_DEFAULTS[AI_ANALYSIS_BATCH_SIZE],
         scope=PROPERTY_SCOPE_APPLICATION,
         applies_to="ai_analysis",
         section=SECTION_AI_ANALYSIS,
-        min_value=0,
-        max_value=1000,
+        min_value=1,
+        max_value=100,
+    ),
+    AI_ANALYSIS_CLI_TIMEOUT: IntegrationPropertyDefinition(
+        key=AI_ANALYSIS_CLI_TIMEOUT,
+        label="AI Analysis CLI Timeout (seconds)",
+        description=(
+            "Maximum time in seconds to wait for each CLI session "
+            "(Codex or Claude). In single mode this covers one artifact; "
+            "in swarm mode it covers the entire batch. Increase if "
+            "dispatches time out; decrease to fail fast on stuck sessions."
+        ),
+        value_type="int",
+        default=PROPERTY_DEFAULTS[AI_ANALYSIS_CLI_TIMEOUT],
+        scope=PROPERTY_SCOPE_APPLICATION,
+        applies_to="ai_analysis",
+        section=SECTION_AI_ANALYSIS,
+        min_value=60,
+        max_value=3600,
     ),
     AI_ANALYSIS_ENABLE_DEPTH_FIRST: IntegrationPropertyDefinition(
         key=AI_ANALYSIS_ENABLE_DEPTH_FIRST,
@@ -941,10 +963,9 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         key=AI_RUNTIME_EXECUTION_STRATEGY,
         label="AI Execution Strategy",
         description=(
-            "How AI batches are dispatched. 'single' runs one batch at a time "
-            "(V1 default). 'concurrent' runs multiple batches in parallel. "
-            "'swarm' uses coordinated multi-role sessions. Only 'single' is "
-            "implemented in V1 — other options are reserved for future use."
+            "How AI dispatches run. 'single' sends one artifact per CLI call. "
+            "'swarm' sends a batch of artifacts and tells the CLI to use "
+            "multi-agent coordination (Codex subagents / Claude agent teams)."
         ),
         value_type="select",
         default=PROPERTY_DEFAULTS[AI_RUNTIME_EXECUTION_STRATEGY],
@@ -957,9 +978,9 @@ PROPERTY_DEFINITIONS: Dict[str, IntegrationPropertyDefinition] = {
         key=AI_RUNTIME_MAX_CONCURRENT_SESSIONS,
         label="Max Concurrent AI Sessions",
         description=(
-            "Maximum number of parallel AI sessions when using concurrent or "
-            "swarm execution strategy. Ignored when strategy is 'single'. "
-            "Higher values increase speed but consume more API budget."
+            "Max parallel workers in swarm mode. Controls how many subagents "
+            "the CLI can run simultaneously. Ignored in 'single' mode. "
+            "Higher values = faster but more API budget."
         ),
         value_type="int",
         default=PROPERTY_DEFAULTS[AI_RUNTIME_MAX_CONCURRENT_SESSIONS],
@@ -1478,6 +1499,12 @@ def load_ai_analysis_properties(
             session,
             AI_ANALYSIS_BATCH_SIZE,
             defaults.batch_size,
+            instance_id=instance_id,
+        ),
+        cli_timeout_seconds=_get_int(
+            session,
+            AI_ANALYSIS_CLI_TIMEOUT,
+            defaults.cli_timeout_seconds,
             instance_id=instance_id,
         ),
         enable_depth_first=enable_depth_first in {"1", "true", "yes", "y", "on"},
