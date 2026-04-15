@@ -1,0 +1,93 @@
+name: Deploy to GCE VM
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tech-assessment-hub/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:        # lets you trigger manually from the Actions tab
+
+concurrency:
+  group: deploy-vm
+  cancel-in-progress: false  # don't cancel mid-deploy
+
+permissions:
+  contents: read
+  id-token: write            # required for OIDC → GCP auth
+
+env:
+  GCP_PROJECT: ta-app-491606
+  VM_NAME: pvig-ta-2026
+  VM_ZONE: us-central1-b
+  REMOTE_APP_DIR: /opt/ta-hub/app
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/1005358693904/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: ta-hub-github-deploy@ta-app-491606.iam.gserviceaccount.com
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Pack code
+        run: |
+          tar czf /tmp/ta-hub-deploy.tgz \
+            --exclude='.git' \
+            --exclude='venv' --exclude='.venv' \
+            --exclude='__pycache__' --exclude='*.pyc' \
+            --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db-journal' \
+            --exclude='recovery_snapshots' \
+            --exclude='data/*.jsonl' --exclude='data/ai_prompts' --exclude='data/reports' \
+            --exclude='data/server.log' --exclude='data/server.pid' --exclude='data/server.url' \
+            --exclude='.tech_assessment.db.*' --exclude='snapshot_*.db' \
+            --exclude='.DS_Store' --exclude='node_modules' --exclude='.pytest_cache' \
+            -C tech-assessment-hub .
+          ls -lh /tmp/ta-hub-deploy.tgz
+
+      - name: Upload to VM
+        run: |
+          gcloud compute scp --zone="$VM_ZONE" --tunnel-through-iap \
+            /tmp/ta-hub-deploy.tgz "$VM_NAME:/tmp/ta-hub-deploy.tgz"
+
+      - name: Extract + install deps + restart
+        run: |
+          gcloud compute ssh "$VM_NAME" --zone="$VM_ZONE" --tunnel-through-iap --command="
+            set -e
+            # Preserve data symlink across extract
+            if [ -L $REMOTE_APP_DIR/data ]; then
+              DATA_TARGET=\$(readlink $REMOTE_APP_DIR/data)
+            fi
+            tar xzf /tmp/ta-hub-deploy.tgz -C $REMOTE_APP_DIR
+            if [ -n \"\${DATA_TARGET:-}\" ] && [ ! -L $REMOTE_APP_DIR/data ]; then
+              rm -rf $REMOTE_APP_DIR/data
+              ln -sfn \"\$DATA_TARGET\" $REMOTE_APP_DIR/data
+            fi
+            $REMOTE_APP_DIR/venv/bin/pip install -q -r $REMOTE_APP_DIR/requirements.txt
+            rm -f /tmp/ta-hub-deploy.tgz
+            sudo systemctl restart ta-hub
+          "
+
+      - name: Health check
+        run: |
+          sleep 8
+          HTTP_CODE=$(gcloud compute ssh "$VM_NAME" --zone="$VM_ZONE" --tunnel-through-iap \
+            --command="curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/assessments")
+          echo "HTTP $HTTP_CODE"
+          case "$HTTP_CODE" in
+            200|302|303|307|308) echo "✅ healthy" ;;
+            *)
+              echo "❌ unhealthy — tailing logs:"
+              gcloud compute ssh "$VM_NAME" --zone="$VM_ZONE" --tunnel-through-iap \
+                --command="sudo tail -60 /var/log/ta-hub.log"
+              exit 1
+              ;;
+          esac
