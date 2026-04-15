@@ -4,7 +4,7 @@ description: >
   Refine feature groupings from structural/class-level buckets into functional
   solution-level features. Splits mega-features, merges related ones, and
   renames to describe business capabilities.
-allowed-tools: mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__get_features mcp__tech-assessment-hub__create_feature mcp__tech-assessment-hub__update_feature mcp__tech-assessment-hub__assign_result_to_feature mcp__tech-assessment-hub__remove_result_from_feature
+allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_grouping_signals mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__get_features mcp__tech-assessment-hub__create_feature mcp__tech-assessment-hub__update_feature mcp__tech-assessment-hub__assign_result_to_feature mcp__tech-assessment-hub__remove_result_from_feature
 ---
 
 # Feature Refinement — Solution-Level Grouping
@@ -25,11 +25,12 @@ A feature is a business capability. It typically spans MULTIPLE artifact types:
 
 ## Your job
 
-1. Call `get_features` to see current features and their artifact counts
-2. For each large feature (>20 artifacts), call `get_customizations` filtered
-   to that feature to see what's in it
-3. Read artifact details with `get_result_detail` to understand what they do
-4. Split structural groupings into functional solutions:
+1. **Call `get_assessment_context(assessment_id)`** — caches target app, in-scope tables, parent table, file classes. Use the target app's name when proposing feature names (e.g., for SPM use "Project", "Demand", "Story Workflow" prefixes — not Incident terminology).
+2. **Call `get_grouping_signals(assessment_id)`** — returns `dependency_clusters` (the strongest signal: two artifacts belong together because they reference each other in code OR have a sys_metadata structural relationship — e.g., a UI Policy and its UI Policy Actions, a Dictionary entry and its Dictionary Override, a Workflow and its Activities, a Catalog Item and its Variables). Use these as **feature-grouping hints** — when dependency_clusters connect artifacts across two existing features, that's a strong signal those features should merge. Also returns `naming_clusters` (shared prefixes) and `temporal_clusters` (same-author/time) as weaker signals.
+3. Call `get_features` to see current features and their artifact counts.
+4. For each large feature (>20 artifacts), call `get_customizations` filtered to that feature to see what's in it.
+5. Read artifact details with `get_result_detail` to understand what they do.
+6. Split structural groupings into functional solutions:
 
 ### How to split
 
@@ -57,11 +58,15 @@ Name features by what they DO, not what they ARE:
 - GOOD: "Pharmacy Incident Solution", "Incident Auto-Assignment & Routing",
   "Incident Priority & SLA Automation", "Incident Form Field Defaults"
 
-### Expected output features (examples — discover what actually exists)
-- Solution-level: "Pharmacy Incident Solution", "Incident-to-Work-Order Integration"
-- Functional: "Incident Auto-Assignment & Routing", "Incident Reopening Logic"
-- Cross-cutting: "Incident Security & Access Controls" (only if ACLs are truly standalone)
-- Bucket (last resort): "Miscellaneous Incident Form Fields" for truly unrelated standalone items
+### Expected output features (examples — discover what actually exists for the current target app)
+
+These are illustrative. Use the target app name from `get_assessment_context` to drive your naming.
+
+- **Incident assessment:** "Pharmacy Incident Solution", "Incident Auto-Assignment & Routing", "Incident Reopening Logic", "Miscellaneous Incident Form Fields" (bucket)
+- **SPM assessment:** "Demand Intake Workflow", "Project Status Reporting", "Story → Feature Promotion Logic", "Resource Allocation Customizations"
+- **CMDB assessment:** "CI Reconciliation Rules", "Discovery Pattern Customizations", "CI Relationship Auto-Generation"
+- **Cross-cutting (any app):** Security/ACL clusters only if truly standalone; otherwise fold into the functional feature they support.
+- **Bucket (last resort):** "Miscellaneous <App> Form Fields" / "Unclustered <App> Customizations" for unrelated standalone items.
 
 ## Process
 1. Analyze the big features first (>20 artifacts)

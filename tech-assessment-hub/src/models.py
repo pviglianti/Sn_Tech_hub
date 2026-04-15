@@ -1986,6 +1986,26 @@ class DependencyCluster(SQLModel, table=True):
 
 
 # ============================================
+# TABLE: AssessmentReport (generated deliverables attached to an assessment)
+# ============================================
+
+class AssessmentReport(SQLModel, table=True):
+    """Generated report file (xlsx/docx) attached to an assessment."""
+    __tablename__ = "assessment_report"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    assessment_id: int = Field(foreign_key="assessment.id", index=True)
+    filename: str  # e.g. "assessment_24_report.xlsx"
+    format: str  # "xlsx" | "docx"
+    file_path: str  # absolute path on disk under DATA_DIR/reports/{assessment_id}/
+    file_size: int = 0
+    sha256: Optional[str] = None
+    generated_by: Optional[str] = None  # user/agent that triggered generation
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    notes: Optional[str] = None  # e.g. "Auto-generated via report skill"
+
+
+# ============================================
 # TABLE: NumberSequence (for ASMT numbers)
 # ============================================
 

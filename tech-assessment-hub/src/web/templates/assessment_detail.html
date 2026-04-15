@@ -406,6 +406,21 @@
     </div>
 </div>
 
+<!-- Reports panel -->
+<div class="card" id="reportsCard">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <h3 style="margin:0;">Reports</h3>
+        <div>
+            <button class="btn btn-primary" id="generateReportBtn" onclick="generateReport()">
+                Generate Report (.xlsx + .docx)
+            </button>
+        </div>
+    </div>
+    <div id="reportsList" style="font-size:14px;">
+        <div class="muted">Loading…</div>
+    </div>
+</div>
+
 <!-- Tabbed Related Lists -->
 <div class="related-lists">
     <div class="tab-container">
@@ -1995,5 +2010,72 @@ async function loadLlmConfig() {
     }
 }
 loadLlmConfig();
+
+// ── Reports panel ──────────────────────────────────────
+async function loadReports() {
+    const listEl = document.getElementById('reportsList');
+    if (!listEl) return;
+    try {
+        const res = await fetch('/api/assessments/' + assessmentId + '/reports');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (!data.reports || data.reports.length === 0) {
+            listEl.innerHTML = '<div class="muted">No reports generated yet. Click <strong>Generate Report</strong> above (or run the <code>/report</code> skill).</div>';
+            return;
+        }
+        const fmtSize = (b) => {
+            if (b < 1024) return b + ' B';
+            if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+            return (b/1024/1024).toFixed(2) + ' MB';
+        };
+        const rows = data.reports.map(r => {
+            const ts = new Date(r.generated_at + 'Z').toLocaleString();
+            return '<tr>' +
+                '<td><a href="' + r.download_url + '">' + r.filename + '</a></td>' +
+                '<td>' + r.format.toUpperCase() + '</td>' +
+                '<td>' + fmtSize(r.file_size) + '</td>' +
+                '<td>' + ts + '</td>' +
+                '<td>' + (r.generated_by || '—') + '</td>' +
+                '</tr>';
+        }).join('');
+        listEl.innerHTML =
+            '<table class="data-table" style="width:100%;">' +
+            '<thead><tr><th>File</th><th>Format</th><th>Size</th><th>Generated</th><th>By</th></tr></thead>' +
+            '<tbody>' + rows + '</tbody></table>';
+    } catch (e) {
+        listEl.innerHTML = '<div style="color:var(--text-muted);">Could not load reports: ' + (e && e.message ? e.message : e) + '</div>';
+    }
+}
+
+async function generateReport() {
+    const btn = document.getElementById('generateReportBtn');
+    const listEl = document.getElementById('reportsList');
+    if (!btn) return;
+    btn.disabled = true;
+    const orig = btn.textContent;
+    btn.textContent = 'Generating…';
+    try {
+        const res = await fetch('/api/assessments/' + assessmentId + '/reports/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ formats: ['xlsx', 'docx'], generated_by: 'web_ui' }),
+        });
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error('HTTP ' + res.status + ' — ' + text);
+        }
+        await loadReports();
+    } catch (e) {
+        if (listEl) {
+            listEl.insertAdjacentHTML('afterbegin',
+                '<div style="color:#b91c1c; margin-bottom:8px;">Generation failed: ' + (e && e.message ? e.message : e) + '</div>');
+        }
+    } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+    }
+}
+
+loadReports();
 </script>
 {% endblock %}

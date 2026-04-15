@@ -2,130 +2,72 @@
 name: report
 description: >
   Generate the final technical assessment report as Excel (.xlsx) and Word (.docx)
-  deliverables. Produces executive summary, feature inventory, full in scope/adjacent custom result/artifact
-  detail with column for feature, and recommendations. Use after all other pipeline stages are complete.
-allowed-tools: mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__get_features mcp__tech-assessment-hub__query_instance_live Bash Write Read
+  deliverables. Files are produced server-side, attached to the assessment, and
+  visible in the Reports panel of the assessment page.
+allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__generate_assessment_report
 ---
 
 # Assessment Report Generation
 
-Generate deliverable files: an Excel workbook and a Word document.
-
-## CRITICAL: How to generate the files
-
-Do NOT use sandbox or base64 transfers. Write a single Python script to
-`/tmp/generate_report.py` and execute it with:
-
-```bash
-/Volumes/SN_TA_MCP/SN_TechAssessment_Hub_App/tech-assessment-hub/venv/bin/python /tmp/generate_report.py
-```
-
-The script should connect to the SQLite database DIRECTLY at:
-`/Volumes/SN_TA_MCP/SN_TechAssessment_Hub_App/tech-assessment-hub/data/tech_assessment.db`
-
-Output files go to:
-`/Volumes/SN_TA_MCP/SN_TechAssessment_Hub_App/tech-assessment-hub/data/reports/`
+Generate deliverable files via the **server-side** report tool. Files are persisted on the VM, registered in the database, and exposed via the Reports panel on the assessment detail page.
 
 ## Setup
-1. Get assessment ID from user or $ARGUMENTS
-2. Write the Python script that queries the DB and generates both files
-3. Run it via the venv Python
 
-## Excel Workbook (`assessment_{id}_report.xlsx`)
+1. Get assessment ID from user or `$ARGUMENTS`.
+2. **Call `get_assessment_context(assessment_id)`** — confirm the assessment exists, capture target app + pipeline stage. Sanity-check the pipeline stage: report generation should run after recommendations.
 
-Use `openpyxl`. The script should query the DB directly (sqlite3 + sqlalchemy).
+## Generate the report
 
-**Tab 1: Executive Summary**
-- Assessment name, target app, target tables
-- Total scanned, customized, in-scope, out-of-scope, adjacent
-- Feature count, top features by artifact count
-- Overall risk level
+Call:
 
-**Tab 2: Feature Inventory**
-Columns: Feature Name | Description | Artifact Count | Types | Disposition | Risk Level | Key Risks | OOTB Alternative | AI Summary
-One row per feature, sorted by artifact count descending.
-
-**Tab 3: In-Scope Customizations**
-ALL in-scope and adjacent artifacts (is_out_of_scope != true).
-Columns: ID | Name | Table | sys_class_name | Origin Type | Scope (in_scope/adjacent) | Feature Name | Observations | Recommendation | AI Scope Rationale
-One row per artifact. This is the main working tab.
-
-**Tab 4: Out of Scope**
-Columns: ID | Name | Table | sys_class_name | Origin Type | Observations
-One row per out-of-scope artifact.
-
-**Tab 5: Risk Matrix**
-Columns: Risk Category | Count | Severity | Affected Features | Examples
-
-**Formatting:**
-- Header row: bold, frozen, auto-filter
-- Column widths: auto-fit or sensible defaults
-- Feature name column: color-coded by feature (use color_index from feature table)
-
-## Word Document (`assessment_{id}_report.docx`)
-
-Use `python-docx`.
-
-1. Title page — assessment name, date
-2. Executive Summary — key metrics, top 5 findings
-3. Feature-by-Feature Analysis — each feature:
-   - Name, description, artifact count
-   - Disposition recommendation with rationale
-   - Risk level and key concerns
-   - OOTB replacement opportunities
-4. Systemic Findings — cross-feature patterns
-5. Recommendations — priority-ordered action items
-6. Appendix — artifact count by table/type
-
-## The Python Script Pattern
-
-```python
-import sqlite3, json
-from pathlib import Path
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
-from docx import Document
-
-DB = "/Volumes/SN_TA_MCP/SN_TechAssessment_Hub_App/tech-assessment-hub/data/tech_assessment.db"
-OUT = Path("/Volumes/SN_TA_MCP/SN_TechAssessment_Hub_App/tech-assessment-hub/data/reports")
-OUT.mkdir(exist_ok=True)
-ASSESSMENT_ID = 24  # or from sys.argv
-
-conn = sqlite3.connect(DB)
-conn.row_factory = sqlite3.Row
-
-# Query assessment, features, artifacts, then build both files...
+```
+generate_assessment_report(assessment_id=<id>, formats=["xlsx", "docx"])
 ```
 
-## Rules
-- Ground every finding in data — cite specific artifacts
-- Do not fabricate findings
-- Write for a technical decision-maker
-- The In-Scope Customizations tab is the most important — it must have every
-  in-scope artifact with its feature assignment and observations
+Optional: pass `generated_by` to record what triggered it (e.g., `"report skill via Claude Desktop"`).
+
+The tool builds both files server-side, persists `AssessmentReport` rows, and returns a list with download URLs. **You do NOT write a Python script. You do NOT need filesystem access.** Everything runs on the VM.
+
+## What gets produced
+
+### Excel workbook (`assessment_{number}_{timestamp}.xlsx`)
+- **Tab 1: Executive Summary** — assessment metadata, scope, totals
+- **Tab 2: Feature Inventory** — name, description, artifact count, risk level, recommendation, AI summary (sorted by artifact count desc)
+- **Tab 3: In-Scope Customizations** — every in-scope + adjacent artifact with feature assignment, observations, recommendation
+- **Tab 4: Out of Scope** — for completeness
+
+### Word document (`assessment_{number}_{timestamp}.docx`)
+- Title page + executive summary
+- Feature-by-feature analysis (sorted by artifact count)
+- Appendix: artifact counts by table
+
+## After generating
+
+Tell the user:
+
+> ✅ Reports generated. View them on the assessment page:
+> https://136-112-232-229.nip.io/assessments/{assessment_id}
+>
+> Or download directly:
+> - Excel: https://136-112-232-229.nip.io/api/reports/{xlsx_report_id}/download
+> - Word:  https://136-112-232-229.nip.io/api/reports/{docx_report_id}/download
+
+(Substitute the actual IDs from the tool response.)
+
+## Re-generation
+
+Calling `generate_assessment_report` again creates **new** report files with a fresh timestamp. The old reports are kept (visible in the Reports panel as history) until manually cleaned up. This is intentional — you can always go back to a prior version.
 
 ## Iterative Refinement Rules
 
-- Observations on both artifacts and features should be REFINED each pass, not
-  replaced. Read what exists first. Add to it, tighten it, correct errors — but
-  never blank out or lose prior context.
-- Reference artifacts and records by their NAME, not sys_id. Use sys_ids only
-  in structured fields (ai_observations JSON, directly_related_result_ids).
-  Human-readable text (observations, recommendations, descriptions) should say
-  "Business Rule: Reset Assignment Group On Reopen" not "sys_id: abc123...".
-- When referencing other artifacts in observations, use the pattern:
-  "Related to <Name> (<table>)" — e.g. "Related to Set Assigned (sys_script)".
-
+Reports are derived from the artifact/feature observations and recommendations already in the DB. If those need refinement, do that in the appropriate stage (observations / recommendations) and re-generate the report — don't try to "fix" the report by editing the file directly.
 
 ## Advance Pipeline (Required — do this LAST)
 
-When you have finished ALL work for this stage, advance the pipeline by running:
+When the user is happy with the report, advance the pipeline to mark the assessment complete:
 
 ```bash
 curl -s -X POST https://136-112-232-229.nip.io/api/assessments/${ASSESSMENT_ID}/advance-pipeline \
   -H "Content-Type: application/json" \
   -d '{"target_stage": "complete", "force": true}'
 ```
-
-This updates the pipeline stage in the app UI so the next stage button appears.
-Do NOT skip this step.
