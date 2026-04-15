@@ -39,6 +39,16 @@ def _set_sqlite_pragmas(dbapi_connection, connection_record):
         cursor.execute("PRAGMA journal_mode=WAL;")
         cursor.execute("PRAGMA synchronous=NORMAL;")
         cursor.execute("PRAGMA wal_autocheckpoint=1000;")
+        # Performance tuning for the 22GB+ production DB on VM.
+        # cache_size is negative = KB of RAM per connection (64MB).
+        cursor.execute("PRAGMA cache_size=-65536;")
+        # Memory-map up to 2.5GB of the DB — big win for random reads since
+        # hot pages end up in OS page cache + skip syscall overhead.
+        cursor.execute("PRAGMA mmap_size=2684354560;")
+        # Temp tables + indices in RAM, not disk.
+        cursor.execute("PRAGMA temp_store=MEMORY;")
+        # Cap WAL growth; app-level checkpoint logic already runs periodically.
+        cursor.execute("PRAGMA journal_size_limit=67108864;")
     except Exception:
         # On network mounts, WAL/pragma calls may fail — continue with defaults.
         pass

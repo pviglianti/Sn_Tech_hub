@@ -333,54 +333,159 @@ def _build_xlsx(data: Dict[str, Any]) -> Workbook:
 # ────────────────────────────────────────────────────────────────────────
 
 def _build_docx(data: Dict[str, Any]) -> Document:
+    import re
     doc = Document()
     a: Assessment = data["assessment"]
     target_app = data["target_app"]
+    customized = data["customized"]
+    in_scope_reportable = data["in_scope_reportable"]
 
-    # Title page
-    doc.add_heading(f"Technical Assessment Report — {a.name}", level=0)
-    p = doc.add_paragraph()
-    p.add_run(f"Assessment {a.number}").bold = True
-    doc.add_paragraph(f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    # ── Title ─────────────────────────────────────────────
+    doc.add_paragraph("Technical Assessment Report")
+    doc.add_paragraph(a.name or "Assessment")
+    doc.add_paragraph(f"Prepared: {datetime.utcnow().strftime('%B %d, %Y')}")
     if target_app:
-        doc.add_paragraph(f"Target Application: {target_app.label}")
-        doc.add_paragraph(f"Core Tables: {', '.join(data['core_tables'])}")
-    doc.add_page_break()
+        doc.add_paragraph(f"ServiceNow {target_app.label}")
 
-    # Executive Summary
+    # ── Executive Summary narrative ──────────────────────
     doc.add_heading("Executive Summary", level=1)
     doc.add_paragraph(
-        f"This assessment evaluated {len(data['results'])} ServiceNow artifacts. "
-        f"{len(data['in_scope'])} were classified as in-scope, "
-        f"{len(data['adjacent'])} as adjacent (in-scope but on a related table), "
-        f"and {len(data['out_of_scope'])} as out-of-scope. "
-        f"In-scope and adjacent artifacts were grouped into "
-        f"{len(data['features'])} business features for review."
+        f"This assessment analyzed {len(customized)} customized artifacts across "
+        f"{target_app.label if target_app else 'the target application'}. "
+        f"Of these, {len(in_scope_reportable)} customizations "
+        f"({len(data['in_scope'])} direct, {len(data['adjacent'])} adjacent) "
+        f"were classified as in-scope for review, with "
+        f"{len(data['out_of_scope'])} marked out-of-scope. "
+        f"Reportable customizations were grouped into {len(data['features'])} "
+        f"business features."
     )
 
-    # Feature-by-Feature Analysis
+    # ── Key Metrics ──────────────────────────────────────
+    doc.add_heading("Key Metrics", level=2)
+    metrics = [
+        ("Customizations", len(customized)),
+        ("In Scope (direct)", len(data["in_scope"])),
+        ("Adjacent (parent/related)", len(data["adjacent"])),
+        ("Out of Scope", len(data["out_of_scope"])),
+        ("Features Identified", len(data["features"])),
+    ]
+    for label, val in metrics:
+        p = doc.add_paragraph(style="List Bullet")
+        run = p.add_run(f"{label}: ")
+        run.bold = True
+        p.add_run(str(val))
+
+    # ── Recommendation Breakdown (parse disposition keywords from text) ──
+    def _classify_recommendation(text: Optional[str]) -> str:
+        if not text:
+            return "none"
+        t = text.lower()
+        # Word-boundary matches; order matters for ambiguous cases
+        if re.search(r"\bretire\b|\bremove\b|\bdelete\b", t):
+            return "retire"
+        if re.search(r"\breplace (with )?ootb\b|\breplace with the platform\b|\buse ootb\b", t):
+            return "replace"
+        if re.search(r"\brefactor\b|\bclean up\b|\brework\b|\bmigrate to\b", t):
+            return "refactor"
+        if re.search(r"\bkeep (as[- ]is|unchanged)?\b|\bfollows best practices\b|\bwell[- ]implemented\b", t):
+            return "keep"
+        return "review"
+
+    disp_counts = {"keep": 0, "refactor": 0, "replace": 0, "retire": 0, "review": 0, "none": 0}
+    for sr in in_scope_reportable:
+        disp_counts[_classify_recommendation(getattr(sr, "recommendation", None))] += 1
+
+    total_in = len(in_scope_reportable) or 1
+    doc.add_heading("Recommendation Breakdown", level=2)
+    doc.add_paragraph(
+        f"Of the {len(in_scope_reportable)} in-scope artifacts: "
+        f"{disp_counts['keep']} ({100 * disp_counts['keep'] // total_in}%) follow best practices "
+        f"and should be kept as-is, "
+        f"{disp_counts['refactor']} ({100 * disp_counts['refactor'] // total_in}%) need refactoring, "
+        f"{disp_counts['replace']} require replacement with OOTB, and "
+        f"{disp_counts['retire']} should be retired."
+    )
+
+    # ── Top Findings (regex patterns across recommendations + ai_observations) ──
+    doc.add_heading("Top 5 Findings", level=2)
+    FINDINGS = [
+        ("setWorkflow(false) usage",
+         r"setworkflow\s*\(\s*false\s*\)",
+         "disables audit trails and notifications"),
+        ("Hardcoded sys_ids",
+         r"hardcoded sys[-_ ]?id|hard[- ]coded reference|[0-9a-f]{32}",
+         "creates fragile dependencies"),
+        ("Overly permissive ACLs",
+         r"acl.*no role|acls? (lack|without)|no role requirement",
+         "grants unrestricted access"),
+        ("current.update() in business rules",
+         r"current\.update\(\)",
+         "can cause recursion / double processing"),
+        ("GlideRecord in loops",
+         r"gliderecord (query )?in a? loop|n\+1",
+         "performance concern"),
+        ("Missing error handling",
+         r"no (try|error) handling|missing try[/ ]?catch",
+         "fragile under failure conditions"),
+    ]
+    top_findings = []
+    for title, pattern, why in FINDINGS:
+        count = 0
+        for sr in in_scope_reportable:
+            text_blob = " ".join(
+                str(getattr(sr, fld, None) or "")
+                for fld in ("observations", "recommendation")
+            ).lower()
+            if re.search(pattern, text_blob):
+                count += 1
+        if count:
+            top_findings.append((count, title, why))
+    top_findings.sort(key=lambda x: -x[0])
+    for i, (count, title, why) in enumerate(top_findings[:5], start=1):
+        doc.add_paragraph(f"{i}. {title}: {count} artifacts — {why}.")
+    if not top_findings:
+        doc.add_paragraph("(No patterned findings extracted from recommendation text.)")
+
+    # ── Feature-by-Feature Analysis ───────────────────────
+    doc.add_page_break()
     doc.add_heading("Feature-by-Feature Analysis", level=1)
     feat_counts: Dict[int, int] = {}
-    for r in data["customized"]:
+    feat_types: Dict[int, Dict[str, int]] = {}
+    for r in customized:
         feat = data["result_to_feature"].get(getattr(r, "scan_result_id", r.id))
         if feat and feat.id is not None:
             feat_counts[feat.id] = feat_counts.get(feat.id, 0) + 1
+            feat_types.setdefault(feat.id, {}).setdefault(getattr(r, "sys_class_name", None) or "?", 0)
+            feat_types[feat.id][getattr(r, "sys_class_name", None) or "?"] += 1
+
     for f in sorted(data["features"], key=lambda f: -feat_counts.get(f.id, 0)):
         doc.add_heading(f.name or f"Feature {f.id}", level=2)
+        types_map = feat_types.get(f.id, {})
+        types_str = ", ".join(f"{k} ({v})" for k, v in sorted(types_map.items(), key=lambda kv: -kv[1]))
+        meta = doc.add_paragraph()
+        meta.add_run(
+            f"Artifacts: {feat_counts.get(f.id, 0)} | "
+            f"Risk: {getattr(f, 'change_risk_level', None) or '—'} | "
+            f"Types: {types_str or '—'}"
+        )
         if getattr(f, "description", None):
             doc.add_paragraph(f.description)
-        meta = doc.add_paragraph()
-        meta.add_run(f"Artifacts: {feat_counts.get(f.id, 0)}").bold = True
-        if getattr(f, "change_risk_level", None):
-            meta.add_run(f"   |   Risk: {f.change_risk_level}")
         if getattr(f, "recommendation", None):
-            doc.add_paragraph("Recommendation:", style="Intense Quote")
-            doc.add_paragraph(f.recommendation)
+            p = doc.add_paragraph()
+            r = p.add_run("Recommendation: ")
+            r.bold = True
+            p.add_run(f.recommendation)
+        if getattr(f, "ai_summary", None):
+            p = doc.add_paragraph()
+            r = p.add_run("AI Summary: ")
+            r.bold = True
+            p.add_run(f.ai_summary)
 
-    # Appendix — counts by table
+    # ── Appendix: Counts by Table ─────────────────────────
+    doc.add_page_break()
     doc.add_heading("Appendix — Counts by Table", level=1)
     by_table: Dict[str, int] = {}
-    for r in data["customized"]:
+    for r in customized:
         t = getattr(r, "table_name", None) or "(no table)"
         by_table[t] = by_table.get(t, 0) + 1
     for t, n in sorted(by_table.items(), key=lambda kv: -kv[1]):
