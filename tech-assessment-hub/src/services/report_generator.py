@@ -29,6 +29,7 @@ from ..database import DATA_DIR
 from ..models import (
     Assessment,
     AssessmentReport,
+    Customization,
     Feature,
     FeatureScanResult,
     GlobalApp,
@@ -65,13 +66,19 @@ def _gather_report_data(session: Session, assessment_id: int) -> Dict[str, Any]:
     if assessment.target_app_id:
         target_app = session.get(GlobalApp, assessment.target_app_id)
 
-    # Pull all scan results for this assessment via its scans
+    # The "Customizations" related list on the assessment is the source of truth
+    # for what's reportable. Customization is a child table of ScanResult containing
+    # only customized rows (origin_type in {modified_ootb, net_new_customer}).
+    # Out-of-scope rows are filtered OUT of the customizations tab in the UI; here
+    # we keep them so we can still render the "Out of Scope" tab.
     scan_ids = [s.id for s in assessment.scans] if assessment.scans else []
-    results: List[ScanResult] = []
+    customized: List[Customization] = []
     if scan_ids:
-        results = list(session.exec(
-            select(ScanResult).where(ScanResult.scan_id.in_(scan_ids))
+        customized = list(session.exec(
+            select(Customization).where(Customization.scan_id.in_(scan_ids))
         ).all())
+    # Keep this name for legacy reads below (e.g. anywhere the report iterates rows)
+    results: List[Customization] = customized
 
     features = list(session.exec(
         select(Feature).where(Feature.assessment_id == assessment_id)
@@ -94,11 +101,14 @@ def _gather_report_data(session: Session, assessment_id: int) -> Dict[str, Any]:
             if feat is not None:
                 result_to_feature[m.scan_result_id] = feat
 
-    # Bucket
-    in_scope: List[ScanResult] = []
-    adjacent: List[ScanResult] = []
-    out_of_scope: List[ScanResult] = []
-    for r in results:
+    # Bucket strictly by the two scope checkboxes the triage step sets:
+    #   - is_out_of_scope=True → Out of Scope tab
+    #   - is_adjacent=True     → reportable as adjacent (still in-scope)
+    #   - neither              → reportable as in_scope
+    in_scope: List[Customization] = []
+    adjacent: List[Customization] = []
+    out_of_scope: List[Customization] = []
+    for r in customized:
         if getattr(r, "is_out_of_scope", False):
             out_of_scope.append(r)
         elif getattr(r, "is_adjacent", False):
@@ -106,7 +116,7 @@ def _gather_report_data(session: Session, assessment_id: int) -> Dict[str, Any]:
         else:
             in_scope.append(r)
 
-    customized = [r for r in results if not getattr(r, "is_out_of_scope", False)]
+    in_scope_reportable = in_scope + adjacent  # what goes on the In-Scope tab
 
     return {
         "assessment": assessment,
@@ -122,6 +132,7 @@ def _gather_report_data(session: Session, assessment_id: int) -> Dict[str, Any]:
         "features": features,
         "features_by_id": features_by_id,
         "result_to_feature": result_to_feature,
+        "in_scope_reportable": in_scope_reportable,
     }
 
 
@@ -159,92 +170,159 @@ def _write_header(ws, headers: List[str]) -> None:
 
 def _build_xlsx(data: Dict[str, Any]) -> Workbook:
     wb = Workbook()
+    a: Assessment = data["assessment"]
+    target_app = data["target_app"]
 
     # ─── Tab 1: Executive Summary ──────────────────────────
     ws = wb.active
     ws.title = "Executive Summary"
-    a: Assessment = data["assessment"]
-    target_app = data["target_app"]
-    summary_rows = [
-        ("Assessment ID", a.id),
-        ("Number", a.number),
-        ("Name", a.name),
-        ("Type", str(a.assessment_type.value if hasattr(a.assessment_type, "value") else a.assessment_type)),
-        ("State", str(a.state.value if hasattr(a.state, "value") else a.state)),
-        ("Pipeline Stage", str(a.pipeline_stage.value if hasattr(a.pipeline_stage, "value") else a.pipeline_stage)),
-        ("Target App", target_app.label if target_app else "—"),
+    title_font = Font(bold=True, size=18)
+    section_font = Font(bold=True, size=12, color="1F4E78")
+    label_font = Font(bold=True)
+
+    title_cell = ws.cell(row=1, column=1, value=f"Technical Assessment Report: {a.name}")
+    title_cell.font = title_font
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
+    ws.cell(row=2, column=1, value=f"Assessment {a.number}  •  Generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+
+    # Scope section
+    r = 4
+    ws.cell(row=r, column=1, value="SCOPE").font = section_font
+    r += 1
+    scope_pairs = [
+        ("Target Application", target_app.label if target_app else "—"),
+        ("Assessment Type", str(a.assessment_type.value if hasattr(a.assessment_type, "value") else a.assessment_type)),
         ("Core Tables", ", ".join(data["core_tables"]) or "—"),
+        ("Parent Table", (target_app.parent_table if target_app else None) or "—"),
         ("Scope Filter", a.scope_filter),
-        ("", ""),
-        ("Total Results", len(data["results"])),
-        ("In Scope", len(data["in_scope"])),
-        ("Adjacent", len(data["adjacent"])),
-        ("Out of Scope", len(data["out_of_scope"])),
-        ("Features", len(data["features"])),
+        ("Pipeline Stage", str(a.pipeline_stage.value if hasattr(a.pipeline_stage, "value") else a.pipeline_stage)),
     ]
-    ws.cell(row=1, column=1, value="Field").font = _HEADER_FONT
-    ws.cell(row=1, column=2, value="Value").font = _HEADER_FONT
-    ws.cell(row=1, column=1).fill = _HEADER_FILL
-    ws.cell(row=1, column=2).fill = _HEADER_FILL
-    for i, (k, v) in enumerate(summary_rows, start=2):
-        ws.cell(row=i, column=1, value=k)
-        ws.cell(row=i, column=2, value=v)
-    ws.column_dimensions["A"].width = 28
-    ws.column_dimensions["B"].width = 60
+    for k, v in scope_pairs:
+        ws.cell(row=r, column=1, value=k).font = label_font
+        ws.cell(row=r, column=2, value=v)
+        r += 1
+
+    # Counts section
+    r += 1
+    ws.cell(row=r, column=1, value="ARTIFACT COUNTS").font = section_font
+    r += 1
+    customized = data["customized"]
+    in_scope_plus_adj = data["in_scope_reportable"]
+    count_pairs = [
+        ("Total Scanned", len(data["results"])),
+        ("Customized (in scope + adjacent + ootb-modified)", len(customized)),
+        ("In Scope", len(data["in_scope"])),
+        ("Adjacent (parent/related table)", len(data["adjacent"])),
+        ("Out of Scope", len(data["out_of_scope"])),
+        ("Features Identified", len(data["features"])),
+    ]
+    for k, v in count_pairs:
+        ws.cell(row=r, column=1, value=k).font = label_font
+        ws.cell(row=r, column=2, value=v)
+        r += 1
+
+    # Top features section
+    r += 1
+    ws.cell(row=r, column=1, value="TOP FEATURES BY ARTIFACT COUNT").font = section_font
+    r += 1
+    feat_counts: Dict[int, int] = {}
+    feat_types: Dict[int, set] = {}
+    for sr in customized:
+        feat = data["result_to_feature"].get(getattr(sr, "scan_result_id", sr.id))
+        if feat and feat.id is not None:
+            feat_counts[feat.id] = feat_counts.get(feat.id, 0) + 1
+            feat_types.setdefault(feat.id, set()).add(getattr(sr, "sys_class_name", None) or "?")
+    top = sorted(data["features"], key=lambda f: -feat_counts.get(f.id, 0))[:10]
+    ws.cell(row=r, column=1, value="Feature").font = label_font
+    ws.cell(row=r, column=2, value="Count").font = label_font
+    ws.cell(row=r, column=3, value="Risk").font = label_font
+    r += 1
+    for f in top:
+        ws.cell(row=r, column=1, value=f.name)
+        ws.cell(row=r, column=2, value=feat_counts.get(f.id, 0))
+        ws.cell(row=r, column=3, value=getattr(f, "change_risk_level", None) or "—")
+        r += 1
+
+    ws.column_dimensions["A"].width = 38
+    ws.column_dimensions["B"].width = 50
+    ws.column_dimensions["C"].width = 18
+    ws.column_dimensions["D"].width = 18
 
     # ─── Tab 2: Feature Inventory ──────────────────────────
     ws = wb.create_sheet("Feature Inventory")
-    headers = ["Feature ID", "Name", "Description", "Artifact Count", "Risk Level", "Recommendation", "AI Summary"]
+    headers = ["Feature Name", "Description", "Artifact Count", "Types", "Risk Level", "Key Risks", "Recommendation", "AI Summary"]
     _write_header(ws, headers)
-    feat_counts: Dict[int, int] = {}
-    for r in data["customized"]:
-        feat = data["result_to_feature"].get(r.id)
-        if feat and feat.id is not None:
-            feat_counts[feat.id] = feat_counts.get(feat.id, 0) + 1
     feats_sorted = sorted(data["features"], key=lambda f: -feat_counts.get(f.id, 0))
     for row_idx, f in enumerate(feats_sorted, start=2):
-        ws.cell(row=row_idx, column=1, value=f.id)
-        ws.cell(row=row_idx, column=2, value=f.name)
-        ws.cell(row=row_idx, column=3, value=f.description)
-        ws.cell(row=row_idx, column=4, value=feat_counts.get(f.id, 0))
+        types = sorted(feat_types.get(f.id, set()))
+        ws.cell(row=row_idx, column=1, value=f.name)
+        ws.cell(row=row_idx, column=2, value=f.description)
+        ws.cell(row=row_idx, column=3, value=feat_counts.get(f.id, 0))
+        ws.cell(row=row_idx, column=4, value=", ".join(types))
         ws.cell(row=row_idx, column=5, value=getattr(f, "change_risk_level", None))
-        ws.cell(row=row_idx, column=6, value=getattr(f, "recommendation", None))
-        ws.cell(row=row_idx, column=7, value=getattr(f, "ai_summary", None))
+        ws.cell(row=row_idx, column=6, value=getattr(f, "key_risks", None) or getattr(f, "ai_risks", None))
+        ws.cell(row=row_idx, column=7, value=getattr(f, "recommendation", None))
+        ws.cell(row=row_idx, column=8, value=getattr(f, "ai_summary", None))
     _autosize(ws, headers)
 
     # ─── Tab 3: In-Scope Customizations ───────────────────
     ws = wb.create_sheet("In-Scope Customizations")
-    headers = [
-        "Result ID", "Name", "Table", "sys_class_name", "Origin",
-        "Scope", "Feature", "Observations", "Recommendation",
-    ]
+    headers = ["ID", "Name", "Table", "Class", "Origin Type", "Scope", "Feature Name", "Observations", "Recommendation"]
     _write_header(ws, headers)
-    in_scope_plus_adjacent = [r for r in data["customized"] if not getattr(r, "is_out_of_scope", False)]
-    for row_idx, r in enumerate(in_scope_plus_adjacent, start=2):
-        scope = "adjacent" if getattr(r, "is_adjacent", False) else "in_scope"
-        feat = data["result_to_feature"].get(r.id)
-        ws.cell(row=row_idx, column=1, value=r.id)
-        ws.cell(row=row_idx, column=2, value=getattr(r, "name", None))
-        ws.cell(row=row_idx, column=3, value=getattr(r, "table_name", None))
-        ws.cell(row=row_idx, column=4, value=getattr(r, "sys_class_name", None))
-        ws.cell(row=row_idx, column=5, value=str(getattr(r, "origin_type", None) or ""))
+    for row_idx, sr in enumerate(in_scope_plus_adj, start=2):
+        scope = "adjacent" if getattr(sr, "is_adjacent", False) else "in_scope"
+        feat = data["result_to_feature"].get(getattr(sr, "scan_result_id", sr.id))
+        ws.cell(row=row_idx, column=1, value=sr.id)
+        ws.cell(row=row_idx, column=2, value=getattr(sr, "name", None))
+        ws.cell(row=row_idx, column=3, value=getattr(sr, "table_name", None))
+        ws.cell(row=row_idx, column=4, value=getattr(sr, "sys_class_name", None))
+        ws.cell(row=row_idx, column=5, value=str(getattr(sr, "origin_type", None) or ""))
         ws.cell(row=row_idx, column=6, value=scope)
         ws.cell(row=row_idx, column=7, value=feat.name if feat else "")
-        ws.cell(row=row_idx, column=8, value=getattr(r, "observations", None))
-        ws.cell(row=row_idx, column=9, value=getattr(r, "recommendation", None))
+        ws.cell(row=row_idx, column=8, value=getattr(sr, "observations", None))
+        ws.cell(row=row_idx, column=9, value=getattr(sr, "recommendation", None))
     _autosize(ws, headers)
 
     # ─── Tab 4: Out of Scope ──────────────────────────────
     ws = wb.create_sheet("Out of Scope")
-    headers = ["Result ID", "Name", "Table", "sys_class_name", "Origin", "Observations"]
+    headers = ["ID", "Name", "Table", "Class", "Origin Type", "Observations"]
     _write_header(ws, headers)
-    for row_idx, r in enumerate(data["out_of_scope"], start=2):
-        ws.cell(row=row_idx, column=1, value=r.id)
-        ws.cell(row=row_idx, column=2, value=getattr(r, "name", None))
-        ws.cell(row=row_idx, column=3, value=getattr(r, "table_name", None))
-        ws.cell(row=row_idx, column=4, value=getattr(r, "sys_class_name", None))
-        ws.cell(row=row_idx, column=5, value=str(getattr(r, "origin_type", None) or ""))
-        ws.cell(row=row_idx, column=6, value=getattr(r, "observations", None))
+    for row_idx, sr in enumerate(data["out_of_scope"], start=2):
+        ws.cell(row=row_idx, column=1, value=sr.id)
+        ws.cell(row=row_idx, column=2, value=getattr(sr, "name", None))
+        ws.cell(row=row_idx, column=3, value=getattr(sr, "table_name", None))
+        ws.cell(row=row_idx, column=4, value=getattr(sr, "sys_class_name", None))
+        ws.cell(row=row_idx, column=5, value=str(getattr(sr, "origin_type", None) or ""))
+        ws.cell(row=row_idx, column=6, value=getattr(sr, "observations", None))
+    _autosize(ws, headers)
+
+    # ─── Tab 5: Risk Matrix ──────────────────────────────
+    ws = wb.create_sheet("Risk Matrix")
+    headers = ["Risk Category", "Count", "Severity", "Affected Features", "Example Artifact"]
+    _write_header(ws, headers)
+    # Bucket features by risk level
+    risk_buckets: Dict[str, List[Feature]] = {}
+    for f in data["features"]:
+        lvl = (getattr(f, "change_risk_level", None) or "unspecified").lower()
+        risk_buckets.setdefault(lvl, []).append(f)
+    severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "unspecified": 4}
+    risk_levels = sorted(risk_buckets.keys(), key=lambda k: severity_order.get(k, 99))
+    for row_idx, lvl in enumerate(risk_levels, start=2):
+        feats = risk_buckets[lvl]
+        affected_count = sum(feat_counts.get(f.id, 0) for f in feats)
+        example = ""
+        for f in feats:
+            for sr in customized:
+                if data["result_to_feature"].get(getattr(sr, "scan_result_id", sr.id)) is f:
+                    example = f"{getattr(sr, 'name', '')} ({getattr(sr, 'sys_class_name', '')})"
+                    break
+            if example:
+                break
+        ws.cell(row=row_idx, column=1, value=f"Change Risk: {lvl}")
+        ws.cell(row=row_idx, column=2, value=affected_count)
+        ws.cell(row=row_idx, column=3, value=lvl)
+        ws.cell(row=row_idx, column=4, value=", ".join(f.name for f in feats[:5]))
+        ws.cell(row=row_idx, column=5, value=example)
     _autosize(ws, headers)
 
     return wb
@@ -284,7 +362,7 @@ def _build_docx(data: Dict[str, Any]) -> Document:
     doc.add_heading("Feature-by-Feature Analysis", level=1)
     feat_counts: Dict[int, int] = {}
     for r in data["customized"]:
-        feat = data["result_to_feature"].get(r.id)
+        feat = data["result_to_feature"].get(getattr(r, "scan_result_id", r.id))
         if feat and feat.id is not None:
             feat_counts[feat.id] = feat_counts.get(feat.id, 0) + 1
     for f in sorted(data["features"], key=lambda f: -feat_counts.get(f.id, 0)):
