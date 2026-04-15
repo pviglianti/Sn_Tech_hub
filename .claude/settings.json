@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tech-assessment-hub/venv/bin/python3 -m pip list)",
+      "Bash(tech-assessment-hub/venv/bin/python3 -c \"import fastapi, sqlmodel, uvicorn, cryptography; print\\('deps OK'\\)\")",
+      "Bash(/Volumes/SN_TA_MCP/SN_TechAssessment_Hub_App/tech-assessment-hub/venv/bin/python /Volumes/SN_TA_MCP/SN_TechAssessment_Hub_App/tech-assessment-hub/scripts/mcp_stdio_bridge.py)"
+    ]
+  }
+}

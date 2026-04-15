@@ -1,0 +1,8 @@
+{
+  "name": "assessment-plugin",
+  "description": "ServiceNow Technical Assessment pipeline — scope triage, observations, feature grouping, recommendations, and refinement via MCP tools",
+  "version": "1.0.0",
+  "author": {
+    "name": "Pat Viglianti"
+  }
+}

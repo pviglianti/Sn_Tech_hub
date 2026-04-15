@@ -65,3 +65,31 @@ orchestration_run/*.pid
 orchestration_run/*.lock
 orchestration_run/*.session
 orchestration_run/.stop_*
+
+# Secrets — never commit
+.encryption_key
+*.pem
+*.key
+.env
+.env.*
+
+# Root-level runtime data (large DBs, logs, backups, recovery snapshots)
+/tech_assessment.db
+/tech_assessment.db-shm
+/tech_assessment.db-wal
+/tech_assessment.backup-*.db
+/assessment_*.db
+/server.log
+/server.pid
+/server.url
+/mcp_runtime_audit.jsonl
+/recovery_snapshots/
+
+# Generated plugin bundles (source lives in assessment-plugin/)
+/assessment-plugin.zip
+*.plugin.zip
+
+# SMB/macOS transient files
+.smbdelete*
+.claude/.smbdelete*
+.claude/scheduled_tasks.lock
