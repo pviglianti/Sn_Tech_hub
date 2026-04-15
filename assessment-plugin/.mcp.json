@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "tech-assessment-hub": {
-      "command": "/Volumes/SN_TA_MCP/SN_TechAssessment_Hub_App/tech-assessment-hub/venv/bin/python",
-      "args": ["/Volumes/SN_TA_MCP/SN_TechAssessment_Hub_App/tech-assessment-hub/scripts/mcp_stdio_bridge.py"]
+      "type": "http",
+      "url": "https://136-112-232-229.nip.io/mcp"
     }
   }
 }

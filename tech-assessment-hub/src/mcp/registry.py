@@ -184,6 +184,7 @@ def build_registry() -> ToolRegistry:
     # --- Level 1 plumbing tools ---
     from .tools.core.instance_summary import TOOL_SPEC as instance_summary_tool
     from .tools.core.assessment_results import TOOL_SPEC as assessment_results_tool
+    from .tools.core.assessment_context import TOOL_SPEC as assessment_context_tool
     from .tools.core.result_detail import TOOL_SPEC as result_detail_tool
     from .tools.core.data_pull import TOOL_SPEC as data_pull_tool
     from .tools.core.assessment import TOOL_SPEC as assessment_tool
@@ -198,6 +199,7 @@ def build_registry() -> ToolRegistry:
 
     registry.register(instance_summary_tool)
     registry.register(assessment_results_tool)
+    registry.register(assessment_context_tool)
     registry.register(result_detail_tool)
     registry.register(data_pull_tool)
     registry.register(assessment_tool)

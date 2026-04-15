@@ -114,7 +114,7 @@ without reading individual artifacts.
 When you have finished ALL work for this stage, advance the pipeline by running:
 
 ```bash
-curl -s -X POST http://127.0.0.1:$(cat /Volumes/SN_TA_MCP/SN_TechAssessment_Hub_App/tech-assessment-hub/data/server.url | sed 's|.*:||' | sed 's|/.*||')/api/assessments/${ASSESSMENT_ID}/advance-pipeline \
+curl -s -X POST https://136-112-232-229.nip.io/api/assessments/${ASSESSMENT_ID}/advance-pipeline \
   -H "Content-Type: application/json" \
   -d '{"target_stage": "recommendations", "force": true}'
 ```
