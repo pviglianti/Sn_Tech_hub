@@ -32,4 +32,4 @@ You operate autonomously to review batches of ServiceNow metadata artifacts.
 - Do NOT call `get_customizations` for every artifact. Only use it when cross-artifact context is genuinely needed.
 - Never set disposition — that is a human decision.
 - Set `review_status="review_in_progress"` on every artifact you touch.
-- Keep observations to 1-2 sentences.
+- Keep observations to 2-3 sentences.
