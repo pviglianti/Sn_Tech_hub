@@ -30,6 +30,7 @@ from ..models import (
     Assessment,
     AssessmentReport,
     Feature,
+    FeatureScanResult,
     GlobalApp,
     ScanResult,
     Scan,
@@ -77,6 +78,22 @@ def _gather_report_data(session: Session, assessment_id: int) -> Dict[str, Any]:
     ).all())
     features_by_id = {f.id: f for f in features}
 
+    # Build {scan_result_id: feature} map via the M2M join (primary membership preferred)
+    feature_id_set = {f.id for f in features if f.id is not None}
+    membership_rows = []
+    if feature_id_set:
+        membership_rows = list(session.exec(
+            select(FeatureScanResult).where(FeatureScanResult.feature_id.in_(feature_id_set))
+        ).all())
+    result_to_feature: Dict[int, Feature] = {}
+    for m in membership_rows:
+        # Prefer primary membership; otherwise first-seen wins
+        existing = result_to_feature.get(m.scan_result_id)
+        if existing is None or m.is_primary:
+            feat = features_by_id.get(m.feature_id)
+            if feat is not None:
+                result_to_feature[m.scan_result_id] = feat
+
     # Bucket
     in_scope: List[ScanResult] = []
     adjacent: List[ScanResult] = []
@@ -104,6 +121,7 @@ def _gather_report_data(session: Session, assessment_id: int) -> Dict[str, Any]:
         "customized": customized,
         "features": features,
         "features_by_id": features_by_id,
+        "result_to_feature": result_to_feature,
     }
 
 
@@ -180,8 +198,9 @@ def _build_xlsx(data: Dict[str, Any]) -> Workbook:
     _write_header(ws, headers)
     feat_counts: Dict[int, int] = {}
     for r in data["customized"]:
-        if r.feature_id:
-            feat_counts[r.feature_id] = feat_counts.get(r.feature_id, 0) + 1
+        feat = data["result_to_feature"].get(r.id)
+        if feat and feat.id is not None:
+            feat_counts[feat.id] = feat_counts.get(feat.id, 0) + 1
     feats_sorted = sorted(data["features"], key=lambda f: -feat_counts.get(f.id, 0))
     for row_idx, f in enumerate(feats_sorted, start=2):
         ws.cell(row=row_idx, column=1, value=f.id)
@@ -203,7 +222,7 @@ def _build_xlsx(data: Dict[str, Any]) -> Workbook:
     in_scope_plus_adjacent = [r for r in data["customized"] if not getattr(r, "is_out_of_scope", False)]
     for row_idx, r in enumerate(in_scope_plus_adjacent, start=2):
         scope = "adjacent" if getattr(r, "is_adjacent", False) else "in_scope"
-        feat = data["features_by_id"].get(r.feature_id) if r.feature_id else None
+        feat = data["result_to_feature"].get(r.id)
         ws.cell(row=row_idx, column=1, value=r.id)
         ws.cell(row=row_idx, column=2, value=getattr(r, "name", None))
         ws.cell(row=row_idx, column=3, value=getattr(r, "table_name", None))
@@ -265,8 +284,9 @@ def _build_docx(data: Dict[str, Any]) -> Document:
     doc.add_heading("Feature-by-Feature Analysis", level=1)
     feat_counts: Dict[int, int] = {}
     for r in data["customized"]:
-        if r.feature_id:
-            feat_counts[r.feature_id] = feat_counts.get(r.feature_id, 0) + 1
+        feat = data["result_to_feature"].get(r.id)
+        if feat and feat.id is not None:
+            feat_counts[feat.id] = feat_counts.get(feat.id, 0) + 1
     for f in sorted(data["features"], key=lambda f: -feat_counts.get(f.id, 0)):
         doc.add_heading(f.name or f"Feature {f.id}", level=2)
         if getattr(f, "description", None):
