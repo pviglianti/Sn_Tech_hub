@@ -46,8 +46,7 @@ jobs:
             --exclude='__pycache__' --exclude='*.pyc' \
             --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db-journal' \
             --exclude='recovery_snapshots' \
-            --exclude='data/*.jsonl' --exclude='data/ai_prompts' --exclude='data/reports' \
-            --exclude='data/server.log' --exclude='data/server.pid' --exclude='data/server.url' \
+            --exclude='data' \
             --exclude='.tech_assessment.db.*' --exclude='snapshot_*.db' \
             --exclude='.DS_Store' --exclude='node_modules' --exclude='.pytest_cache' \
             -C tech-assessment-hub .
@@ -62,16 +61,10 @@ jobs:
         run: |
           gcloud compute ssh "$VM_NAME" --zone="$VM_ZONE" --tunnel-through-iap --command="
             set -e
-            # Preserve data symlink across extract
-            if [ -L $REMOTE_APP_DIR/data ]; then
-              DATA_TARGET=\$(readlink $REMOTE_APP_DIR/data)
-            fi
             sudo tar xzf /tmp/ta-hub-deploy.tgz -C $REMOTE_APP_DIR
-            if [ -n \"\${DATA_TARGET:-}\" ] && [ ! -L $REMOTE_APP_DIR/data ]; then
-              sudo rm -rf $REMOTE_APP_DIR/data
-              sudo ln -sfn \"\$DATA_TARGET\" $REMOTE_APP_DIR/data
-            fi
-            # Restore ownership so the systemd service (running as pviglianti) can use the files
+            # Always force data -> /mnt/data (tarball excludes data entirely, but be defensive)
+            sudo rm -rf $REMOTE_APP_DIR/data
+            sudo ln -sfn /mnt/data $REMOTE_APP_DIR/data
             sudo chown -R pviglianti:pviglianti $REMOTE_APP_DIR
             sudo -u pviglianti $REMOTE_APP_DIR/venv/bin/pip install -q -r $REMOTE_APP_DIR/requirements.txt
             sudo rm -f /tmp/ta-hub-deploy.tgz

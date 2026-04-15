@@ -28,8 +28,7 @@ else
     --exclude='__pycache__' --exclude='*.pyc' \
     --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db-journal' \
     --exclude='recovery_snapshots' \
-    --exclude='data/*.jsonl' --exclude='data/ai_prompts' --exclude='data/reports' \
-    --exclude='data/server.log' --exclude='data/server.pid' --exclude='data/server.url' \
+    --exclude='data' \
     --exclude='.tech_assessment.db.*' --exclude='snapshot_*.db' \
     --exclude='.DS_Store' --exclude='node_modules' \
     --exclude='.pytest_cache' \
@@ -40,23 +39,15 @@ else
   "$GCLOUD" compute scp --zone="$VM_ZONE" "$TARBALL" "$VM_NAME:/tmp/ta-hub-deploy.tgz" >/dev/null 2>&1 \
     || fail "scp failed"
 
-  log "extracting on VM (preserves data/ symlink)"
+  log "extracting on VM"
   "$GCLOUD" compute ssh "$VM_NAME" --zone="$VM_ZONE" --command="
     set -e
-    # Back up the live data symlink before extract
-    if [ -L $REMOTE_APP_DIR/data ]; then
-      DATA_TARGET=\$(readlink $REMOTE_APP_DIR/data)
-    fi
-    # Extract over existing code (new files overwrite, old stay unless pruned)
-    tar xzf /tmp/ta-hub-deploy.tgz -C $REMOTE_APP_DIR
-    # Restore symlink if tar replaced it with a directory
-    if [ -n \"\${DATA_TARGET:-}\" ] && [ ! -L $REMOTE_APP_DIR/data ]; then
-      rm -rf $REMOTE_APP_DIR/data
-      ln -sfn \"\$DATA_TARGET\" $REMOTE_APP_DIR/data
-    fi
-    # Install any new python deps
-    $REMOTE_APP_DIR/venv/bin/pip install -q -r $REMOTE_APP_DIR/requirements.txt
-    rm -f /tmp/ta-hub-deploy.tgz
+    sudo tar xzf /tmp/ta-hub-deploy.tgz -C $REMOTE_APP_DIR
+    sudo rm -rf $REMOTE_APP_DIR/data
+    sudo ln -sfn /mnt/data $REMOTE_APP_DIR/data
+    sudo chown -R pviglianti:pviglianti $REMOTE_APP_DIR
+    sudo -u pviglianti $REMOTE_APP_DIR/venv/bin/pip install -q -r $REMOTE_APP_DIR/requirements.txt
+    sudo rm -f /tmp/ta-hub-deploy.tgz
   " >/dev/null 2>&1 || fail "remote extract failed"
 
   rm -f "$TARBALL"
