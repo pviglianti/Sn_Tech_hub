@@ -41,8 +41,9 @@
         <div>
             <label class="form-label" title="API: direct Anthropic Messages API call from the VM. CLI: spawns the claude CLI subprocess on the VM. Both load the same SKILL.md from the plugin and call the same MCP tools — the result is identical, this is a transport choice.">Dispatcher (transport)</label>
             <select id="cfg-dispatcher" class="form-select">
-                <option value="skill_api">API — direct Anthropic call (recommended)</option>
-                <option value="cli">CLI — claude subprocess</option>
+                <option value="skill_api">SKILL.md → API (direct Anthropic, recommended)</option>
+                <option value="cli">SKILL.md → CLI (claude subprocess)</option>
+                <option value="cli_legacy">Legacy: tool-free per-artifact JSON (old behavior)</option>
             </select>
         </div>
     </div>

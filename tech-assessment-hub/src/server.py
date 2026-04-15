@@ -1910,18 +1910,53 @@ def _run_assessment_pipeline_stage(
                         message=f"Dispatching AI scope triage for {total - resume_from} artifact(s)...",
                         progress_percent=25,
                     )
-                    dispatch_summary = run_ai_analysis_dispatch(
-                        session,
-                        assessment=assessment,
-                        resolved=dispatch_resolved,
-                        runtime_props=runtime_props,
-                        customized_results=customized[resume_from:],
-                        batch_size=ai_props.batch_size,
-                        cli_timeout_seconds=ai_props.cli_timeout_seconds,
-                        registered_prompt_name=registered_prompt_name,
-                        registered_prompt_text=registered_prompt_text,
-                        registered_prompt_error=registered_prompt_error,
+                    # Choose between the new SKILL.md-based dispatcher and the legacy
+                    # tool-free per-artifact classifier. Default = new dispatcher.
+                    _dispatcher_choice = (
+                        session.exec(
+                            select(AppConfig).where(AppConfig.key == "ai.dispatcher")
+                        ).first()
                     )
+                    _dispatcher_value = (
+                        (_dispatcher_choice.value if _dispatcher_choice else "")
+                        or "skill_api"
+                    ).strip().lower()
+                    if _dispatcher_value == "cli_legacy":
+                        dispatch_summary = run_ai_analysis_dispatch(
+                            session,
+                            assessment=assessment,
+                            resolved=dispatch_resolved,
+                            runtime_props=runtime_props,
+                            customized_results=customized[resume_from:],
+                            batch_size=ai_props.batch_size,
+                            cli_timeout_seconds=ai_props.cli_timeout_seconds,
+                            registered_prompt_name=registered_prompt_name,
+                            registered_prompt_text=registered_prompt_text,
+                            registered_prompt_error=registered_prompt_error,
+                        )
+                    else:
+                        # New path: route through the skill dispatcher → loads
+                        # assessment-plugin/skills/scope-triage/SKILL.md and runs
+                        # one agentic call (CLI subprocess or API, per ai.dispatcher).
+                        from .services.skill_dispatcher import run_skill as _run_skill
+                        _result = _run_skill(
+                            session=session,
+                            assessment_id=assessment.id,
+                            stage="scope_triage",
+                            dispatcher=_dispatcher_value,
+                            timeout_seconds=ai_props.cli_timeout_seconds,
+                        )
+                        # Adapt to AIDispatchSummary for the existing reporting code.
+                        from .services.ai_analysis_dispatch import AIDispatchSummary
+                        dispatch_summary = AIDispatchSummary(
+                            provider_kind=dispatch_resolved.provider_kind,
+                            model_name=dispatch_resolved.model_name,
+                            runtime_mode=runtime_props.mode,
+                            batch_count=1,
+                            processed_count=(total - resume_from) if _result.success else 0,
+                            registered_prompt_name="scope-triage SKILL.md",
+                            registered_prompt_error=(_result.error if not _result.success else None),
+                        )
                     complete_phase_progress(
                         session,
                         assessment_id,
