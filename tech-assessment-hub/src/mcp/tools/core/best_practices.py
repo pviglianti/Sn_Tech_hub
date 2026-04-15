@@ -67,7 +67,7 @@ def _matches_applies_to(applies_to_raw: Optional[str], target_class: Optional[st
     return target_class in parts
 
 
-def handle(session: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
     applies_to = params.get("applies_to")
     category = params.get("category")
     severity = params.get("severity")

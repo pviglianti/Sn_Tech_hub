@@ -47,7 +47,7 @@ def _load_json_list(raw: Optional[str]) -> List[str]:
     return []
 
 
-def handle(session: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
     assessment_id = params.get("assessment_id")
     if assessment_id is None:
         raise ValueError("assessment_id is required")

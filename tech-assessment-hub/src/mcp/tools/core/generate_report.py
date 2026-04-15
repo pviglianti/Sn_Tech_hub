@@ -38,7 +38,7 @@ INPUT_SCHEMA: Dict[str, Any] = {
 }
 
 
-def handle(session: Session, params: Dict[str, Any]) -> Dict[str, Any]:
+def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
     assessment_id = int(params["assessment_id"])
     formats = params.get("formats") or ["xlsx", "docx"]
     generated_by = params.get("generated_by")
