@@ -66,13 +66,15 @@ jobs:
             if [ -L $REMOTE_APP_DIR/data ]; then
               DATA_TARGET=\$(readlink $REMOTE_APP_DIR/data)
             fi
-            tar xzf /tmp/ta-hub-deploy.tgz -C $REMOTE_APP_DIR
+            sudo tar xzf /tmp/ta-hub-deploy.tgz -C $REMOTE_APP_DIR
             if [ -n \"\${DATA_TARGET:-}\" ] && [ ! -L $REMOTE_APP_DIR/data ]; then
-              rm -rf $REMOTE_APP_DIR/data
-              ln -sfn \"\$DATA_TARGET\" $REMOTE_APP_DIR/data
+              sudo rm -rf $REMOTE_APP_DIR/data
+              sudo ln -sfn \"\$DATA_TARGET\" $REMOTE_APP_DIR/data
             fi
-            $REMOTE_APP_DIR/venv/bin/pip install -q -r $REMOTE_APP_DIR/requirements.txt
-            rm -f /tmp/ta-hub-deploy.tgz
+            # Restore ownership so the systemd service (running as pviglianti) can use the files
+            sudo chown -R pviglianti:pviglianti $REMOTE_APP_DIR
+            sudo -u pviglianti $REMOTE_APP_DIR/venv/bin/pip install -q -r $REMOTE_APP_DIR/requirements.txt
+            sudo rm -f /tmp/ta-hub-deploy.tgz
             sudo systemctl restart ta-hub
           "
 
