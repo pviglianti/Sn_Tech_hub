@@ -122,6 +122,7 @@ from .web.routes.job_log import job_log_router
 from .web.routes.mcp_admin import mcp_admin_router
 from .web.routes.scan_config_admin import scan_config_admin_router
 from .web.routes.reports import reports_router
+from .web.routes.run_stage import run_stage_router
 from .web.routes.preferences import create_preferences_router
 from .web.routes.assessment_runtime_usage import create_assessment_runtime_usage_router
 from .web.routes.customizations import customizations_router
@@ -8291,6 +8292,7 @@ app.include_router(analytics_router)
 app.include_router(mcp_admin_router)
 app.include_router(scan_config_admin_router)
 app.include_router(reports_router)
+app.include_router(run_stage_router)
 app.include_router(job_log_router)
 app.include_router(create_preferences_router(require_mcp_admin))
 app.include_router(create_assessment_runtime_usage_router(require_mcp_admin))

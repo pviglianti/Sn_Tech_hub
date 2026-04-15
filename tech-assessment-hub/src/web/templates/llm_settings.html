@@ -38,6 +38,13 @@
                 <option value="max">Max</option>
             </select>
         </div>
+        <div>
+            <label class="form-label" title="API: direct Anthropic Messages API call from the VM. CLI: spawns the claude CLI subprocess on the VM. Both load the same SKILL.md from the plugin and call the same MCP tools — the result is identical, this is a transport choice.">Dispatcher (transport)</label>
+            <select id="cfg-dispatcher" class="form-select">
+                <option value="skill_api">API — direct Anthropic call (recommended)</option>
+                <option value="cli">CLI — claude subprocess</option>
+            </select>
+        </div>
     </div>
     <button class="btn btn-primary" style="margin-top: 1rem;" onclick="saveDefaults()">Save Defaults</button>
 
@@ -116,6 +123,8 @@ function renderConfigForm() {
     onProviderChange();
     const effortSelect = document.getElementById('cfg-effort');
     effortSelect.value = _config['ai.default_effort_level'] || 'medium';
+    const dispSelect = document.getElementById('cfg-dispatcher');
+    if (dispSelect) dispSelect.value = _config['ai.dispatcher'] || 'skill_api';
 }
 
 async function onProviderChange() {
@@ -161,6 +170,8 @@ async function saveDefaults() {
     if (pid) body['ai.default_provider_id'] = pid;
     if (mid) body['ai.default_model_id'] = mid;
     if (effort) body['ai.default_effort_level'] = effort;
+    const dispEl = document.getElementById('cfg-dispatcher');
+    if (dispEl && dispEl.value) body['ai.dispatcher'] = dispEl.value;
     await fetch('/api/llm/config', { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
     await loadAll();
 }

@@ -406,6 +406,33 @@
     </div>
 </div>
 
+<!-- Run AI Stage panel -->
+<div class="card" id="runStageCard">
+    <h3 style="margin:0 0 10px 0;">Run AI Stage</h3>
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <select id="runStageSelect" style="padding:6px 10px;">
+            <option value="scope_triage">Scope Triage</option>
+            <option value="observations">Observations</option>
+            <option value="feature_grouping">Feature Grouping</option>
+            <option value="refinement">Refinement</option>
+            <option value="recommendations">Recommendations</option>
+            <option value="report">Report</option>
+        </select>
+        <select id="runStageDispatcher" title="Which transport: API (direct Anthropic API) or CLI (claude subprocess on VM)" style="padding:6px 10px;">
+            <option value="">Default (admin property)</option>
+            <option value="skill_api">API (direct)</option>
+            <option value="cli">CLI (subprocess)</option>
+        </select>
+        <input id="runStageInstructions" placeholder="Optional extra instructions for this run…" style="flex:1; min-width:240px; padding:6px 10px;" />
+        <button class="btn btn-primary" id="runStageBtn" onclick="runStage()">Run</button>
+    </div>
+    <div id="runStageStatus" style="margin-top:10px; font-size:13px; color:var(--text-muted);"></div>
+    <details id="runStageDetails" style="margin-top:8px; display:none;">
+        <summary style="cursor:pointer; font-size:13px;">Output / details</summary>
+        <pre id="runStageOutput" style="background:var(--bg-tertiary, #1a1a1a); padding:10px; border-radius:4px; max-height:400px; overflow:auto; font-size:12px; white-space:pre-wrap;"></pre>
+    </details>
+</div>
+
 <!-- Reports panel -->
 <div class="card" id="reportsCard">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
@@ -2077,5 +2104,51 @@ async function generateReport() {
 }
 
 loadReports();
+
+// ── Run AI Stage panel ─────────────────────────────────
+async function runStage() {
+    const stage = document.getElementById('runStageSelect').value;
+    const dispatcher = document.getElementById('runStageDispatcher').value;
+    const instructions = document.getElementById('runStageInstructions').value.trim();
+    const btn = document.getElementById('runStageBtn');
+    const statusEl = document.getElementById('runStageStatus');
+    const detailsEl = document.getElementById('runStageDetails');
+    const outputEl = document.getElementById('runStageOutput');
+    btn.disabled = true;
+    const orig = btn.textContent;
+    btn.textContent = 'Running…';
+    statusEl.textContent = `Running ${stage}…  (this can take 1–10 minutes — the agent will call MCP tools as it works)`;
+    detailsEl.style.display = 'none';
+    try {
+        const body = { stage };
+        if (dispatcher) body.dispatcher = dispatcher;
+        if (instructions) body.instructions = instructions;
+        const res = await fetch('/api/assessments/' + assessmentId + '/run-stage', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok || data.success === false) {
+            statusEl.style.color = '#b91c1c';
+            statusEl.textContent = `❌ ${data.detail || data.error || 'failed'}`;
+        } else {
+            statusEl.style.color = 'var(--text-muted)';
+            const usage = `tokens: ${data.input_tokens} in / ${data.output_tokens} out` +
+                (data.cache_read_tokens ? ` (${data.cache_read_tokens} from cache)` : '');
+            statusEl.textContent = `✅ Done — ${data.transport} • ${data.duration_seconds}s • ${data.tool_call_count} tool calls • ${usage}`;
+        }
+        detailsEl.style.display = 'block';
+        outputEl.textContent = data.output || data.detail || JSON.stringify(data, null, 2);
+        // Refresh derived UI panels in case the run wrote to the DB
+        if (typeof loadReports === 'function') loadReports();
+    } catch (e) {
+        statusEl.style.color = '#b91c1c';
+        statusEl.textContent = `❌ ${e && e.message ? e.message : e}`;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+    }
+}
 </script>
 {% endblock %}
