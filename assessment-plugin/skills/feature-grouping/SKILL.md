@@ -3,7 +3,7 @@ name: feature-grouping
 description: >
   Group assessed artifacts into logical business features. Use after observations.
   Creates feature records and assigns artifacts to them.
-allowed-tools: mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__get_features mcp__tech-assessment-hub__create_feature mcp__tech-assessment-hub__update_feature mcp__tech-assessment-hub__assign_result_to_feature
+allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_grouping_signals mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__get_features mcp__tech-assessment-hub__create_feature mcp__tech-assessment-hub__update_feature mcp__tech-assessment-hub__assign_result_to_feature
 ---
 
 # Feature Grouping
@@ -11,17 +11,32 @@ allowed-tools: mcp__tech-assessment-hub__get_customizations mcp__tech-assessment
 Group in-scope artifacts into business features.
 
 ## Setup
-1. Get assessment ID from user or $ARGUMENTS
-2. Call `get_customizations` to see triaged artifacts
-3. Call `get_features` to see existing features
+
+1. Get assessment ID from user or `$ARGUMENTS`.
+2. **Call `get_assessment_context(assessment_id)`** — caches target app, in-scope tables, file classes.
+3. **Call `get_grouping_signals(assessment_id)`** — returns:
+   - `dependency_clusters` — **strongest signal**, from the `dependency_mapper` engine (code refs + structural relationships). Trust these first.
+   - `naming_clusters` — medium (shared prefixes/conventions).
+   - `temporal_clusters` — weakest (same author + tight time window).
+4. **Read the resource `assessment://guide/grouping-signals`** for the full signal taxonomy (update sets, sys_metadata parent/child, etc.). Use it when engine signals miss things.
+5. `get_customizations(assessment_id)` to see triaged artifacts; `get_features(assessment_id)` to see existing features.
+
+## Why you must use the signals tool
+
+The grouping engines are imperfect. `dependency_mapper` is the one reliable engine — its output is in `dependency_clusters`. Others (table colocation, naming, temporal) often miss or over-group. When engine output looks sparse/wrong:
+
+- Still **read** it — you get free leads from `dependency_clusters`.
+- Then **fall back to the grouping-signals doc** to apply signals manually: update set cohorts, code cross-references, sys_metadata parent/child, naming conventions, application/package, reference field values.
 
 ## Rules
-- Artifacts that deliver ONE business capability = one feature
-- Name by business purpose ("Incident Auto-Assignment" not "BR + SI")
-- Use engine signals (update sets, code refs, naming patterns) as hints
-- Every in-scope artifact must end up in a feature — no orphans
-- Standalone artifacts → category bucket ("Misc Form Customizations")
-- Present your grouping plan to the user before executing
+
+- Artifacts that deliver ONE business capability = one feature.
+- Name by business purpose ("Incident Auto-Assignment" not "BR + SI").
+- **Use `dependency_clusters` as your starting groups** — then merge/split based on additional signals.
+- Apply the confidence scoring from the grouping-signals resource (High 8+, Medium 4-7, Low 1-3).
+- Every in-scope artifact must end up in a feature — no orphans.
+- Standalone or low-confidence artifacts → category bucket ("Misc Form Customizations", "Unclustered Customizations").
+- Present your grouping plan to the user before executing (list each proposed feature + member artifact names + confidence).
 
 ## Iterative Refinement Rules
 
