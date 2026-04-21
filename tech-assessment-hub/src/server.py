@@ -1474,7 +1474,20 @@ def _build_recovered_assessment_run_status(
     }
 
 
-def _assessment_data_sync_summary(session: Session, instance_id: int) -> Dict[str, Any]:
+def _assessment_data_sync_summary(
+    session: Session,
+    instance_id: int,
+    use_cached_counts: bool = False,
+) -> Dict[str, Any]:
+    """Summarize preflight data-pull status for an instance.
+
+    When ``use_cached_counts`` is True, the per-type ``local_count`` is read
+    from ``InstanceDataPull.records_pulled`` instead of running a live
+    ``SELECT COUNT(*)`` against potentially large local tables
+    (version_history, customer_update_xml, etc.). This is used by the
+    read-only assessment view path where running multi-million-row counts
+    on every page load is wasteful — the pull rows already carry that data.
+    """
     tracked_types = list(ASSESSMENT_PREFLIGHT_DATA_TYPES)
     pulls = session.exec(
         select(InstanceDataPull)
@@ -1496,7 +1509,11 @@ def _assessment_data_sync_summary(session: Session, instance_id: int) -> Dict[st
         pull = pull_map.get(data_type)
         model_class = ASSESSMENT_PREFLIGHT_MODEL_MAP.get(data_type)
         local_count = 0
-        if model_class:
+        if use_cached_counts:
+            # Fast path: trust the pull row's records_pulled as the local count.
+            # Falls back to 0 if no pull row exists yet.
+            local_count = (pull.records_pulled if pull else 0) or 0
+        elif model_class:
             local_count = session.exec(
                 select(func.count())
                 .select_from(model_class)
@@ -7771,6 +7788,7 @@ def _build_assessment_preflight_plan(
     now: Optional[datetime] = None,
     client: Optional[ServiceNowClient] = None,
     version_state_filter: Optional[str] = None,
+    use_cached_counts: bool = False,
 ) -> Dict[str, Any]:
     """Plan pre-scan cache sync for assessment execution.
 
@@ -7781,6 +7799,14 @@ def _build_assessment_preflight_plan(
     When *client* is provided, remote record counts and delta probe counts
     are fetched so that incomplete caches are detected and the smart
     decision logic can determine the optimal mode.
+
+    When *use_cached_counts* is True, the per-type local record count is
+    read from ``InstanceDataPull.records_pulled`` instead of a live
+    ``COUNT(*)`` against the (potentially very large) target table. This is
+    safe for read-only/display callers (e.g. the assessment view page) and
+    avoids multi-million-row scans on every page load. Not used when a
+    ``version_state_filter`` is active, since the pull row's count is not
+    state-filtered.
     """
     target_data_types = data_types or list(ASSESSMENT_PREFLIGHT_DATA_TYPES)
     reference_now = now or datetime.utcnow()
@@ -7814,14 +7840,19 @@ def _build_assessment_preflight_plan(
         # For VH with a state filter, count only matching local records
         # so the comparison with the remote count is apples-to-apples.
         vh_filter = version_state_filter if dt == DataPullType.version_history else None
-        local_stmt = (
-            select(func.count())
-            .select_from(model_class)
-            .where(model_class.instance_id == instance_id)
-        )
-        if vh_filter:
-            local_stmt = local_stmt.where(func.lower(model_class.state) == vh_filter.lower())
-        local_count = session.exec(local_stmt).one()
+        if use_cached_counts and not vh_filter:
+            # Read-only/display path: trust the pull row's records_pulled
+            # to avoid a live COUNT(*) against a potentially huge table.
+            local_count = (pull.records_pulled if pull else 0) or 0
+        else:
+            local_stmt = (
+                select(func.count())
+                .select_from(model_class)
+                .where(model_class.instance_id == instance_id)
+            )
+            if vh_filter:
+                local_stmt = local_stmt.where(func.lower(model_class.state) == vh_filter.lower())
+            local_count = session.exec(local_stmt).one()
 
         if local_count == 0:
             full_types.append(dt)
@@ -7829,9 +7860,17 @@ def _build_assessment_preflight_plan(
             continue
 
         # --- Unified delta decision via resolve_delta_decision ---
-        watermark = _get_db_derived_watermark(session, instance_id, dt)
-        if watermark is None and pull:
-            watermark = pull.last_sys_updated_on
+        if use_cached_counts:
+            # Read-only/display path: use the watermark the puller already
+            # saved, instead of running MAX(sys_updated_on) over a
+            # potentially multi-million-row table. Safe because this path
+            # does not feed back into the actual SN data pull — the live
+            # executor still computes the authoritative watermark itself.
+            watermark = pull.last_sys_updated_on if pull else None
+        else:
+            watermark = _get_db_derived_watermark(session, instance_id, dt)
+            if watermark is None and pull:
+                watermark = pull.last_sys_updated_on
 
         remote_count = None
         delta_probe_count = None
@@ -9210,12 +9249,18 @@ async def add_assessment(
 
 
 @app.get("/assessments/{assessment_id}", response_class=HTMLResponse)
-async def view_assessment(
+def view_assessment(
     request: Request,
     assessment_id: int,
     session: Session = Depends(get_session)
 ):
-    """View assessment details with scans and results"""
+    """View assessment details with scans and results.
+
+    Intentionally a sync ``def`` (not ``async def``): the body uses
+    blocking SQLAlchemy calls, so FastAPI runs it in a threadpool. This
+    keeps the event loop free so one slow assessment view does not freeze
+    every other in-flight request (other tabs, other users, polling APIs).
+    """
     assessment = session.get(Assessment, assessment_id)
     if not assessment:
         raise HTTPException(status_code=404, detail="Assessment not found")
@@ -9226,15 +9271,77 @@ async def view_assessment(
     required_set = set(ASSESSMENT_PREFLIGHT_REQUIRED_TYPES)
     assessment_has_scans = bool(assessment.scans)
 
+    # Option 2: once the assessment has advanced past the scans stage (or is
+    # fully complete), there is no point in re-deriving the preflight plan on
+    # every page view — preflight is in the past. Render a static "completed"
+    # panel built directly from the cached pull rows. Saves all per-type
+    # bucket evaluation and all live COUNT(*) calls.
+    pipeline_stage_value = (
+        assessment.pipeline_stage.value
+        if assessment.pipeline_stage is not None
+        else PipelineStage.scans.value
+    )
+    preflight_is_historical = (
+        assessment.completed_at is not None
+        or pipeline_stage_value != PipelineStage.scans.value
+    )
+
+    if preflight_is_historical:
+        sync_summary = _assessment_data_sync_summary(
+            session, assessment.instance_id, use_cached_counts=True
+        )
+        all_types = list(ASSESSMENT_PREFLIGHT_DATA_TYPES)
+        sync_detail_map: Dict[str, Dict[str, Any]] = {
+            row.get("data_type"): row for row in sync_summary.get("details", [])
+        }
+
+        def _hist_item(dt: DataPullType) -> Dict[str, Any]:
+            detail = sync_detail_map.get(dt.value, {})
+            return {
+                "data_type": dt.value,
+                "label": _label_for(dt),
+                "status": detail.get("status", "completed") if detail else "completed",
+                "is_required": dt in required_set,
+                "local_count": detail.get("local_count") or 0,
+                "records_pulled": detail.get("records_pulled") or 0,
+                "expected_total": detail.get("expected_total"),
+                "decision": "historical",
+            }
+
+        fresh_items = [_hist_item(dt) for dt in all_types]
+        preflight_summary = {
+            "full": [],
+            "delta": [],
+            "fresh": fresh_items,
+            "skip": [],
+            "pending_all": [],
+            "stale_minutes": ASSESSMENT_PREFLIGHT_STALE_MINUTES,
+            "decisions": {dt.value: "historical" for dt in all_types},
+            "full_status": "completed",
+            "delta_status": "completed",
+            "fresh_status": "completed",
+            "skip_status": "completed",
+        }
+
+        return templates.TemplateResponse("assessment_detail.html", {
+            "request": request,
+            "assessment": assessment,
+            "preflight_summary": preflight_summary,
+        })
+
     if assessment_has_scans:
-        # Assessment has run — show plan with real probe-based decisions
+        # Assessment has run — show plan with real probe-based decisions.
+        # Use cached counts so page view never runs multi-million-row COUNT(*).
         preflight_plan = _build_assessment_preflight_plan(
             session=session,
             instance_id=assessment.instance_id,
             stale_minutes=ASSESSMENT_PREFLIGHT_STALE_MINUTES,
+            use_cached_counts=True,
         )
 
-        sync_summary = _assessment_data_sync_summary(session, assessment.instance_id)
+        sync_summary = _assessment_data_sync_summary(
+            session, assessment.instance_id, use_cached_counts=True
+        )
         pull_status_map: Dict[DataPullType, str] = {}
         sync_detail_map: Dict[str, Dict[str, Any]] = {}
         for row in sync_summary.get("details", []):
