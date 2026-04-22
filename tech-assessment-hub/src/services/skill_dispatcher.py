@@ -247,6 +247,26 @@ def start_skill_background(
     )
     stream_log_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Create the file synchronously BEFORE returning so the SSE route never
+    # 404s on the first poll. The browser subscribes to
+    # /api/assessments/{id}/ai-stream?stream_id=... the instant run-stage
+    # responds — if the background thread hasn't yet opened the file, SSE
+    # hits FileNotFoundError and returns 404 while the thread is still
+    # spinning up (which in chained mode includes a triaged-count DB query
+    # before launching the first subprocess). An empty preamble line makes
+    # the SSE route happy and is silently ignored by JSON parsers.
+    try:
+        with stream_log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "type": "_dispatch_started",
+                "stream_id": stream_id,
+                "stage": stage,
+                "assessment_id": assessment_id,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }) + "\n")
+    except Exception:
+        logger.exception("failed to pre-create stream file %s", stream_log_path)
+
     merged_extra = dict(extra or {})
     merged_extra["stream_id"] = stream_id
     merged_extra["stream_log_path"] = str(stream_log_path)
