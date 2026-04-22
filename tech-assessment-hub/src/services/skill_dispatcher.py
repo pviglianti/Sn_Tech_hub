@@ -34,6 +34,23 @@ _SCOPE_TRIAGE_CHUNK_SIZE = 50
 _SCOPE_TRIAGE_MAX_CHUNKS = 500
 # Stages that support auto-chaining (multiple CLI sessions, one per page).
 _CHAINED_STAGES = {"scope_triage", "ai_analysis"}
+# Pipeline stages that MUST be reached before auto-chain stops. Anything in
+# here means the skill's `advance_pipeline` call has landed and triage is
+# finished. Stages BEFORE triage (e.g. `scans`, `engines`) must NOT stop
+# the chain — the assessment can sit in a pre-triage stage while the
+# skill runs; only a forward advance means we're done.
+_POST_TRIAGE_STAGES = {
+    "observations",
+    "review",
+    "feature_grouping",
+    "grouping",
+    "ai_refinement",
+    "refinement",
+    "recommendations",
+    "report",
+    "complete",
+    "done",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -393,11 +410,12 @@ def _run_chained_scope_triage(
             pass
 
         # Cap per-chunk wall time so a stuck chunk doesn't hold the whole
-        # auto-chain loop for 30 minutes. 6 minutes is plenty for 50
-        # artifacts with the fast scope-brief tool; anything longer than
-        # that is the CLI in a retry/backoff loop and we're better off
-        # killing it and letting the next chunk take a fresh swing.
-        per_chunk_timeout = min(int(timeout_seconds or 1800), 360)
+        # auto-chain loop for 30 minutes. A healthy 50-artifact chunk with
+        # Opus takes 6–12 min: scope_brief + optional get_result_detail +
+        # update_scan_result per artifact, with the model spending
+        # ~10-15s reasoning per decision. 20 minutes gives comfortable
+        # headroom; truly stuck chunks still get killed.
+        per_chunk_timeout = min(int(timeout_seconds or 1800), 1200)
 
         with Session(engine) as bg_session:
             result = run_skill(
@@ -438,8 +456,12 @@ def _run_chained_scope_triage(
             pass
 
         # Stop conditions:
-        # 1) The skill advanced the pipeline past scope_triage/ai_analysis.
-        if pipeline_stage and pipeline_stage not in _CHAINED_STAGES:
+        # 1) The skill advanced the pipeline FORWARD past triage. Stages
+        #    BEFORE triage (scans, engines) must NOT stop the chain — the
+        #    assessment can sit at those stages while scope-triage runs;
+        #    only a forward advance to observations/review/etc. means the
+        #    skill is done.
+        if pipeline_stage and pipeline_stage in _POST_TRIAGE_STAGES:
             logger.info(
                 "chained scope_triage done — assessment=%s pipeline_stage=%s",
                 assessment_id, pipeline_stage,
