@@ -167,7 +167,19 @@ if page.total <= page.offset + len(page.customizations):
 - **Always call `update_scan_result` for every artifact**, and always pass both
   `is_out_of_scope` and `is_adjacent` explicitly so in_scope artifacts end up
   `is_out_of_scope=false, is_adjacent=false`.
-- **Exactly one of** `is_out_of_scope` / `is_adjacent` may be true; never both.
+- **The three decisions are mutually exclusive — AT MOST one flag is true:**
+
+  | decision      | `is_out_of_scope` | `is_adjacent` |
+  |---|---|---|
+  | `in_scope`    | false             | false         |
+  | `adjacent`    | false             | **true**      |
+  | `out_of_scope`| **true**          | false         |
+
+  If you've decided an artifact is `out_of_scope`, **do NOT also evaluate
+  for adjacency** — out_of_scope means it does not relate to the assessment
+  at all. `is_adjacent` on an out_of_scope record must be `false`, always.
+  Never pass `is_out_of_scope=true` with `is_adjacent=true` in the same
+  call; the record-merge rejects that as a contradiction.
 - Use `get_customizations` with `assessment_id`, `limit`, and `offset` only —
   the tool does not accept a review_status filter; the customization table IS
   the filter (everything in it is already customized).

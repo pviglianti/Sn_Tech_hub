@@ -149,6 +149,17 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
             setattr(result, bool_field, bool(params[bool_field]))
             updated_fields.append(bool_field)
 
+    # Enforce the scope-flag invariant: out_of_scope and adjacent are
+    # mutually exclusive. out_of_scope wins (it's the stronger claim —
+    # the artifact has nothing to do with the assessment, which
+    # contradicts "adjacent but related"). We fix the flags here
+    # rather than rejecting the update so the observations/ai_observations
+    # the model already sent still land.
+    if getattr(result, "is_out_of_scope", False) and getattr(result, "is_adjacent", False):
+        result.is_adjacent = False
+        if "is_adjacent" not in updated_fields:
+            updated_fields.append("is_adjacent")
+
     if not updated_fields:
         return {"success": True, "message": "No fields to update.", "result_id": result_id}
 
