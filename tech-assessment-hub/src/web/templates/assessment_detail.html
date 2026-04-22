@@ -427,6 +427,19 @@
         <button class="btn btn-primary" id="runStageBtn" onclick="runStage()">Run</button>
     </div>
     <div id="runStageStatus" style="margin-top:10px; font-size:13px; color:var(--text-muted);"></div>
+
+    <!-- Live streaming console (shown while a run is in progress) -->
+    <div id="runStageLive" style="margin-top:10px; display:none;">
+        <div style="display:flex; gap:12px; font-size:12px; color:var(--text-muted); margin-bottom:6px;">
+            <span>Tool calls: <strong id="runStageLiveTools">0</strong></span>
+            <span>Text chunks: <strong id="runStageLiveChunks">0</strong></span>
+            <span>Writes so far: <strong id="runStageLiveWrites">0</strong></span>
+            <span id="runStageLiveElapsed">0s</span>
+            <button class="btn btn-secondary" id="runStageStopBtn" style="margin-left:auto; padding:2px 8px; font-size:12px;">Close live view</button>
+        </div>
+        <pre id="runStageLiveLog" style="background:var(--bg-tertiary, #0f172a); color:#e5e7eb; padding:10px; border-radius:4px; max-height:420px; overflow:auto; font-size:12px; white-space:pre-wrap; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"></pre>
+    </div>
+
     <details id="runStageDetails" style="margin-top:8px; display:none;">
         <summary style="cursor:pointer; font-size:13px;">Output / details</summary>
         <pre id="runStageOutput" style="background:var(--bg-tertiary, #1a1a1a); padding:10px; border-radius:4px; max-height:400px; overflow:auto; font-size:12px; white-space:pre-wrap;"></pre>
@@ -2105,7 +2118,159 @@ async function generateReport() {
 
 loadReports();
 
-// ── Run AI Stage panel ─────────────────────────────────
+// ── Run AI Stage panel (background + SSE streaming) ─────
+let _runStageES = null;
+let _runStageElapsedTimer = null;
+
+function _runStageCloseStream(reason) {
+    if (_runStageES) { try { _runStageES.close(); } catch (_) {} _runStageES = null; }
+    if (_runStageElapsedTimer) { clearInterval(_runStageElapsedTimer); _runStageElapsedTimer = null; }
+    const btn = document.getElementById('runStageBtn');
+    if (btn) { btn.disabled = false; btn.textContent = 'Run'; }
+    if (reason) {
+        const statusEl = document.getElementById('runStageStatus');
+        if (statusEl && !statusEl.textContent.startsWith('✅') && !statusEl.textContent.startsWith('❌')) {
+            statusEl.textContent = reason;
+        }
+    }
+}
+
+function _runStageAppendLine(text) {
+    const el = document.getElementById('runStageLiveLog');
+    if (!el) return;
+    el.textContent += text + '\n';
+    el.scrollTop = el.scrollHeight;
+}
+
+function _runStageFormatEvent(eventName, data) {
+    // Turn a stream-json event into a short human-readable line.
+    if (!data) return `[${eventName}]`;
+    if (data.type === '_stream_start') return `── run started (model=${data.model || '?'}) ──`;
+    if (data.type === '_stream_end') return '── run ended ──';
+    if (data.type === '_stream_error') return `!! stream error: ${data.error || ''}`;
+    if (data.type === 'system' && data.subtype === 'init') {
+        const tools = (data.tools || []).length;
+        const servers = (data.mcp_servers || []).map(s => s.name + ':' + s.status).join(', ');
+        return `system init — ${tools} tools registered; mcp: ${servers}`;
+    }
+    if (data.type === 'assistant' && data.message) {
+        const parts = (data.message.content || []).map(p => {
+            if (p.type === 'text') return p.text;
+            if (p.type === 'tool_use') {
+                const args = p.input ? JSON.stringify(p.input).slice(0, 180) : '';
+                return `→ tool_use ${p.name}(${args})`;
+            }
+            if (p.type === 'thinking') return `(thinking)`;
+            return `[${p.type}]`;
+        });
+        return parts.filter(Boolean).join(' ');
+    }
+    if (data.type === 'user' && data.message) {
+        const parts = (data.message.content || []).map(p => {
+            if (p.type === 'tool_result') {
+                let text = '';
+                if (Array.isArray(p.content)) {
+                    const first = p.content.find(c => c && c.type === 'text');
+                    text = first ? String(first.text || '').slice(0, 200) : '';
+                } else if (typeof p.content === 'string') {
+                    text = p.content.slice(0, 200);
+                }
+                return `← tool_result${p.is_error ? ' (error)' : ''} ${text}`;
+            }
+            return '';
+        });
+        return parts.filter(Boolean).join(' ');
+    }
+    if (data.type === 'stream_event') {
+        const delta = data.event && data.event.delta;
+        if (delta && delta.type === 'text_delta') return delta.text;
+        return '';
+    }
+    if (data.type === 'result') {
+        const toolCalls = data.num_turns || 0;
+        const u = data.usage || {};
+        return `── result — ${toolCalls} turns, ${u.output_tokens || 0} out tokens ──`;
+    }
+    return `[${eventName}] ${JSON.stringify(data).slice(0, 200)}`;
+}
+
+function _runStageAttachStream(assessmentId, streamUrl) {
+    const liveWrap = document.getElementById('runStageLive');
+    const logEl = document.getElementById('runStageLiveLog');
+    const toolsCtr = document.getElementById('runStageLiveTools');
+    const chunksCtr = document.getElementById('runStageLiveChunks');
+    const writesCtr = document.getElementById('runStageLiveWrites');
+    const elapsedEl = document.getElementById('runStageLiveElapsed');
+    if (liveWrap) liveWrap.style.display = 'block';
+    if (logEl) logEl.textContent = '';
+    let tools = 0, chunks = 0, writes = 0;
+    if (toolsCtr) toolsCtr.textContent = '0';
+    if (chunksCtr) chunksCtr.textContent = '0';
+    if (writesCtr) writesCtr.textContent = '0';
+    const startedAt = Date.now();
+    if (_runStageElapsedTimer) clearInterval(_runStageElapsedTimer);
+    _runStageElapsedTimer = setInterval(() => {
+        if (elapsedEl) elapsedEl.textContent = Math.round((Date.now() - startedAt) / 1000) + 's';
+    }, 1000);
+
+    const es = new EventSource(streamUrl);
+    _runStageES = es;
+
+    const onAny = (evt) => {
+        let data = null;
+        try { data = JSON.parse(evt.data); } catch (_) { data = null; }
+
+        // Count tool calls / writes.
+        if (data && data.type === 'assistant' && data.message) {
+            for (const p of (data.message.content || [])) {
+                if (p.type === 'tool_use') {
+                    tools++;
+                    if (String(p.name || '').startsWith('mcp__tech-assessment-hub__update_')) writes++;
+                    if (String(p.name || '').startsWith('mcp__tech-assessment-hub__advance_pipeline')) writes++;
+                }
+                if (p.type === 'text' && p.text) chunks++;
+            }
+        }
+        if (data && data.type === 'stream_event' && data.event && data.event.delta && data.event.delta.type === 'text_delta') {
+            chunks++;
+        }
+        if (toolsCtr) toolsCtr.textContent = String(tools);
+        if (chunksCtr) chunksCtr.textContent = String(chunks);
+        if (writesCtr) writesCtr.textContent = String(writes);
+
+        const line = _runStageFormatEvent(evt.type, data);
+        if (line) _runStageAppendLine(line);
+
+        if (evt.type === '_stream_end' || evt.type === '_stream_error' || evt.type === '_stream_timeout') {
+            _runStageCloseStream(null);
+            const statusEl = document.getElementById('runStageStatus');
+            if (statusEl && data && data.type === 'result') {
+                statusEl.style.color = 'var(--text-muted)';
+                const u = data.usage || {};
+                statusEl.textContent = `✅ Done — ${data.num_turns || 0} turns • ${u.output_tokens || 0} out tokens`;
+            } else if (statusEl && evt.type !== '_stream_end') {
+                statusEl.style.color = '#b91c1c';
+                statusEl.textContent = `❌ ${evt.type}${data && data.error ? ': ' + data.error : ''}`;
+            }
+            // Refresh derived panels — DB should have new rows now.
+            if (typeof loadReports === 'function') loadReports();
+        }
+    };
+
+    // Listen for every event type we emit.
+    const types = [
+        'message','system','assistant','user','stream_event','result',
+        '_stream_start','_stream_end','_stream_error','_stream_timeout','error',
+    ];
+    for (const t of types) es.addEventListener(t, onAny);
+    es.onerror = () => {
+        // EventSource auto-reconnects; only give up on a definite close.
+        if (es.readyState === EventSource.CLOSED) {
+            _runStageCloseStream('Stream closed (network).');
+        }
+    };
+}
+
 async function runStage() {
     const stage = document.getElementById('runStageSelect').value;
     const dispatcher = document.getElementById('runStageDispatcher').value;
@@ -2114,10 +2279,12 @@ async function runStage() {
     const statusEl = document.getElementById('runStageStatus');
     const detailsEl = document.getElementById('runStageDetails');
     const outputEl = document.getElementById('runStageOutput');
+
+    _runStageCloseStream(null);
     btn.disabled = true;
-    const orig = btn.textContent;
     btn.textContent = 'Running…';
-    statusEl.textContent = `Running ${stage}…  (this can take 1–10 minutes — the agent will call MCP tools as it works)`;
+    statusEl.style.color = 'var(--text-muted)';
+    statusEl.textContent = `Starting ${stage}…`;
     detailsEl.style.display = 'none';
     try {
         const body = { stage };
@@ -2129,26 +2296,44 @@ async function runStage() {
             body: JSON.stringify(body),
         });
         const data = await res.json();
-        if (!res.ok || data.success === false) {
+        if (!res.ok) {
             statusEl.style.color = '#b91c1c';
-            statusEl.textContent = `❌ ${data.detail || data.error || 'failed'}`;
-        } else {
-            statusEl.style.color = 'var(--text-muted)';
+            statusEl.textContent = `❌ ${data.detail || 'failed'}`;
+            btn.disabled = false;
+            btn.textContent = 'Run';
+            return;
+        }
+        if (data.mode === 'blocking') {
+            // Synchronous path (legacy). Show final result, no live stream.
             const usage = `tokens: ${data.input_tokens} in / ${data.output_tokens} out` +
                 (data.cache_read_tokens ? ` (${data.cache_read_tokens} from cache)` : '');
             statusEl.textContent = `✅ Done — ${data.transport} • ${data.duration_seconds}s • ${data.tool_call_count} tool calls • ${usage}`;
+            detailsEl.style.display = 'block';
+            outputEl.textContent = data.output || JSON.stringify(data, null, 2);
+            btn.disabled = false;
+            btn.textContent = 'Run';
+            if (typeof loadReports === 'function') loadReports();
+            return;
         }
-        detailsEl.style.display = 'block';
-        outputEl.textContent = data.output || data.detail || JSON.stringify(data, null, 2);
-        // Refresh derived UI panels in case the run wrote to the DB
-        if (typeof loadReports === 'function') loadReports();
+        // Background mode — subscribe to the stream.
+        statusEl.textContent = `Running ${stage}…  live events below.`;
+        _runStageAttachStream(assessmentId, data.stream_url);
     } catch (e) {
         statusEl.style.color = '#b91c1c';
         statusEl.textContent = `❌ ${e && e.message ? e.message : e}`;
-    } finally {
         btn.disabled = false;
-        btn.textContent = orig;
+        btn.textContent = 'Run';
     }
 }
+
+// Wire up the "close live view" button.
+document.addEventListener('DOMContentLoaded', () => {
+    const btn = document.getElementById('runStageStopBtn');
+    if (btn) btn.addEventListener('click', () => {
+        _runStageCloseStream(null);
+        const wrap = document.getElementById('runStageLive');
+        if (wrap) wrap.style.display = 'none';
+    });
+});
 </script>
 {% endblock %}

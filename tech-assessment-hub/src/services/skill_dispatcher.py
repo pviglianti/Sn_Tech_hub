@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
+import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from sqlmodel import Session, select
 
-from ..database import DATA_DIR
+from ..database import DATA_DIR, engine
 from ..models import AppConfig
 from .llm_adapters import SkillRunResult
 from .llm_adapters.anthropic_api import AnthropicAPIAdapter
@@ -166,6 +168,18 @@ def run_skill(
     adapter_extra = dict(extra or {})
     adapter_extra.setdefault("mcp_config_path", str(runtime_config_path))
 
+    # Compute the per-run stream log path. This file is what the SSE route
+    # tails so the browser sees events as they happen. Every run gets a fresh
+    # file keyed by timestamp + uuid so tails never collide.
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    stream_id = adapter_extra.get("stream_id") or f"{stamp}-{uuid.uuid4().hex[:8]}"
+    adapter_extra["stream_id"] = stream_id
+    stream_log_path = (
+        DATA_DIR / "logs" / "ai_prompts" / f"assessment_{assessment_id}"
+        / f"{stage}-{stream_id}.stream.jsonl"
+    )
+    adapter_extra["stream_log_path"] = str(stream_log_path)
+
     result = adapter.run(
         skill_text=skill_text,
         user_message=user_message,
@@ -183,9 +197,85 @@ def run_skill(
         adapter_name=adapter.name,
         model=chosen_model,
         result=result,
+        stream_id=stream_id,
     )
 
+    # Attach the stream id onto the result so callers can reference it in
+    # responses without keeping state elsewhere.
+    try:
+        if isinstance(result.raw, dict):
+            result.raw.setdefault("stream_id", stream_id)
+        else:
+            result.raw = {"stream_id": stream_id}
+    except Exception:
+        pass
+
     return result
+
+
+def start_skill_background(
+    *,
+    assessment_id: int,
+    stage: str,
+    user_instructions: Optional[str] = None,
+    dispatcher: Optional[str] = None,
+    model: Optional[str] = None,
+    mcp_server_url: Optional[str] = None,
+    timeout_seconds: int = 1800,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, Path]:
+    """Kick off `run_skill` in a background thread and return (stream_id, path).
+
+    The HTTP route returns immediately with this stream_id; the SSE route
+    tails the stream_log_path until the `_stream_end` sentinel appears.
+    """
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    stream_id = f"{stamp}-{uuid.uuid4().hex[:8]}"
+    stream_log_path = (
+        DATA_DIR / "logs" / "ai_prompts" / f"assessment_{assessment_id}"
+        / f"{stage}-{stream_id}.stream.jsonl"
+    )
+    stream_log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    merged_extra = dict(extra or {})
+    merged_extra["stream_id"] = stream_id
+    merged_extra["stream_log_path"] = str(stream_log_path)
+
+    def _target() -> None:
+        try:
+            with Session(engine) as bg_session:
+                run_skill(
+                    session=bg_session,
+                    assessment_id=assessment_id,
+                    stage=stage,
+                    user_instructions=user_instructions,
+                    dispatcher=dispatcher,
+                    model=model,
+                    mcp_server_url=mcp_server_url,
+                    timeout_seconds=timeout_seconds,
+                    extra=merged_extra,
+                )
+        except Exception:
+            logger.exception(
+                "background run_skill crashed for assessment=%s stage=%s",
+                assessment_id, stage,
+            )
+            # Record the crash in the stream file so SSE subscribers see it.
+            try:
+                with stream_log_path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "type": "_stream_error",
+                        "error": "background run crashed — see service logs",
+                    }) + "\n")
+                    f.write(json.dumps({"type": "_stream_end"}) + "\n")
+            except Exception:
+                pass
+
+    thread = threading.Thread(
+        target=_target, name=f"ai-run-{assessment_id}-{stage}-{stream_id}", daemon=True,
+    )
+    thread.start()
+    return stream_id, stream_log_path
 
 
 def _write_run_trace(
@@ -197,13 +287,16 @@ def _write_run_trace(
     adapter_name: str,
     model: str,
     result: SkillRunResult,
+    stream_id: Optional[str] = None,
 ) -> None:
     """Persist prompt + output + usage per run so failures are debuggable."""
     try:
         trace_dir = DATA_DIR / "logs" / "ai_prompts" / f"assessment_{assessment_id}"
         trace_dir.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%dT%H%M%S")
-        base = trace_dir / f"{stage}-{stamp}"
+        # Reuse the stream_id for the base name so all artifacts from one run
+        # share the same filename stem (<stage>-<stream_id>.{prompt|output|...}).
+        base_name = f"{stage}-{stream_id}" if stream_id else f"{stage}-{time.strftime('%Y%m%dT%H%M%S')}"
+        base = trace_dir / base_name
         (base.with_suffix(".prompt.txt")).write_text(
             f"{skill_text}\n\n---\n\nUser request:\n{user_message}\n",
             encoding="utf-8",
@@ -212,6 +305,7 @@ def _write_run_trace(
         summary = {
             "assessment_id": assessment_id,
             "stage": stage,
+            "stream_id": stream_id,
             "adapter": adapter_name,
             "model": model,
             "success": result.success,
