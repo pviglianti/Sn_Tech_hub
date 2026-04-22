@@ -247,6 +247,7 @@ def build_registry() -> ToolRegistry:
         ADD_TOOL_SPEC as add_result_to_feature_tool,
         REMOVE_TOOL_SPEC as remove_result_from_feature_tool,
     )
+    from .tools.core.advance_pipeline import TOOL_SPEC as advance_pipeline_tool
 
     registry.register(update_result_tool)
     registry.register(update_feature_tool)
@@ -257,6 +258,7 @@ def build_registry() -> ToolRegistry:
     registry.register(general_recommendation_tool)
     registry.register(add_result_to_feature_tool)
     registry.register(remove_result_from_feature_tool)
+    registry.register(advance_pipeline_tool)
 
     # --- AI pipeline stage runner ---
     from .tools.core.run_ai_stage import TOOL_SPEC as run_ai_stage_tool

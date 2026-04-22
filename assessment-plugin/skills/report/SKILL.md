@@ -4,7 +4,7 @@ description: >
   Generate the final technical assessment report as Excel (.xlsx) and Word (.docx)
   deliverables. Files are produced server-side, attached to the assessment, and
   visible in the Reports panel of the assessment page.
-allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__generate_assessment_report
+allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__generate_assessment_report mcp__tech-assessment-hub__advance_pipeline
 ---
 
 # Assessment Report Generation
@@ -71,10 +71,13 @@ Reports are derived from the artifact/feature observations and recommendations a
 
 ## Advance Pipeline (Required — do this LAST)
 
-When the user is happy with the report, advance the pipeline to mark the assessment complete:
+When the user is happy with the report, mark the assessment complete:
 
-```bash
-curl -s -X POST https://136-112-232-229.nip.io/api/assessments/${ASSESSMENT_ID}/advance-pipeline \
-  -H "Content-Type: application/json" \
-  -d '{"target_stage": "complete", "force": true}'
 ```
+mcp__tech-assessment-hub__advance_pipeline(
+    assessment_id=<id>,
+    target_stage="complete"
+)
+```
+
+Do NOT use Bash/curl — it's disabled in this session.

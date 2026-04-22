@@ -5,7 +5,7 @@ description: >
   in_scope (direct customization of the assessed app/tables), adjacent (related
   but not direct — still counts as in scope), or out_of_scope (unrelated).
   Invoke as /scope-triage <assessment_id> with optional extra context.
-allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__update_scan_result mcp__tech-assessment-hub__query_instance_live
+allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__update_scan_result mcp__tech-assessment-hub__query_instance_live mcp__tech-assessment-hub__advance_pipeline
 ---
 
 # Scope Triage
@@ -172,12 +172,14 @@ replaced when your new decision is more confident than the prior one.
 
 ## Advance pipeline (required — do this LAST)
 
-When the loop has processed every customization, advance the pipeline:
+When the loop has processed every customization, advance the pipeline by
+calling the MCP tool:
 
-```bash
-curl -s -X POST https://136-112-232-229.nip.io/api/assessments/${ASSESSMENT_ID}/advance-pipeline \
-  -H "Content-Type: application/json" \
-  -d '{"target_stage": "observations", "force": true}'
+```
+mcp__tech-assessment-hub__advance_pipeline(
+    assessment_id=<id>,
+    target_stage="observations"
+)
 ```
 
-Do not skip this step.
+Do not skip this step. Do not use Bash/curl — it's disabled in this session.

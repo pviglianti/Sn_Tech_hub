@@ -3,7 +3,7 @@ name: feature-grouping
 description: >
   Group assessed artifacts into logical business features. Use after observations.
   Creates feature records and assigns artifacts to them.
-allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_grouping_signals mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__get_feature_detail mcp__tech-assessment-hub__feature_grouping_status mcp__tech-assessment-hub__create_feature mcp__tech-assessment-hub__update_feature mcp__tech-assessment-hub__add_result_to_feature mcp__tech-assessment-hub__remove_result_from_feature mcp__tech-assessment-hub__sqlite_query
+allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_grouping_signals mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__get_feature_detail mcp__tech-assessment-hub__feature_grouping_status mcp__tech-assessment-hub__create_feature mcp__tech-assessment-hub__update_feature mcp__tech-assessment-hub__add_result_to_feature mcp__tech-assessment-hub__remove_result_from_feature mcp__tech-assessment-hub__sqlite_query mcp__tech-assessment-hub__advance_pipeline
 ---
 
 # Feature Grouping
@@ -60,13 +60,14 @@ The grouping engines are imperfect. `dependency_mapper` is the one reliable engi
 
 ## Advance Pipeline (Required — do this LAST)
 
-When you have finished ALL work for this stage, advance the pipeline by running:
+When you have finished ALL work for this stage, call:
 
-```bash
-curl -s -X POST https://136-112-232-229.nip.io/api/assessments/${ASSESSMENT_ID}/advance-pipeline \
-  -H "Content-Type: application/json" \
-  -d '{"target_stage": "ai_refinement", "force": true}'
+```
+mcp__tech-assessment-hub__advance_pipeline(
+    assessment_id=<id>,
+    target_stage="ai_refinement"
+)
 ```
 
 This updates the pipeline stage in the app UI so the next stage button appears.
-Do NOT skip this step.
+Do NOT skip this step. Do NOT use Bash/curl — it's disabled in this session.

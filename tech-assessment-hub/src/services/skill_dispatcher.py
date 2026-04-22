@@ -138,11 +138,33 @@ def run_skill(
                 ),
             )
 
-    # Ensure the CLI adapter can wire up the plugin's MCP server. The API
-    # adapter uses mcp_server_url directly; the CLI adapter needs the plugin's
-    # .mcp.json path to register `mcp__tech-assessment-hub__*` tools.
+    # Ensure the CLI adapter can wire up the plugin's MCP server.
+    #
+    # The plugin's packaged .mcp.json points at the PUBLIC URL
+    # (https://<vm>.nip.io/mcp) so Desktop / Cowork / CLI installs on user
+    # PCs can reach the hub. But when the adapter runs on the VM itself, the
+    # VM can't hairpin to its own public URL (GCP VPC NAT/routing) — it
+    # times out. So we write a runtime .mcp.json pointing at the LOCAL URL
+    # and hand that to the CLI instead. Users override with AppConfig key
+    # "mcp.cli_url".
+    cli_url = _get_app_config(session, "mcp.cli_url", "http://127.0.0.1:8080/mcp")
+    runtime_mcp_config = {
+        "mcpServers": {
+            "tech-assessment-hub": {"type": "http", "url": cli_url},
+        }
+    }
+    runtime_config_path = DATA_DIR / "logs" / "ai_prompts" / "ta-hub-cli.mcp.json"
+    try:
+        runtime_config_path.parent.mkdir(parents=True, exist_ok=True)
+        runtime_config_path.write_text(
+            json.dumps(runtime_mcp_config, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        logger.exception("failed to write runtime mcp config; falling back to plugin .mcp.json")
+        runtime_config_path = _PLUGIN_BASE / ".mcp.json"
+
     adapter_extra = dict(extra or {})
-    adapter_extra.setdefault("mcp_config_path", str(_PLUGIN_BASE / ".mcp.json"))
+    adapter_extra.setdefault("mcp_config_path", str(runtime_config_path))
 
     result = adapter.run(
         skill_text=skill_text,

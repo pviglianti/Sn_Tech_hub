@@ -64,22 +64,37 @@ class AnthropicSubprocessAdapter:
         mcp_config_path = (extra or {}).get("mcp_config_path")
         if mcp_config_path:
             cmd.extend(["--mcp-config", str(mcp_config_path)])
-
-        if extra and extra.get("strict_mcp_config"):
-            cmd.append("--strict-mcp-config")
+            # CRITICAL: without --strict-mcp-config the CLI also loads the VM
+            # user's ~/.claude/settings.json MCP servers (Gmail, Smartsheet,
+            # etc.) and picks them INSTEAD of our plugin's config, leaving the
+            # skill without tech-assessment-hub tools. Strict = only use the
+            # --mcp-config we explicitly pass.
+            if not (extra and extra.get("allow_user_mcp_configs")):
+                cmd.append("--strict-mcp-config")
 
         # LOCK the toolbox: headless skills must use ONLY the project's MCP
-        # tools. Without this the model falls back to Bash+curl (wasteful) or
-        # Read/Glob on the VM filesystem (nonsense) instead of the registered
-        # mcp__tech-assessment-hub__* tools.
-        #
-        # Default allow-list = every mcp__tech-assessment-hub__* tool. Callers
-        # can override via extra["allowed_tools"] (list[str] or str).
+        # tools. Two layers are needed because `--dangerously-skip-permissions`
+        # bypasses `--allowed-tools`, so we also have to explicitly DISALLOW
+        # the built-ins the model would otherwise fall back to (Bash+curl,
+        # Read/Glob on the VM filesystem, etc.).
         default_allowed = "mcp__tech-assessment-hub"  # server-scoped pattern
         allowed_tools = (extra or {}).get("allowed_tools") or default_allowed
         if isinstance(allowed_tools, (list, tuple, set)):
             allowed_tools = ",".join(allowed_tools)
         cmd.extend(["--allowed-tools", str(allowed_tools)])
+
+        # Hard deny list covering every built-in tool the CLI ships with so the
+        # model can't escape the MCP toolbox. Callers override via
+        # extra["disallowed_tools"].
+        default_disallowed = (
+            "Bash,BashOutput,KillShell,Edit,NotebookEdit,Write,"
+            "Read,Glob,Grep,WebFetch,WebSearch,Task,TodoWrite,"
+            "ExitPlanMode,SlashCommand"
+        )
+        disallowed_tools = (extra or {}).get("disallowed_tools") or default_disallowed
+        if isinstance(disallowed_tools, (list, tuple, set)):
+            disallowed_tools = ",".join(disallowed_tools)
+        cmd.extend(["--disallowed-tools", str(disallowed_tools)])
 
         # Non-interactive runs can't answer permission prompts. Default to
         # skipping them so MCP tool calls actually execute. Opt out by passing

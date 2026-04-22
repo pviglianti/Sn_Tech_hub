@@ -3,7 +3,7 @@ name: observations
 description: >
   Generate detailed functional observations for in-scope artifacts. Use after
   scope triage is complete. Writes what each artifact does and its dependencies.
-allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__update_scan_result mcp__tech-assessment-hub__generate_observations mcp__tech-assessment-hub__query_instance_live
+allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__update_scan_result mcp__tech-assessment-hub__generate_observations mcp__tech-assessment-hub__query_instance_live mcp__tech-assessment-hub__advance_pipeline
 ---
 
 # Observations
@@ -46,13 +46,14 @@ The `generate_observations` MCP tool can bulk-generate baseline observations fro
 
 ## Advance Pipeline (Required — do this LAST)
 
-When you have finished ALL work for this stage, advance the pipeline by running:
+When you have finished ALL work for this stage, call:
 
-```bash
-curl -s -X POST https://136-112-232-229.nip.io/api/assessments/${ASSESSMENT_ID}/advance-pipeline \
-  -H "Content-Type: application/json" \
-  -d '{"target_stage": "review", "force": true}'
+```
+mcp__tech-assessment-hub__advance_pipeline(
+    assessment_id=<id>,
+    target_stage="review"
+)
 ```
 
 This updates the pipeline stage in the app UI so the next stage button appears.
-Do NOT skip this step.
+Do NOT skip this step. Do NOT use Bash/curl — it's disabled in this session.

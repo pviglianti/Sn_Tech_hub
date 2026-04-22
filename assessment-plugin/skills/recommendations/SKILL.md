@@ -4,7 +4,7 @@ description: >
   Generate best-practice recommendations for assessed artifacts. Reviews code
   quality, checks for violations, and suggests keep/refactor/replace/retire.
   Core philosophy: minimize technical debt, shift toward OOTB ServiceNow, refactor if OOTB won't fit.
-allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_best_practices mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__get_feature_detail mcp__tech-assessment-hub__update_scan_result mcp__tech-assessment-hub__upsert_feature_recommendation mcp__tech-assessment-hub__search_servicenow_docs mcp__tech-assessment-hub__sqlite_query
+allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_best_practices mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__get_feature_detail mcp__tech-assessment-hub__update_scan_result mcp__tech-assessment-hub__upsert_feature_recommendation mcp__tech-assessment-hub__search_servicenow_docs mcp__tech-assessment-hub__sqlite_query mcp__tech-assessment-hub__advance_pipeline
 ---
 
 # Recommendations
@@ -100,13 +100,14 @@ Priority order for every recommendation:
 
 ## Advance Pipeline (Required — do this LAST)
 
-When you have finished ALL work for this stage, advance the pipeline by running:
+When you have finished ALL work for this stage, call:
 
-```bash
-curl -s -X POST https://136-112-232-229.nip.io/api/assessments/${ASSESSMENT_ID}/advance-pipeline \
-  -H "Content-Type: application/json" \
-  -d '{"target_stage": "report", "force": true}'
+```
+mcp__tech-assessment-hub__advance_pipeline(
+    assessment_id=<id>,
+    target_stage="report"
+)
 ```
 
 This updates the pipeline stage in the app UI so the next stage button appears.
-Do NOT skip this step.
+Do NOT skip this step. Do NOT use Bash/curl — it's disabled in this session.
