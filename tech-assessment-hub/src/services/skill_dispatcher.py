@@ -138,13 +138,19 @@ def run_skill(
                 ),
             )
 
+    # Ensure the CLI adapter can wire up the plugin's MCP server. The API
+    # adapter uses mcp_server_url directly; the CLI adapter needs the plugin's
+    # .mcp.json path to register `mcp__tech-assessment-hub__*` tools.
+    adapter_extra = dict(extra or {})
+    adapter_extra.setdefault("mcp_config_path", str(_PLUGIN_BASE / ".mcp.json"))
+
     result = adapter.run(
         skill_text=skill_text,
         user_message=user_message,
         model=chosen_model,
         timeout_seconds=timeout_seconds,
         mcp_server_url=mcp_server_url,
-        extra=extra,
+        extra=adapter_extra,
     )
 
     _write_run_trace(

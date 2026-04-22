@@ -57,8 +57,22 @@ class AnthropicSubprocessAdapter:
         cmd = [self._binary, "--print", "--output-format", "json"]
         if model:
             cmd.extend(["--model", model])
+
+        # Wire up the plugin's MCP config so `mcp__tech-assessment-hub__*` tools
+        # are registered for the CLI session. Without this the CLI starts with
+        # NO project MCP tools and the skill can't call anything.
+        mcp_config_path = (extra or {}).get("mcp_config_path")
+        if mcp_config_path:
+            cmd.extend(["--mcp-config", str(mcp_config_path)])
+
         if extra and extra.get("strict_mcp_config"):
             cmd.append("--strict-mcp-config")
+
+        # Non-interactive runs can't answer permission prompts. Default to
+        # skipping them so MCP tool calls actually execute. Opt out by passing
+        # extra={"require_permissions": True}.
+        if not (extra and extra.get("require_permissions")):
+            cmd.append("--dangerously-skip-permissions")
 
         env = os.environ.copy()
         # pass through MCP config — we keep the existing .mcp.json discovery flow
