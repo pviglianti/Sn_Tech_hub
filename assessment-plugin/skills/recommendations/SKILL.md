@@ -9,6 +9,13 @@ allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assess
 
 # Recommendations
 
+**⚠ TOOL LOCK — read first.**
+Your only toolbox is `mcp__tech-assessment-hub__*` (this includes
+`search_servicenow_docs` for OOTB alternative lookups — use that, not
+`WebFetch`/`WebSearch`). Do NOT use `Bash`, `curl`, `Read`, `Glob`, `Grep`,
+`Write`, `WebFetch`, or `WebSearch`. If an MCP tool fails, retry the same MCP
+tool — do not fall back to shell or curl.
+
 Review artifacts for best practices and write recommendations.
 
 ## Core philosophy (read this first)

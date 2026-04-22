@@ -8,6 +8,12 @@ allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assess
 
 # Observations
 
+**⚠ TOOL LOCK — read first.**
+Your only toolbox is `mcp__tech-assessment-hub__*`. Do NOT use `Bash`, `curl`,
+`Read`, `Glob`, `Grep`, `Write`, `WebFetch`, or `WebSearch`. The data lives on
+the hub, not on the filesystem. If an MCP tool fails, **retry the same MCP
+tool** — do not fall back to shell or curl.
+
 Generate functional summaries for in-scope assessment artifacts. Custom results (both ootb modified and net new customer created customizations) that are adjacent and in scope (not marked as out of scope)
 
 ## Setup
@@ -16,7 +22,7 @@ Generate functional summaries for in-scope assessment artifacts. Custom results 
 3. Page through `get_customizations(assessment_id, limit=50, offset=<0,50,100,…>)` until the page is short of `limit`. **Client-side filter**: process only rows where `is_out_of_scope == false` (in_scope + adjacent both flow through). Do NOT filter by `review_status` — the tool doesn't accept it and it's a human-only field.
 
 ## For each artifact
-1. Call `get_result_detail` to read full artifact detail.
+1. **Always call `get_result_detail(result_id)` and read every populated data point on the record — not just the condensed row from `get_customizations`.** Which fields carry the meaning depends on the artifact class (different app-file types have different fields): a Business Rule's value is in `collection` + `script` + `condition` + `when`; a Dictionary entry is in `name` + `element` + `default_value` + `reference`; a UI Policy is in `table` + `conditions` + its policy actions; a Script Include is in `script`; a UI Page is in `html` + `client_script` + `processing_script`; a Flow is in `activities_json`; etc. Check whatever fields are populated, and fall back to `raw_data_json` for unfamiliar classes. Observations quality depends directly on this — skipping it produces generic filler instead of what the artifact actually does.
 2. If a referenced field/table/script is unclear and you need to confirm it exists or what it points to, use `query_instance_live` to peek at the live ServiceNow instance — but only when needed (each call is a network round-trip).
 3. Summarize: what does it do, when does it fire, what fields/tables does it touch, dependencies?
 4. Call `update_scan_result` to write `observations`.

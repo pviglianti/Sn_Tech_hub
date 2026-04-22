@@ -8,6 +8,11 @@ allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assess
 
 # Feature Grouping
 
+**⚠ TOOL LOCK — read first.**
+Your only toolbox is `mcp__tech-assessment-hub__*`. Do NOT use `Bash`, `curl`,
+`Read`, `Glob`, `Grep`, `Write`, `WebFetch`, or `WebSearch`. If an MCP tool
+fails, retry the same MCP tool — do not fall back to shell or curl.
+
 Group in-scope artifacts into business features.
 
 ## Setup

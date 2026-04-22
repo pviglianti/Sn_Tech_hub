@@ -9,6 +9,11 @@ allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assess
 
 # Feature Refinement — Solution-Level Grouping
 
+**⚠ TOOL LOCK — read first.**
+Your only toolbox is `mcp__tech-assessment-hub__*`. Do NOT use `Bash`, `curl`,
+`Read`, `Glob`, `Grep`, `Write`, `WebFetch`, or `WebSearch`. If an MCP tool
+fails, retry the same MCP tool — do not fall back to shell or curl.
+
 The initial grouping organized artifacts by type (all BRs together, all ACLs
 together, all dictionary entries together). That is WRONG. Artifacts should be
 grouped by the **business solution they deliver together**.

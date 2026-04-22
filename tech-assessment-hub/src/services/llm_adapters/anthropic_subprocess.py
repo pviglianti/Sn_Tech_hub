@@ -68,6 +68,19 @@ class AnthropicSubprocessAdapter:
         if extra and extra.get("strict_mcp_config"):
             cmd.append("--strict-mcp-config")
 
+        # LOCK the toolbox: headless skills must use ONLY the project's MCP
+        # tools. Without this the model falls back to Bash+curl (wasteful) or
+        # Read/Glob on the VM filesystem (nonsense) instead of the registered
+        # mcp__tech-assessment-hub__* tools.
+        #
+        # Default allow-list = every mcp__tech-assessment-hub__* tool. Callers
+        # can override via extra["allowed_tools"] (list[str] or str).
+        default_allowed = "mcp__tech-assessment-hub"  # server-scoped pattern
+        allowed_tools = (extra or {}).get("allowed_tools") or default_allowed
+        if isinstance(allowed_tools, (list, tuple, set)):
+            allowed_tools = ",".join(allowed_tools)
+        cmd.extend(["--allowed-tools", str(allowed_tools)])
+
         # Non-interactive runs can't answer permission prompts. Default to
         # skipping them so MCP tool calls actually execute. Opt out by passing
         # extra={"require_permissions": True}.

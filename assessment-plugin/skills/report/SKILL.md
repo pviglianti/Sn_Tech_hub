@@ -9,6 +9,13 @@ allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assess
 
 # Assessment Report Generation
 
+**⚠ TOOL LOCK — read first.**
+Your only toolbox is `mcp__tech-assessment-hub__*`. Do NOT use `Bash`, `curl`,
+`Read`, `Glob`, `Grep`, `Write`, `WebFetch`, or `WebSearch`. The report
+generation is server-side — you only need to call
+`mcp__tech-assessment-hub__generate_assessment_report`. If it fails, retry the
+same MCP tool; do not fall back to shell or curl.
+
 Generate deliverable files via the **server-side** report tool. Files are persisted on the VM, registered in the database, and exposed via the Reports panel on the assessment detail page.
 
 ## Setup

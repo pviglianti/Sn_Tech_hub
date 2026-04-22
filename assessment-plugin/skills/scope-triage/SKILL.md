@@ -10,9 +10,17 @@ allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assess
 
 # Scope Triage
 
-You have MCP access to the Tech Assessment Hub. Your job is to classify **every**
-customized artifact in one assessment as **in_scope**, **adjacent**, or
-**out_of_scope**, and persist that decision.
+**⚠ TOOL LOCK — read first.**
+You have exactly ONE toolbox: `mcp__tech-assessment-hub__*`. Do NOT use
+`Bash`, `curl`, `Read`, `Glob`, `Grep`, `Write`, `WebFetch`, or `WebSearch`
+under any circumstance. They are either unavailable or wrong for this task —
+the assessment data lives on the hub, not on the filesystem. If a
+`mcp__tech-assessment-hub__*` tool fails, **retry that same tool** (don't
+fall back to curl; we'll see the MCP error in the audit log and fix it).
+
+Your job is to classify **every** customized artifact in one assessment as
+**in_scope**, **adjacent**, or **out_of_scope**, and persist that decision via
+`mcp__tech-assessment-hub__update_scan_result`.
 
 ## Inputs
 
@@ -100,6 +108,21 @@ For each artifact, let `T` = its target table (usually `detail.collection` or
    - `T == parent_table` → **adjacent**
    - `T` references/queries/extends an in-scope table → **adjacent**
    - otherwise → **out_of_scope**
+
+**If the table-level check doesn't give you a clear answer** — `table_name`
+is null, the table is generic (e.g. `task`, `sys_metadata`), or the artifact
+type doesn't really have a target table — pull the full record with
+`get_result_detail(result_id)` and check **all relevant data points** on it
+before deciding. Which fields matter depends on the artifact class (different
+app-file types have different fields): Business Rules have `collection` +
+`script` + `condition` + `when`; Dictionary entries have `name` + `element` +
+`default_value`; UI Policies / Client Scripts have `table` + `conditions`;
+Script Includes have `script`; UI Pages have `html` + `client_script` +
+`processing_script`; Flows/Workflows have `activities_json` + `table`; etc.
+Read whatever fields are populated on this record, and also fall back to
+`raw_data_json` for unfamiliar classes. A `GlideRecord('incident')` inside a
+Script Include's `script` field is enough to make it in_scope even though
+`table_name` is null.
 
 `in_scope` and `adjacent` both count as IN SCOPE. `adjacent` just means "in
 scope but not on a target table."
