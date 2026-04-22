@@ -126,8 +126,12 @@ class ClaudeDispatcher(BaseDispatcher):
             return False, f"error: {exc}"
 
     def fetch_models(self, auth_slot: Any) -> List[Dict[str, Any]]:
-        if getattr(auth_slot, "slot_kind", None) != "api_key":
-            raise RuntimeError("Anthropic live model refresh currently requires an API key auth slot")
+        slot_kind = getattr(auth_slot, "slot_kind", None)
+        if slot_kind == "cli":
+            from .provider_catalog import DEFAULT_CATALOG
+            return list(DEFAULT_CATALOG.get(self.provider_kind, {}).get("models", []))
+        if slot_kind != "api_key":
+            raise RuntimeError(f"Unsupported auth slot kind for Anthropic model refresh: {slot_kind}")
 
         import httpx
 

@@ -3,6 +3,7 @@
 Moved from src/mcp/server.py during Wave 2 restructure.
 """
 
+import json
 from typing import Any, Dict, Optional, Union
 from sqlmodel import Session
 
@@ -67,13 +68,18 @@ def _handle_tools_call(
         "duration_ms": execution.duration_ms,
     }
 
+    # MCP spec only allows content types: text, image, audio, resource,
+    # resource_link. Serialize JSON payloads as text so Claude CLI's Zod
+    # validator accepts the response. Also flag errors via `isError` so the
+    # model knows to retry/adapt rather than treat failure as data.
     return make_result(request_id, {
         "content": [
             {
-                "type": "json",
-                "json": json_payload
+                "type": "text",
+                "text": json.dumps(json_payload, default=str),
             }
-        ]
+        ],
+        "isError": not execution.success,
     })
 
 

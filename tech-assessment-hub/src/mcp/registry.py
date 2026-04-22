@@ -17,13 +17,18 @@ class ToolSpec:
 
 
 def _tool_annotations(permission: str) -> Dict[str, Any]:
-    """Derive MCP tool impact hints from the app's read/write permission flag."""
+    """Derive MCP tool impact hints from the app's read/write permission flag.
+
+    Per MCP spec these hints are optional booleans. Never emit nulls — Claude
+    CLI's Zod schema rejects the whole tools/list response if any annotation
+    is null, which silently drops every tool from the CLI's view.
+    """
     read_only = permission == "read"
-    return {
-        "readOnlyHint": read_only,
-        "openWorldHint": False if not read_only else None,
-        "destructiveHint": False if not read_only else None,
-    }
+    annotations: Dict[str, Any] = {"readOnlyHint": read_only}
+    if not read_only:
+        annotations["openWorldHint"] = False
+        annotations["destructiveHint"] = False
+    return annotations
 
 
 class ToolRegistry:

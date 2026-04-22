@@ -16,6 +16,7 @@ DEFAULT_CATALOG: Dict[str, Dict[str, Any]] = {
         "cli_command": "claude",
         "api_base_url": "https://api.anthropic.com/v1",
         "models": [
+            {"name": "claude-opus-4-7", "display": "Claude Opus 4.7", "ctx": 1_000_000, "effort": True, "default": False},
             {"name": "claude-opus-4-6", "display": "Claude Opus 4.6", "ctx": 1_000_000, "effort": True, "default": False},
             {"name": "claude-sonnet-4-6", "display": "Claude Sonnet 4.6", "ctx": 1_000_000, "effort": True, "default": True},
             {"name": "claude-haiku-4-5-20251001", "display": "Claude Haiku 4.5", "ctx": 200_000, "effort": True, "default": False},
