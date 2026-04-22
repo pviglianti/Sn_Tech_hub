@@ -253,8 +253,8 @@
 
     <div class="tab-container mt-1">
         <div class="tab-nav">
-            <button type="button" class="tab-btn active" data-result-tab-btn="version-history" onclick="openTab(event, 'version-history')">
-                Version History <span class="badge">{{ version_history_rows | length }}</span>
+            <button type="button" class="tab-btn active" data-result-tab-btn="version-history" onclick="openTab(event, 'version-history'); loadVersionHistory();">
+                Version History <span class="badge" id="versionHistoryBadge">—</span>
             </button>
             <button type="button" class="tab-btn" data-result-tab-btn="update-set" onclick="openTab(event, 'update-set')">
                 Update Set Context <span class="badge">{{ update_set_updates | length }}</span>
@@ -272,8 +272,8 @@
                 Note: during scan runs, the cache may include only the <strong>current</strong> version history row initially.
                 Full history is populated later (version history catch-up). Use the Metadata Customization link above as the strongest signal for OOTB modifications.
             </p>
-            {% if version_history_rows %}
-            <table class="related-table">
+            <div id="versionHistoryStatus" class="text-muted-plain">Loading version history…</div>
+            <table id="versionHistoryTable" class="related-table" style="display:none;">
                 <thead>
                     <tr>
                         <th>State</th>
@@ -284,23 +284,63 @@
                         <th>Target Sys ID</th>
                     </tr>
                 </thead>
-                <tbody>
-                    {% for version_row in version_history_rows %}
-                    <tr>
-                        <td>{{ version_row.state or '-' }}</td>
-                        <td>{{ version_row.sys_recorded_at.strftime('%Y-%m-%d %H:%M') if version_row.sys_recorded_at else '-' }}</td>
-                        <td>{{ version_row.source_table or '-' }}</td>
-                        <td>{{ version_row.source_display or version_row.source_sys_id or '-' }}</td>
-                        <td>{{ version_row.record_name or '-' }}</td>
-                        <td>{{ version_row.customer_update_sys_id or '-' }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
+                <tbody id="versionHistoryBody"></tbody>
             </table>
-            {% else %}
-            <p class="text-muted-plain">No related version history cached for this result.</p>
-            {% endif %}
         </div>
+
+        <script>
+        (function() {
+            var loaded = false;
+            var resultId = {{ result.id }};
+            window.loadVersionHistory = function() {
+                if (loaded) return;
+                loaded = true;
+                var statusEl = document.getElementById('versionHistoryStatus');
+                var tableEl = document.getElementById('versionHistoryTable');
+                var bodyEl = document.getElementById('versionHistoryBody');
+                var badgeEl = document.getElementById('versionHistoryBadge');
+                fetch('/api/results/' + resultId + '/version-history?limit=100')
+                    .then(function(resp) {
+                        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                        return resp.json();
+                    })
+                    .then(function(data) {
+                        var rows = data.rows || [];
+                        if (badgeEl) badgeEl.textContent = String(data.total || rows.length);
+                        if (rows.length === 0) {
+                            statusEl.textContent = 'No related version history cached for this result.';
+                            return;
+                        }
+                        statusEl.style.display = 'none';
+                        tableEl.style.display = '';
+                        var frag = document.createDocumentFragment();
+                        rows.forEach(function(r) {
+                            var tr = document.createElement('tr');
+                            var recorded = r.sys_recorded_at ? r.sys_recorded_at.slice(0, 16).replace('T', ' ') : '-';
+                            [r.state || '-', recorded, r.source_table || '-', r.source_display || r.source_sys_id || '-', r.record_name || '-', r.customer_update_sys_id || '-'].forEach(function(v) {
+                                var td = document.createElement('td');
+                                td.textContent = v;
+                                tr.appendChild(td);
+                            });
+                            frag.appendChild(tr);
+                        });
+                        bodyEl.appendChild(frag);
+                        if (data.truncated) {
+                            var note = document.createElement('p');
+                            note.className = 'muted mt-05';
+                            note.textContent = 'Showing first ' + rows.length + ' of ' + data.total + ' rows.';
+                            tableEl.parentNode.appendChild(note);
+                        }
+                    })
+                    .catch(function(err) {
+                        statusEl.textContent = 'Failed to load version history: ' + err.message;
+                        loaded = false;  // allow retry on re-open
+                    });
+            };
+            // Auto-load on first render since this tab is the default active one.
+            window.loadVersionHistory();
+        })();
+        </script>
 
         <div id="update-set" class="tab-content">
             <div class="info-grid">

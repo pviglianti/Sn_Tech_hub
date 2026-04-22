@@ -10003,6 +10003,11 @@ async def view_result(
     ).all()
     current_feature_ids = [link.feature_id for link in current_links]
 
+    # version_history is loaded lazily via /api/results/{id}/version-history
+    # when the user clicks the Version History tab. Eager-loading it here
+    # pulled every matching row with full `payload` + `raw_data_json` blobs,
+    # which turned result-detail page loads into 10+ second waits on
+    # artifacts with long version histories.
     version_history_rows: List[VersionHistory] = []
     related_update_set: Optional[UpdateSet] = None
     related_customer_update: Optional[CustomerUpdateXML] = None
@@ -10010,29 +10015,6 @@ async def view_result(
     update_set_updates: List[CustomerUpdateXML] = []
 
     if assessment:
-        version_stmt = (
-            select(VersionHistory)
-            .where(VersionHistory.instance_id == assessment.instance_id)
-        )
-        if result.sys_update_name and result.sys_id:
-            version_stmt = version_stmt.where(
-                or_(
-                    VersionHistory.sys_update_name == result.sys_update_name,
-                    VersionHistory.customer_update_sys_id == result.sys_id,
-                )
-            )
-        elif result.sys_update_name:
-            version_stmt = version_stmt.where(VersionHistory.sys_update_name == result.sys_update_name)
-        elif result.sys_id:
-            version_stmt = version_stmt.where(VersionHistory.customer_update_sys_id == result.sys_id)
-        version_history_rows = session.exec(
-            version_stmt.order_by(
-                case((func.lower(VersionHistory.state) == "current", 0), else_=1),
-                desc(VersionHistory.sys_recorded_at),
-                desc(VersionHistory.id),
-            )
-        ).all()
-
         related_metadata_customization = session.exec(
             select(MetadataCustomization)
             .where(MetadataCustomization.instance_id == assessment.instance_id)
@@ -10166,6 +10148,80 @@ async def view_result(
         "severities": [sev.value for sev in Severity],
         "categories": [cat.value for cat in FindingCategory],
     })
+
+
+@app.get("/api/results/{result_id}/version-history")
+async def get_result_version_history(
+    result_id: int,
+    limit: int = 100,
+    session: Session = Depends(get_session),
+):
+    """Lazy-loaded version history for the result detail page.
+
+    The Version History tab fetches this only when clicked. Returns a
+    projected subset (no payload / raw_data_json — those blobs can be tens
+    of KB each and are not rendered in the table) with a row limit so long
+    histories don't block the UI.
+    """
+    result = session.get(ScanResult, result_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Result not found")
+    scan = session.get(Scan, result.scan_id)
+    assessment = session.get(Assessment, scan.assessment_id) if scan else None
+    if not assessment:
+        return {"rows": [], "total": 0, "limit": limit, "truncated": False}
+
+    stmt = (
+        select(
+            VersionHistory.id,
+            VersionHistory.state,
+            VersionHistory.sys_recorded_at,
+            VersionHistory.source_table,
+            VersionHistory.source_display,
+            VersionHistory.source_sys_id,
+            VersionHistory.record_name,
+            VersionHistory.customer_update_sys_id,
+            VersionHistory.sys_update_name,
+        )
+        .where(VersionHistory.instance_id == assessment.instance_id)
+    )
+    if result.sys_update_name and result.sys_id:
+        stmt = stmt.where(
+            or_(
+                VersionHistory.sys_update_name == result.sys_update_name,
+                VersionHistory.customer_update_sys_id == result.sys_id,
+            )
+        )
+    elif result.sys_update_name:
+        stmt = stmt.where(VersionHistory.sys_update_name == result.sys_update_name)
+    elif result.sys_id:
+        stmt = stmt.where(VersionHistory.customer_update_sys_id == result.sys_id)
+    else:
+        return {"rows": [], "total": 0, "limit": limit, "truncated": False}
+
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total = int(session.exec(count_stmt).one() or 0)
+
+    ordered = stmt.order_by(
+        case((func.lower(VersionHistory.state) == "current", 0), else_=1),
+        desc(VersionHistory.sys_recorded_at),
+        desc(VersionHistory.id),
+    ).limit(max(1, min(int(limit), 500)))
+
+    rows = []
+    for r in session.exec(ordered).all():
+        rows.append({
+            "id": r.id,
+            "state": r.state,
+            "sys_recorded_at": r.sys_recorded_at.isoformat() if r.sys_recorded_at else None,
+            "source_table": r.source_table,
+            "source_display": r.source_display,
+            "source_sys_id": r.source_sys_id,
+            "record_name": r.record_name,
+            "customer_update_sys_id": r.customer_update_sys_id,
+            "sys_update_name": r.sys_update_name,
+        })
+    return {"rows": rows, "total": total, "limit": limit, "truncated": total > len(rows)}
 
 
 @app.post("/results/{result_id}/update")
