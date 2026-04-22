@@ -1,8 +1,10 @@
 """Anthropic Claude Code CLI subprocess adapter.
 
 Pipes the SKILL.md + user message into `claude` CLI on stdin. The CLI handles
-LLM auth (via ANTHROPIC_API_KEY env var), MCP tool calls (via the .mcp.json
-served alongside the app), and returns the final text on stdout.
+LLM auth on its own — either a subscription login stored in
+~/.claude/.credentials.json or ANTHROPIC_API_KEY if set — so this adapter only
+checks that the binary is present. MCP tool calls flow through the .mcp.json
+served alongside the app; the final text comes back on stdout.
 
 Requires the `claude` binary on PATH on the VM.
 """
@@ -14,6 +16,7 @@ import os
 import shutil
 import subprocess
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from . import SkillRunResult
@@ -26,7 +29,14 @@ class AnthropicSubprocessAdapter:
         self._binary = claude_binary
 
     def is_available(self) -> bool:
-        return shutil.which(self._binary) is not None and bool(os.environ.get("ANTHROPIC_API_KEY"))
+        if shutil.which(self._binary) is None:
+            return False
+        # Either an API key OR a subscription credential is enough — the CLI
+        # resolves auth itself, we just confirm one source exists.
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            return True
+        creds = Path.home() / ".claude" / ".credentials.json"
+        return creds.is_file()
 
     def run(
         self,

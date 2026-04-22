@@ -13,7 +13,7 @@ Generate functional summaries for in-scope assessment artifacts. Custom results 
 ## Setup
 1. Get assessment ID from user or $ARGUMENTS
 2. **Call `get_assessment_context(assessment_id)`** — caches the target app, in_scope_tables, parent_table, and keywords. Frame your observations against this app (don't say "this BR fires on insert" — say "this BR fires on insert to `incident`, the target table for this assessment").
-3. Call `get_customizations` — find artifacts with `review_status=review_in_progress` that are NOT out_of_scope.
+3. Page through `get_customizations(assessment_id, limit=50, offset=<0,50,100,…>)` until the page is short of `limit`. **Client-side filter**: process only rows where `is_out_of_scope == false` (in_scope + adjacent both flow through). Do NOT filter by `review_status` — the tool doesn't accept it and it's a human-only field.
 
 ## For each artifact
 1. Call `get_result_detail` to read full artifact detail.

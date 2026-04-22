@@ -3,7 +3,7 @@ name: feature-grouping
 description: >
   Group assessed artifacts into logical business features. Use after observations.
   Creates feature records and assigns artifacts to them.
-allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_grouping_signals mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__get_features mcp__tech-assessment-hub__create_feature mcp__tech-assessment-hub__update_feature mcp__tech-assessment-hub__assign_result_to_feature
+allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_grouping_signals mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__get_feature_detail mcp__tech-assessment-hub__feature_grouping_status mcp__tech-assessment-hub__create_feature mcp__tech-assessment-hub__update_feature mcp__tech-assessment-hub__add_result_to_feature mcp__tech-assessment-hub__remove_result_from_feature mcp__tech-assessment-hub__sqlite_query
 ---
 
 # Feature Grouping
@@ -19,7 +19,8 @@ Group in-scope artifacts into business features.
    - `naming_clusters` — medium (shared prefixes/conventions).
    - `temporal_clusters` — weakest (same author + tight time window).
 4. **Read the resource `assessment://guide/grouping-signals`** for the full signal taxonomy (update sets, sys_metadata parent/child, etc.). Use it when engine signals miss things.
-5. `get_customizations(assessment_id)` to see triaged artifacts; `get_features(assessment_id)` to see existing features.
+5. `get_customizations(assessment_id, limit=50, offset=…)` to page through triaged artifacts — **in-scope set = rows where `is_out_of_scope == false`** (adjacent rows are in scope on a different table; include them).
+6. `feature_grouping_status(assessment_id)` for coverage + unassigned result IDs. To list existing features, run `sqlite_query("SELECT id, name, feature_kind, composition_type FROM feature WHERE assessment_id = :aid", {"aid": <id>})` — then fetch per-feature detail with `get_feature_detail(feature_id)` as needed. There is no bulk `get_features` tool.
 
 ## Why you must use the signals tool
 
@@ -34,7 +35,8 @@ The grouping engines are imperfect. `dependency_mapper` is the one reliable engi
 - Name by business purpose ("Incident Auto-Assignment" not "BR + SI").
 - **Use `dependency_clusters` as your starting groups** — then merge/split based on additional signals.
 - Apply the confidence scoring from the grouping-signals resource (High 8+, Medium 4-7, Low 1-3).
-- Every in-scope artifact must end up in a feature — no orphans.
+- Every in-scope artifact (`is_out_of_scope == false`, including `is_adjacent == true`) must end up in a feature — no orphans.
+- Assign artifacts to features with `add_result_to_feature(feature_id=…, result_id=…)`. Remove bad assignments with `remove_result_from_feature(feature_id=…, result_id=…)`.
 - Standalone or low-confidence artifacts → category bucket ("Misc Form Customizations", "Unclustered Customizations").
 - Present your grouping plan to the user before executing (list each proposed feature + member artifact names + confidence).
 

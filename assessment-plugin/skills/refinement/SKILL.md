@@ -4,7 +4,7 @@ description: >
   Refine feature groupings from structural/class-level buckets into functional
   solution-level features. Splits mega-features, merges related ones, and
   renames to describe business capabilities.
-allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_grouping_signals mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__get_features mcp__tech-assessment-hub__create_feature mcp__tech-assessment-hub__update_feature mcp__tech-assessment-hub__assign_result_to_feature mcp__tech-assessment-hub__remove_result_from_feature
+allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_grouping_signals mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__get_feature_detail mcp__tech-assessment-hub__feature_grouping_status mcp__tech-assessment-hub__create_feature mcp__tech-assessment-hub__update_feature mcp__tech-assessment-hub__add_result_to_feature mcp__tech-assessment-hub__remove_result_from_feature mcp__tech-assessment-hub__sqlite_query
 ---
 
 # Feature Refinement — Solution-Level Grouping
@@ -27,8 +27,8 @@ A feature is a business capability. It typically spans MULTIPLE artifact types:
 
 1. **Call `get_assessment_context(assessment_id)`** — caches target app, in-scope tables, parent table, file classes. Use the target app's name when proposing feature names (e.g., for SPM use "Project", "Demand", "Story Workflow" prefixes — not Incident terminology).
 2. **Call `get_grouping_signals(assessment_id)`** — returns `dependency_clusters` (the strongest signal: two artifacts belong together because they reference each other in code OR have a sys_metadata structural relationship — e.g., a UI Policy and its UI Policy Actions, a Dictionary entry and its Dictionary Override, a Workflow and its Activities, a Catalog Item and its Variables). Use these as **feature-grouping hints** — when dependency_clusters connect artifacts across two existing features, that's a strong signal those features should merge. Also returns `naming_clusters` (shared prefixes) and `temporal_clusters` (same-author/time) as weaker signals.
-3. Call `get_features` to see current features and their artifact counts.
-4. For each large feature (>20 artifacts), call `get_customizations` filtered to that feature to see what's in it.
+3. List existing features: `sqlite_query("SELECT id, name, feature_kind, composition_type FROM feature WHERE assessment_id = :aid", {"aid": <id>})`. For counts per feature, join via the membership table: `sqlite_query("SELECT f.id, f.name, COUNT(fm.result_id) AS n FROM feature f LEFT JOIN feature_scan_result fm ON fm.feature_id = f.id WHERE f.assessment_id = :aid GROUP BY f.id ORDER BY n DESC", {"aid": <id>})`. (There is no bulk `get_features` MCP tool.)
+4. For each large feature (>20 artifacts), call `get_feature_detail(feature_id)` to see full metadata + member artifact IDs, then `get_result_detail(result_id)` per member.
 5. Read artifact details with `get_result_detail` to understand what they do.
 6. Split structural groupings into functional solutions:
 
@@ -77,19 +77,19 @@ These are illustrative. Use the target app name from `get_assessment_context` to
 
 ## Feature-Level Observations (Required)
 
-After regrouping, update EVERY feature via `update_feature` with:
+After regrouping, call `update_feature(feature_id=…, …)` for every feature and set:
 
 - **description** — 2-3 sentences: what business capability this feature delivers,
   how the artifacts work together, who uses it
-- **ai_summary** — structured summary: artifact count by type, key patterns,
-  dependencies on other features, upgrade risk
+- **ai_summary** — free-form text: artifact count by type, key patterns,
+  dependencies on other features, upgrade risk, and an explicit **change-risk
+  assessment** (low / medium / high / critical and why, factoring artifact count
+  + complexity, core-platform touchpoints, deprecated APIs, security concerns,
+  cross-feature coupling). The structured `change_risk_level` column is set by
+  the grouping engine, not by this tool — bake your risk assessment into
+  `ai_summary` + `recommendation` instead of trying to write it directly.
 - **recommendation** — what should happen to this feature as a whole
   (keep as-is, refactor specific parts, replace with OOTB, evaluate for retirement)
-- **change_risk_level** — low/medium/high/critical based on:
-  - How many artifacts, how complex the code
-  - Whether it touches core platform behavior
-  - Whether it has deprecated API usage or security concerns
-  - How tightly coupled it is to other features
 
 This is the main deliverable of refinement — each feature should tell a complete
 story so a human reviewer can understand what it is and what to do about it

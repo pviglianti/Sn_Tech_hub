@@ -4,7 +4,7 @@ description: >
   Generate best-practice recommendations for assessed artifacts. Reviews code
   quality, checks for violations, and suggests keep/refactor/replace/retire.
   Core philosophy: minimize technical debt, shift toward OOTB ServiceNow, refactor if OOTB won't fit.
-allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_best_practices mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__get_features mcp__tech-assessment-hub__update_scan_result mcp__tech-assessment-hub__generate_recommendations mcp__tech-assessment-hub__search_servicenow_docs
+allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_best_practices mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__get_feature_detail mcp__tech-assessment-hub__update_scan_result mcp__tech-assessment-hub__upsert_feature_recommendation mcp__tech-assessment-hub__search_servicenow_docs mcp__tech-assessment-hub__sqlite_query
 ---
 
 # Recommendations
@@ -28,7 +28,7 @@ Priority order for every recommendation:
 
 1. Get assessment ID from user or `$ARGUMENTS`.
 2. **Call `get_assessment_context(assessment_id)`** — gives you target app, in-scope tables, file classes. Keep the target app name handy — you'll use it when searching for OOTB alternatives.
-3. `get_customizations(assessment_id)` / `get_features(assessment_id)` — pull the review queue.
+3. Page through `get_customizations(assessment_id, limit=50, offset=…)` to pull the in-scope review queue. **Client-side filter**: process only rows where `is_out_of_scope == false` (in_scope + adjacent both count as in scope). For the feature list, run `sqlite_query("SELECT id, name FROM feature WHERE assessment_id = :aid", {"aid": <id>})` (there is no bulk `get_features` tool); fetch feature-level detail with `get_feature_detail(feature_id)`.
 
 ## For each in-scope artifact
 

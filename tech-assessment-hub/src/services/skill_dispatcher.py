@@ -9,7 +9,9 @@ Single source of truth for "run AI on assessment X for stage Y":
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -24,11 +26,22 @@ from .llm_adapters.anthropic_subprocess import AnthropicSubprocessAdapter
 logger = logging.getLogger(__name__)
 
 
-# Where the plugin lives on disk. The repo ships the plugin alongside the app
-# under /opt/ta-hub/app/assessment-plugin (deploy.sh tarball includes it via
-# rsync from /Volumes/SN_TA_MCP/SN_TechAssessment_Hub_App/assessment-plugin).
-# We resolve relative to this file so it works regardless of CWD.
-_PLUGIN_BASE = (Path(__file__).resolve().parents[3] / "assessment-plugin")
+# Where the plugin lives on disk. Two layouts:
+#   - VM (deploy.sh extracts src/ into /opt/ta-hub/app/, plugin beside it):
+#       parents[2] == /opt/ta-hub/app  →  /opt/ta-hub/app/assessment-plugin
+#   - Local dev (plugin is a sibling of tech-assessment-hub/):
+#       parents[3] == repo root         →  <repo>/assessment-plugin
+# First existing candidate wins; fall through to the VM path for error messages.
+def _resolve_plugin_base() -> Path:
+    here = Path(__file__).resolve()
+    candidates = [here.parents[2] / "assessment-plugin", here.parents[3] / "assessment-plugin"]
+    for c in candidates:
+        if c.is_dir():
+            return c
+    return candidates[0]
+
+
+_PLUGIN_BASE = _resolve_plugin_base()
 
 # Map UI/pipeline stage names → SKILL.md folder name
 STAGE_TO_SKILL: Dict[str, str] = {
@@ -125,7 +138,7 @@ def run_skill(
                 ),
             )
 
-    return adapter.run(
+    result = adapter.run(
         skill_text=skill_text,
         user_message=user_message,
         model=chosen_model,
@@ -133,3 +146,61 @@ def run_skill(
         mcp_server_url=mcp_server_url,
         extra=extra,
     )
+
+    _write_run_trace(
+        assessment_id=assessment_id,
+        stage=stage,
+        skill_text=skill_text,
+        user_message=user_message,
+        adapter_name=adapter.name,
+        model=chosen_model,
+        result=result,
+    )
+
+    return result
+
+
+def _write_run_trace(
+    *,
+    assessment_id: int,
+    stage: str,
+    skill_text: str,
+    user_message: str,
+    adapter_name: str,
+    model: str,
+    result: SkillRunResult,
+) -> None:
+    """Persist prompt + output + usage per run so failures are debuggable."""
+    try:
+        trace_dir = DATA_DIR / "logs" / "ai_prompts" / f"assessment_{assessment_id}"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%dT%H%M%S")
+        base = trace_dir / f"{stage}-{stamp}"
+        (base.with_suffix(".prompt.txt")).write_text(
+            f"{skill_text}\n\n---\n\nUser request:\n{user_message}\n",
+            encoding="utf-8",
+        )
+        (base.with_suffix(".output.txt")).write_text(result.output or "", encoding="utf-8")
+        summary = {
+            "assessment_id": assessment_id,
+            "stage": stage,
+            "adapter": adapter_name,
+            "model": model,
+            "success": result.success,
+            "error": result.error,
+            "duration_seconds": result.duration_seconds,
+            "tool_call_count": result.tool_call_count,
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "cache_read_tokens": result.cache_read_tokens,
+            "cache_write_tokens": result.cache_write_tokens,
+        }
+        (base.with_suffix(".summary.json")).write_text(
+            json.dumps(summary, indent=2), encoding="utf-8"
+        )
+        if result.raw:
+            (base.with_suffix(".raw.json")).write_text(
+                json.dumps(result.raw, indent=2, default=str), encoding="utf-8"
+            )
+    except Exception:
+        logger.exception("failed to write run trace for assessment=%s stage=%s", assessment_id, stage)
