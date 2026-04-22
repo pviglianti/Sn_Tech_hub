@@ -392,6 +392,13 @@ def _run_chained_scope_triage(
         except Exception:
             pass
 
+        # Cap per-chunk wall time so a stuck chunk doesn't hold the whole
+        # auto-chain loop for 30 minutes. 6 minutes is plenty for 50
+        # artifacts with the fast scope-brief tool; anything longer than
+        # that is the CLI in a retry/backoff loop and we're better off
+        # killing it and letting the next chunk take a fresh swing.
+        per_chunk_timeout = min(int(timeout_seconds or 1800), 360)
+
         with Session(engine) as bg_session:
             result = run_skill(
                 session=bg_session,
@@ -401,7 +408,7 @@ def _run_chained_scope_triage(
                 dispatcher=dispatcher,
                 model=model,
                 mcp_server_url=mcp_server_url,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=per_chunk_timeout,
                 extra=chunk_extra,
             )
 
@@ -439,20 +446,35 @@ def _run_chained_scope_triage(
             )
             break
         # 2) No new triages happened this chunk — prevent infinite loop.
+        #    A chunk with zero progress AND a hard failure gives up; a
+        #    chunk with zero progress but no error gets one more try in
+        #    case the CLI just came up slow.
         if new_triaged <= last_triaged:
+            if not result.success:
+                logger.warning(
+                    "chained scope_triage halted — chunk=%s made no progress "
+                    "and adapter reported error=%s. Stopping.",
+                    chunk_i + 1, result.error,
+                )
+                break
+            # Give it one more try next iteration; no-progress-twice bails.
+            if chunk_i > 0:
+                logger.warning(
+                    "chained scope_triage halted — chunk=%s made no progress "
+                    "and previous chunk also stalled. Bailing.",
+                    chunk_i + 1,
+                )
+                break
+        # 3) Partial progress on a failed chunk: continue. A timeout /
+        #    internal retry loop / SIGKILL that still managed to triage
+        #    some artifacts is NOT a reason to stop the whole run — the
+        #    next fresh CLI session will pick up where this one left off.
+        if not result.success and new_triaged > last_triaged:
             logger.warning(
-                "chained scope_triage halted — no progress after chunk=%s "
-                "(triaged stayed at %s). Bailing to avoid infinite loop.",
-                chunk_i + 1, new_triaged,
+                "chained scope_triage chunk=%s failed (%s) but triaged "
+                "%s new artifacts — continuing with next chunk.",
+                chunk_i + 1, result.error, new_triaged - last_triaged,
             )
-            break
-        # 3) Hard failure in the adapter — stop and surface via stream.
-        if not result.success:
-            logger.warning(
-                "chained scope_triage session failed on chunk=%s — error=%s",
-                chunk_i + 1, result.error,
-            )
-            break
 
         offset = new_triaged
         last_triaged = new_triaged
