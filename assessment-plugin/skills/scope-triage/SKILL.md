@@ -22,6 +22,14 @@ Your job is to classify **every** customized artifact in one assessment as
 **in_scope**, **adjacent**, or **out_of_scope**, and persist that decision via
 `mcp__tech-assessment-hub__update_scan_result`.
 
+**This stage is scope-only — do NOT write `observations`.** Functional
+summaries of what each artifact does are produced by the `observations`
+stage that runs next (and are later refined by feature grouping /
+recommendations). Writing an observations sentence here just bloats the
+conversation and gets overwritten downstream. The only fields you set
+per artifact are `is_out_of_scope`, `is_adjacent`, and `ai_observations`
+(with `scope_decision` + `scope_rationale`).
+
 ## Inputs
 
 `$ARGUMENTS` contains the assessment_id plus optional operator context, e.g.:
@@ -134,14 +142,17 @@ for cust in page.customizations:
         # GlideRecord call or target-table reference near the top of the
         # file, so full detail is rarely needed.
 
+    # Triage writes ONLY the scope decision. Do NOT write `observations` —
+    # that's the `observations` stage's job (it does a full get_result_detail
+    # per in-scope/adjacent artifact and generates 2–4 sentence functional
+    # summaries). Feature grouping and recommendations then refine from
+    # there. Writing a sentence here just wastes tokens + gets overwritten.
     update_scan_result(
         result_id=cust.scan_result_id,
-        observations="<one concise sentence — what it does + which in-scope / "
-                     "adjacent records or tables it touches, calls, or is called by>",
         ai_observations={
             "analysis_stage": "ai_analysis",
-            "scope_decision": decision,
-            "scope_rationale": rationale,
+            "scope_decision": decision,    # "in_scope" | "adjacent" | "out_of_scope"
+            "scope_rationale": rationale,  # one-line why
         },
         is_out_of_scope=(decision == "out_of_scope"),
         is_adjacent=(decision == "adjacent"),
@@ -218,19 +229,21 @@ Script Include's `script` field is enough to make it in_scope even though
 `in_scope` and `adjacent` both count as IN SCOPE. `adjacent` just means "in
 scope but not on a target table."
 
-## Observation quality
+## `scope_rationale` quality
 
-- ONE concise sentence per artifact. Describe what the artifact does and which
-  in-scope or adjacent records/tables it references, updates, calls, or is
-  called by.
-- Reference other artifacts by **name + type**, not sys_id, e.g.
-  "Business Rule: Before Insert on incident — sets Assignment Group from
-  category; related to Script Include 'IncidentUtils'".
-- Use sys_ids only inside structured JSON fields
-  (`ai_observations`, `directly_related_result_ids`), never in human-readable
-  text.
-- If you're uncertain what a ServiceNow configuration type does, say so
-  briefly — do not fabricate.
+The only prose you write is the `scope_rationale` inside `ai_observations`.
+Keep it to a single short sentence explaining WHY you decided in_scope /
+adjacent / out_of_scope — the trigger for the decision tree, not what the
+artifact does. Examples:
+
+- `"meta_target_table incident is a target table"` (fast path)
+- `"meta_target_table task == parent_table → adjacent"` (parent match)
+- `"script references GlideRecord('incident') even though meta_target_table is sys_scope"` (code reference)
+- `"meta_target_table change_request; script has no in-scope references"` (out of scope)
+
+Do NOT describe the artifact's behavior here — that belongs to the
+`observations` stage, which will read ai_observations for context, pull
+full detail, and write the functional summary separately.
 
 ## Worked examples
 
