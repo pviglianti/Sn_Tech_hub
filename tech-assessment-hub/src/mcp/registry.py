@@ -194,6 +194,7 @@ def build_registry() -> ToolRegistry:
     from .tools.core.best_practices import TOOL_SPEC as best_practices_tool
     from .tools.core.generate_report import TOOL_SPEC as generate_report_tool
     from .tools.core.result_detail import TOOL_SPEC as result_detail_tool
+    from .tools.core.result_scope_brief import TOOL_SPEC as result_scope_brief_tool
     from .tools.core.data_pull import TOOL_SPEC as data_pull_tool
     from .tools.core.assessment import TOOL_SPEC as assessment_tool
     from .tools.core.facts import SAVE_FACT_TOOL_SPEC, GET_FACTS_TOOL_SPEC, DELETE_FACTS_TOOL_SPEC
@@ -212,6 +213,7 @@ def build_registry() -> ToolRegistry:
     registry.register(best_practices_tool)
     registry.register(generate_report_tool)
     registry.register(result_detail_tool)
+    registry.register(result_scope_brief_tool)
     registry.register(data_pull_tool)
     registry.register(assessment_tool)
     registry.register(SAVE_FACT_TOOL_SPEC)

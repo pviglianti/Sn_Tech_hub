@@ -268,11 +268,16 @@ class AnthropicSubprocessAdapter:
         final_result: Dict[str, Any] = {}
         line_count = 0
         stream_fp = None
+        # When the dispatcher auto-chains multiple CLI sessions into one run,
+        # intermediate sessions MUST NOT emit _stream_end (SSE closes on it).
+        suppress_end_marker = bool((extra or {}).get("suppress_stream_end"))
+        session_start_marker = (extra or {}).get("session_start_marker") or "_stream_start"
+        session_end_marker = (extra or {}).get("session_end_marker") or "_stream_end"
         if stream_path is not None:
             stream_fp = stream_path.open("a", encoding="utf-8")
             # Preamble so SSE tails have a definite start marker.
             stream_fp.write(json.dumps({
-                "type": "_stream_start",
+                "type": session_start_marker,
                 "timestamp": datetime.utcnow().isoformat() + "Z",
                 "model": model,
                 "transport": self.name,
@@ -300,13 +305,17 @@ class AnthropicSubprocessAdapter:
                     final_result = evt
         finally:
             killer.cancel()
-            if stream_fp is not None:
+            if stream_fp is not None and not suppress_end_marker:
                 try:
                     stream_fp.write(json.dumps({
-                        "type": "_stream_end",
+                        "type": session_end_marker,
                         "timestamp": datetime.utcnow().isoformat() + "Z",
                     }) + "\n")
                     stream_fp.flush()
+                except Exception:
+                    pass
+            if stream_fp is not None:
+                try:
                     stream_fp.close()
                 except Exception:
                     pass

@@ -17,13 +17,23 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from sqlmodel import Session, select
+from sqlmodel import Session, select, func
 
 from ..database import DATA_DIR, engine
-from ..models import AppConfig
+from ..models import AppConfig, Assessment, Scan, ScanResult
 from .llm_adapters import SkillRunResult
 from .llm_adapters.anthropic_api import AnthropicAPIAdapter
 from .llm_adapters.anthropic_subprocess import AnthropicSubprocessAdapter
+
+
+# How many artifacts each chunked scope-triage session should process.
+# Matches the `limit` used by get_customizations in the skill pseudocode.
+_SCOPE_TRIAGE_CHUNK_SIZE = 50
+# Safety cap — never loop more than this many chunks even if the skill never
+# advances the pipeline. At 50 per chunk this covers 25,000 artifacts.
+_SCOPE_TRIAGE_MAX_CHUNKS = 500
+# Stages that support auto-chaining (multiple CLI sessions, one per page).
+_CHAINED_STAGES = {"scope_triage", "ai_analysis"}
 
 logger = logging.getLogger(__name__)
 
@@ -243,9 +253,8 @@ def start_skill_background(
 
     def _target() -> None:
         try:
-            with Session(engine) as bg_session:
-                run_skill(
-                    session=bg_session,
+            if stage in _CHAINED_STAGES:
+                _run_chained_scope_triage(
                     assessment_id=assessment_id,
                     stage=stage,
                     user_instructions=user_instructions,
@@ -253,8 +262,22 @@ def start_skill_background(
                     model=model,
                     mcp_server_url=mcp_server_url,
                     timeout_seconds=timeout_seconds,
-                    extra=merged_extra,
+                    merged_extra=merged_extra,
+                    stream_log_path=stream_log_path,
                 )
+            else:
+                with Session(engine) as bg_session:
+                    run_skill(
+                        session=bg_session,
+                        assessment_id=assessment_id,
+                        stage=stage,
+                        user_instructions=user_instructions,
+                        dispatcher=dispatcher,
+                        model=model,
+                        mcp_server_url=mcp_server_url,
+                        timeout_seconds=timeout_seconds,
+                        extra=merged_extra,
+                    )
         except Exception:
             logger.exception(
                 "background run_skill crashed for assessment=%s stage=%s",
@@ -276,6 +299,153 @@ def start_skill_background(
     )
     thread.start()
     return stream_id, stream_log_path
+
+
+def _count_triaged_results(session: Session, assessment_id: int) -> int:
+    """Count ScanResults in the assessment that carry a scope_decision in
+    ai_observations. Used for resume-after-crash and no-progress detection."""
+    q = (
+        select(func.count(ScanResult.id))
+        .select_from(ScanResult)
+        .join(Scan, Scan.id == ScanResult.scan_id)
+        .where(Scan.assessment_id == assessment_id)
+        .where(ScanResult.ai_observations.is_not(None))
+        .where(ScanResult.ai_observations.like('%"scope_decision"%'))
+    )
+    try:
+        return int(session.exec(q).one() or 0)
+    except Exception:
+        logger.exception("_count_triaged_results failed for assessment=%s", assessment_id)
+        return 0
+
+
+def _run_chained_scope_triage(
+    *,
+    assessment_id: int,
+    stage: str,
+    user_instructions: Optional[str],
+    dispatcher: Optional[str],
+    model: Optional[str],
+    mcp_server_url: Optional[str],
+    timeout_seconds: int,
+    merged_extra: Dict[str, Any],
+    stream_log_path: Path,
+) -> None:
+    """Loop scope-triage as N short CLI sessions until the pipeline advances or
+    no new artifacts get triaged. Each session is a fresh claude subprocess
+    with its own context — no accumulation across chunks, so we avoid the
+    rate-limit backoffs that killed long single-session runs."""
+
+    # Starting offset: resume at however many are already triaged so we don't
+    # redo earlier batches on a re-run after a crash/kill.
+    with Session(engine) as s:
+        offset = _count_triaged_results(s, assessment_id)
+    last_triaged = offset
+
+    for chunk_i in range(_SCOPE_TRIAGE_MAX_CHUNKS):
+        chunk_instructions_lines = [
+            f"Chunk {chunk_i + 1}: process the customizations page starting at "
+            f"offset={offset} with limit={_SCOPE_TRIAGE_CHUNK_SIZE}, then exit.",
+            "Do NOT fetch the next page within this session — the dispatcher "
+            "launches a fresh session for each chunk.",
+            "Skip any artifact whose ai_observations already contains a "
+            "scope_decision — it was triaged in a prior chunk.",
+        ]
+        if user_instructions:
+            chunk_instructions_lines.insert(0, user_instructions)
+        chunk_instructions = "\n".join(chunk_instructions_lines)
+
+        # Intermediate sessions must not close the SSE stream; only the final
+        # sentinel we emit after the loop should terminate the browser feed.
+        chunk_extra = dict(merged_extra)
+        chunk_extra["suppress_stream_end"] = True
+
+        # Mark chunk boundaries in the stream for the UI.
+        try:
+            with stream_log_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "type": "_chunk_start",
+                    "chunk": chunk_i + 1,
+                    "offset": offset,
+                    "page_size": _SCOPE_TRIAGE_CHUNK_SIZE,
+                }) + "\n")
+        except Exception:
+            pass
+
+        with Session(engine) as bg_session:
+            result = run_skill(
+                session=bg_session,
+                assessment_id=assessment_id,
+                stage=stage,
+                user_instructions=chunk_instructions,
+                dispatcher=dispatcher,
+                model=model,
+                mcp_server_url=mcp_server_url,
+                timeout_seconds=timeout_seconds,
+                extra=chunk_extra,
+            )
+
+        # Reap anything that somehow survived the session (belt-and-braces).
+        try:
+            from .llm_adapters.anthropic_subprocess import _reap_stale_claude_children
+            _reap_stale_claude_children(max_age_seconds=30)
+        except Exception:
+            pass
+
+        # Decide whether another chunk is needed.
+        with Session(engine) as s:
+            assessment = s.get(Assessment, assessment_id)
+            pipeline_stage = (assessment.pipeline_stage if assessment else "") or ""
+            new_triaged = _count_triaged_results(s, assessment_id)
+
+        try:
+            with stream_log_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "type": "_chunk_end",
+                    "chunk": chunk_i + 1,
+                    "triaged_total": new_triaged,
+                    "success": bool(result.success),
+                    "error": result.error,
+                }) + "\n")
+        except Exception:
+            pass
+
+        # Stop conditions:
+        # 1) The skill advanced the pipeline past scope_triage/ai_analysis.
+        if pipeline_stage and pipeline_stage not in _CHAINED_STAGES:
+            logger.info(
+                "chained scope_triage done — assessment=%s pipeline_stage=%s",
+                assessment_id, pipeline_stage,
+            )
+            break
+        # 2) No new triages happened this chunk — prevent infinite loop.
+        if new_triaged <= last_triaged:
+            logger.warning(
+                "chained scope_triage halted — no progress after chunk=%s "
+                "(triaged stayed at %s). Bailing to avoid infinite loop.",
+                chunk_i + 1, new_triaged,
+            )
+            break
+        # 3) Hard failure in the adapter — stop and surface via stream.
+        if not result.success:
+            logger.warning(
+                "chained scope_triage session failed on chunk=%s — error=%s",
+                chunk_i + 1, result.error,
+            )
+            break
+
+        offset = new_triaged
+        last_triaged = new_triaged
+
+    # Emit the single final sentinel so SSE closes cleanly.
+    try:
+        with stream_log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "type": "_stream_end",
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }) + "\n")
+    except Exception:
+        pass
 
 
 def _write_run_trace(

@@ -77,13 +77,25 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
 
     rows = session.exec(query).all()
 
+    # Pull meta_target_table + ai_observations from the parent ScanResult so
+    # the triage skill can make a scope decision off the actual business
+    # target table (e.g. `incident`) rather than the metadata container
+    # table (e.g. `sys_script`, `sys_dictionary`). ai_observations lets the
+    # skill skip artifacts already triaged in a prior chunk.
     condensed = []
     for r in rows:
+        sr = r.scan_result  # relationship-loaded on access
+        meta_target_table = getattr(sr, "meta_target_table", None) if sr else None
+        prior_ai_obs = getattr(sr, "ai_observations", None) if sr else None
         condensed.append({
             "id": r.id,
             "scan_result_id": r.scan_result_id,
             "sys_id": r.sys_id,
+            # `table_name` here is the metadata container table (sys_script,
+            # sys_dictionary, etc.) — almost never what you want for scope
+            # decisions. Use `meta_target_table` (the business target) below.
             "table_name": r.table_name,
+            "meta_target_table": meta_target_table,
             "name": r.name,
             "origin_type": r.origin_type.value if r.origin_type else None,
             "head_owner": r.head_owner.value if r.head_owner else None,
@@ -93,6 +105,7 @@ def handle(params: Dict[str, Any], session: Session) -> Dict[str, Any]:
             "disposition": r.disposition.value if r.disposition else None,
             "is_adjacent": r.is_adjacent,
             "is_out_of_scope": r.is_out_of_scope,
+            "ai_observations": prior_ai_obs,
             "sys_updated_on": r.sys_updated_on.isoformat() if r.sys_updated_on else None,
         })
 

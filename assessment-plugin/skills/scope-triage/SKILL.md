@@ -5,7 +5,7 @@ description: >
   in_scope (direct customization of the assessed app/tables), adjacent (related
   but not direct — still counts as in scope), or out_of_scope (unrelated).
   Invoke as /scope-triage <assessment_id> with optional extra context.
-allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__update_scan_result mcp__tech-assessment-hub__query_instance_live mcp__tech-assessment-hub__advance_pipeline
+allowed-tools: mcp__tech-assessment-hub__get_assessment_context mcp__tech-assessment-hub__get_customizations mcp__tech-assessment-hub__get_result_scope_brief mcp__tech-assessment-hub__get_result_detail mcp__tech-assessment-hub__update_scan_result mcp__tech-assessment-hub__query_instance_live mcp__tech-assessment-hub__advance_pipeline
 ---
 
 # Scope Triage
@@ -45,41 +45,120 @@ proceed automatically.
    - `scope_filter` — `global` | `scoped` | `all`
 2. Apply operator context from `$ARGUMENTS` on top of the cached defaults.
 
-## Processing loop — process EVERY artifact
+## Processing loop — one page per session
 
-**You MUST walk the full customization queue and call `update_scan_result`
-exactly once per artifact. Do not stop early. Do not ask the operator for
-confirmation mid-loop — the rule below is sufficient.**
+**Scope of this session:** process up to 50 artifacts (one page of
+`get_customizations`), then stop and exit cleanly. Do NOT fetch further
+pages. The dispatcher re-invokes this skill for the next batch. Keeping each
+CLI session to 50 artifacts caps context growth, avoids Anthropic subscription
+rate-limit backoffs, and lets each `update_scan_result` become visible in
+the UI as it's written.
+
+**⚠ SERIAL TOOL CALLS — one tool per turn.**
+Do NOT emit multiple `tool_use` blocks in the same assistant message. Each
+turn must contain exactly ONE tool call. The loop is:
+
+    (optional 1 tool_use: get_result_detail) →
+    (1 tool_use: update_scan_result) →
+    (next artifact) → …
+
+Parallel tool batches cause the CLI to assemble a giant user message the
+API struggles to accept, and one slow/failed call blocks the rest.
+
+**⚠ USE `meta_target_table`, NOT `table_name`, FOR THE FAST-PATH DECISION.**
+`get_customizations` returns two table-ish fields per row:
+
+- `table_name` — the **metadata container** (`sys_script`, `sys_script_include`,
+  `sys_dictionary`, `sys_ui_policy`, …). Almost never the real subject.
+- `meta_target_table` — the **business target** (`incident`, `change_request`,
+  `task`, …). THIS is what matters for scope.
+
+Apply this narrow shortcut:
+
+| `cust.meta_target_table` case                         | Action                                  |
+|---|---|
+| value is in `in_scope_tables` (non-null match)        | **in_scope** — skip detail              |
+| anything else (parent table, other table, null, etc.) | **get_result_detail** then classify     |
+
+**Why only a direct target-table match is safe to skip:**
+A Business Rule whose `meta_target_table = change_request` can still call
+`new GlideRecord('incident')` and push updates there — **adjacent** (in
+scope), even though the hosting table is out of scope. Same story for
+script includes / fix scripts / UI pages / flows that have no
+`meta_target_table` but touch in-scope behavior in their code body. And
+`parent_table` is not auto-adjacent — a customization on `task` could be
+pure task behavior with no incident touchpoint, i.e. out_of_scope. So for
+anything that isn't a direct target-table match, fetch the detail and
+inspect the code/fields.
+
+Skipping `get_result_detail` for direct-target-table hits is a big win:
+most customizations in a focused assessment ARE on the target tables, so
+this shortcut keeps the fast path fast without sacrificing accuracy on
+the cross-table adjacency cases that actually need judgment.
+
+**⚠ SKIP ARTIFACTS ALREADY TRIAGED.**
+`get_customizations` also returns each row's `ai_observations`. If that
+field is non-null and contains `"scope_decision"`, a prior chunk already
+triaged this artifact — skip it (do not call `get_result_detail` or
+`update_scan_result` for it). This is what lets the auto-chain dispatcher
+run multiple chunks without duplicating work.
 
 Pseudocode:
 
 ```
-offset = 0
-totals = {in_scope: 0, adjacent: 0, out_of_scope: 0}
-while True:
-    page = get_customizations(assessment_id=<id>, limit=50, offset=offset)
-    for cust in page.customizations:
-        detail = get_result_detail(result_id=cust.scan_result_id)
-        decision = classify(detail, cust)   # see Decision tree
-        update_scan_result(
-            result_id=cust.scan_result_id,
-            observations="<one concise sentence — what it does + which in-scope / "
-                         "adjacent records or tables it touches, calls, or is called by>",
-            ai_observations={
-                "analysis_stage": "ai_analysis",
-                "scope_decision": decision,           # "in_scope" | "adjacent" | "out_of_scope"
-                "scope_rationale": "<1 sentence why>",
-            },
-            is_out_of_scope=(decision == "out_of_scope"),
-            is_adjacent=(decision == "adjacent"),
-        )
-        totals[decision] += 1
-    # progress ping every page
-    emit "Processed {offset + len(page.customizations)} / {page.total} — "
-         "{totals.in_scope} in_scope, {totals.adjacent} adjacent, "
-         "{totals.out_of_scope} out_of_scope"
-    if len(page.customizations) < 50: break
-    offset += 50
+page = get_customizations(assessment_id=<id>, limit=50, offset=<from_operator_context_or_0>)
+totals = {in_scope: 0, adjacent: 0, out_of_scope: 0, skipped_detail: 0}
+
+for cust in page.customizations:
+    # Dedupe: was this already triaged in a prior chunk?
+    if cust.ai_observations and '"scope_decision"' in cust.ai_observations:
+        continue
+
+    target = cust.meta_target_table  # NOT cust.table_name
+
+    if target and target in in_scope_tables:
+        # Fast path: artifact targets an in-scope table → in_scope.
+        # No detail fetch; the target table alone is sufficient evidence.
+        decision = "in_scope"
+        rationale = f"meta_target_table {target} is a target table"
+        totals["skipped_detail"] += 1
+    else:
+        # Anything else — null target, parent table, or some other table —
+        # MAY still be adjacent because the code references in-scope
+        # tables. Inspect the lightweight scope brief first.
+        brief = get_result_scope_brief(result_id=cust.scan_result_id)
+        decision, rationale = classify_from_brief(brief, cust)
+        # Only escalate to get_result_detail if the brief's script_excerpts
+        # were truncated AND the truncated tail might change the decision.
+        # In practice, a 2KB excerpt already reveals any in-scope
+        # GlideRecord call or target-table reference near the top of the
+        # file, so full detail is rarely needed.
+
+    update_scan_result(
+        result_id=cust.scan_result_id,
+        observations="<one concise sentence — what it does + which in-scope / "
+                     "adjacent records or tables it touches, calls, or is called by>",
+        ai_observations={
+            "analysis_stage": "ai_analysis",
+            "scope_decision": decision,
+            "scope_rationale": rationale,
+        },
+        is_out_of_scope=(decision == "out_of_scope"),
+        is_adjacent=(decision == "adjacent"),
+    )
+    totals[decision] += 1
+
+# ONE progress line, then stop.
+emit f"Processed {len(page.customizations)} of this page — "
+     f"{totals['in_scope']} in_scope, {totals['adjacent']} adjacent, "
+     f"{totals['out_of_scope']} out_of_scope, "
+     f"{totals['skipped_detail']} used table-only decision."
+
+# Advance only when the whole queue is done.
+if page.total <= page.offset + len(page.customizations):
+    advance_pipeline(assessment_id=<id>, target_stage="observations")
+
+# Exit. Do NOT request the next page here.
 ```
 
 **Hard rules:**
