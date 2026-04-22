@@ -206,8 +206,23 @@ For each artifact, let `T` = its target table (usually `detail.collection` or
    - references an `in_scope_tables` value, its fields, or matches `keywords`,
      or interacts with in-scope configurations → **in_scope**
    - otherwise → **out_of_scope**
-3. `T` exists but NOT in `in_scope_tables`:
-   - `T == parent_table` → **adjacent**
+3. `T == parent_table` (e.g. `task` for an Incident assessment):
+   - ServiceNow table inheritance means a customization on the parent
+     table runs on EVERY child table, including the in-scope ones —
+     unless its own condition filters the in-scope class out. So the
+     **default is `adjacent`** (it touches in-scope records via
+     inheritance, just not on a target table directly).
+   - Escalate to out_of_scope ONLY when the artifact's condition /
+     filter_condition / advanced_condition / script explicitly excludes
+     every in-scope child. Patterns that demote to out_of_scope:
+       - `current.sys_class_name == 'task'` (pure task rows only)
+       - `current.sys_class_name != 'incident' && != 'incident_task'`
+       - Table filter inside the script that short-circuits on
+         in-scope classes, e.g. `if (current.getTableName() == 'incident') return;`
+       - `applies_extended = false` on a table hierarchy record
+     If you see any of those explicit exclusions → **out_of_scope**.
+     Otherwise → **adjacent**.
+4. `T` exists but NOT in `in_scope_tables` and `T != parent_table`:
    - `T` references/queries/extends an in-scope table → **adjacent**
    - otherwise → **out_of_scope**
 
@@ -250,13 +265,16 @@ full detail, and write the functional summary separately.
 **Incident assessment** (`in_scope_tables = ["incident","incident_task"]`,
 `parent_table = "task"`)
 
-| Artifact | Table | Decision |
-|---|---|---|
-| Business Rule "Close Incident" | incident | **in_scope** |
-| Script Include "IncidentUtils" (refs `GlideRecord('incident')`) | null | **in_scope** |
-| Script Include "UtilityMath" (no incident refs) | null | **out_of_scope** |
-| UI Action "Assign to me" on task | task | **adjacent** |
-| Business Rule on change_request | change_request | **out_of_scope** |
+| Artifact | Table | Decision | Why |
+|---|---|---|---|
+| Business Rule "Close Incident" | incident | **in_scope** | target table |
+| Script Include "IncidentUtils" (refs `GlideRecord('incident')`) | null | **in_scope** | code references target table |
+| Script Include "UtilityMath" (no incident refs) | null | **out_of_scope** | no target-table refs |
+| UI Action "Assign to me" on task (no class filter) | task | **adjacent** | parent → inherited by incident |
+| Business Rule on task with `sys_class_name == 'task'` only | task | **out_of_scope** | condition excludes all children |
+| Business Rule on task with `applies_extended = false` | task | **out_of_scope** | explicitly scoped to task only |
+| Business Rule on change_request | change_request | **out_of_scope** | different subject table |
+| Business Rule on change_request that `new GlideRecord('incident').update()` | change_request | **adjacent** | code touches target table |
 
 **SPM assessment** (`in_scope_tables` includes `pm_project`, `pm_project_task`,
 `rm_story`, `rm_epic`, …; `parent_table = "planned_task"`)
