@@ -1,4 +1,4 @@
-name: Deploy to GCE VM
+name: Deploy to Azure VM
 
 on:
   push:
@@ -14,12 +14,8 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write            # required for OIDC → GCP auth
 
 env:
-  GCP_PROJECT: ta-app-491606
-  VM_NAME: pvig-ta-2026
-  VM_ZONE: us-central1-b
   REMOTE_APP_DIR: /opt/ta-hub/app
 
 jobs:
@@ -29,14 +25,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: projects/1005358693904/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-          service_account: ta-hub-github-deploy@ta-app-491606.iam.gserviceaccount.com
-
-      - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
+      - name: Set up SSH key
+        env:
+          SSH_KEY: ${{ secrets.AZURE_VM_SSH_KEY }}
+          VM_HOST: ${{ secrets.AZURE_VM_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$VM_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Pack code
         run: |
@@ -53,36 +51,45 @@ jobs:
           ls -lh /tmp/ta-hub-deploy.tgz
 
       - name: Upload to VM
+        env:
+          VM_HOST: ${{ secrets.AZURE_VM_HOST }}
+          VM_USER: ${{ secrets.AZURE_VM_USER }}
         run: |
-          gcloud compute scp --zone="$VM_ZONE" --tunnel-through-iap \
-            /tmp/ta-hub-deploy.tgz "$VM_NAME:/tmp/ta-hub-deploy.tgz"
+          scp -i ~/.ssh/deploy_key /tmp/ta-hub-deploy.tgz "$VM_USER@$VM_HOST:/tmp/ta-hub-deploy.tgz"
 
       - name: Extract + install deps + restart
+        env:
+          VM_HOST: ${{ secrets.AZURE_VM_HOST }}
+          VM_USER: ${{ secrets.AZURE_VM_USER }}
         run: |
-          gcloud compute ssh "$VM_NAME" --zone="$VM_ZONE" --tunnel-through-iap --command="
+          ssh -i ~/.ssh/deploy_key "$VM_USER@$VM_HOST" "
             set -e
             sudo tar xzf /tmp/ta-hub-deploy.tgz -C $REMOTE_APP_DIR
             # Always force data -> /mnt/data (tarball excludes data entirely, but be defensive)
             sudo rm -rf $REMOTE_APP_DIR/data
             sudo ln -sfn /mnt/data $REMOTE_APP_DIR/data
-            sudo chown -R pviglianti:pviglianti $REMOTE_APP_DIR
-            sudo -u pviglianti $REMOTE_APP_DIR/venv/bin/pip install -q -r $REMOTE_APP_DIR/requirements.txt
+            sudo find $REMOTE_APP_DIR -name '._*' -delete
+            sudo chown -R $VM_USER:$VM_USER $REMOTE_APP_DIR
+            sudo -u $VM_USER $REMOTE_APP_DIR/venv/bin/pip install -q -r $REMOTE_APP_DIR/requirements.txt
             sudo rm -f /tmp/ta-hub-deploy.tgz
             sudo systemctl restart ta-hub
           "
 
       - name: Health check
+        env:
+          VM_HOST: ${{ secrets.AZURE_VM_HOST }}
+          VM_USER: ${{ secrets.AZURE_VM_USER }}
         run: |
           sleep 8
-          HTTP_CODE=$(gcloud compute ssh "$VM_NAME" --zone="$VM_ZONE" --tunnel-through-iap \
-            --command="curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/assessments")
+          HTTP_CODE=$(ssh -i ~/.ssh/deploy_key "$VM_USER@$VM_HOST" \
+            "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/assessments")
           echo "HTTP $HTTP_CODE"
           case "$HTTP_CODE" in
             200|302|303|307|308) echo "✅ healthy" ;;
             *)
               echo "❌ unhealthy — tailing logs:"
-              gcloud compute ssh "$VM_NAME" --zone="$VM_ZONE" --tunnel-through-iap \
-                --command="sudo tail -60 /var/log/ta-hub.log"
+              ssh -i ~/.ssh/deploy_key "$VM_USER@$VM_HOST" \
+                "sudo tail -60 /var/log/ta-hub.log"
               exit 1
               ;;
           esac
